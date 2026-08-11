@@ -393,10 +393,12 @@ harder at it will help.  Worth saying before anything else on the board."
                     out))))))
     (nreverse out)))
 
-(defun org-foresight--wont-fit-findings (scan)
-  "Return findings for work promised today that no remaining gap can hold."
+(defun org-foresight--wont-fit-findings (scan &optional now)
+  "Return findings for work promised today that no remaining gap can hold.
+Measured from NOW, the current time by default: a two-hour job does not fit
+in a day with ninety minutes left of it, whatever the morning looked like."
   (let* ((today (org-foresight--day-start 0))
-         (free (org-foresight-free-intervals today scan))
+         (free (org-foresight-free-intervals today scan now))
          (longest (if free
                       (/ (apply #'max
                                 (mapcar (lambda (iv)

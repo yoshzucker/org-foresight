@@ -134,36 +134,63 @@ then occasionally:
 
 #+begin_example
 Capacity  what today can still take
-Free 1:00 of 8:30 · OVER by 3:45 · will not fit · surge 1:00
-█ booked 3:45  ▓ promised 7:30  ▒ surge 1:00  ░ spare 0:00
-████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓┃▓▓▓▓▓▓▓▒▒▒
-Grey 6:30
+Work 8:30 · OVER by 3:45 · will not fit
+Work  8:30 = █booked 2:45 + █travel 2:00 + █promised 7:30 + █surge 1:00
+             ████████████████████████████████████████┃██████████████████
+Off   7:00 = █private 1:30 + █unclaimed 5:30
+             ██████████████████████████████
 
 Today  where the hours go
- 09:00 ··              0:30            free
- 09:30 █               0:15 outlook    Morning standup
- 09:45 ·············   3:15            free
- 13:00 ▓▓▓▓            1:00 travel     → office
-       ╰               1:00 outlook    All-hands (listen)
- 14:00 ██████          1:30 outlook    Project review
- 15:30 ····            1:00            free
- 16:30 ▓▓▓▓            1:00 travel     → home
- 17:30 ─────                           work ends
- 19:00 ░░░░░░          1:30 family     Dinner with the family
+█ booked  █ travel  █ promised  █ private  · free
+⨯ double-booked  ? no time yet  ╰ alongside
 
-       ? not yet placed   ! due today
-       ?               6:00 reporting  Rewrite the annual report
-       !                due reporting  Prepare the board pack
+          09:00               ──────── work starts
+          09:00-09:30  0:30   ··       free
+ outlook  09:30-09:45  0:15   █        Morning standup
+          09:45-12:00  2:15   ········ free
+ travel   12:00-13:00  1:00   ████     → office
+ reportin 13:00-14:00  1:00   ████     NEXT Draft the quarterly summary
+ outlook  13:00-14:00  1:00 ╰ ████     All-hands
+ outlook  14:00-15:30  1:30   ██████   Project review
+          15:30-16:30  1:00   ····     free
+ travel   16:30-17:30  1:00   ████     → home
+          17:30               ──────── work ends
+ family   19:00-20:30  1:30   ██████   Dinner with the family
+
+ reportin ?            6:00   ████████ NEXT Rewrite the annual report
+ reportin ? !                          NEXT Prepare the board pack
 
 Alongside  happening, but not yours
- 18:00 ┈               2:00 club       Kids' basketball
+ club     18:00-20:00  2:00   ████████ Kids' basketball
 #+end_example
 
-The gutter is drawn to scale, so a three-hour gap looks like one; its glyph
-and colour say what sort of block it is, which is why no column repeats that.
-Journeys appear where they fall, usually answering "where did the afternoon
-go". Below the day: =?= is promised but has no time yet, =!= is due today and
-takes none, =✗= is booked over something else.
+Columns run category, span, effort, flag, gutter, heading — the order Org's
+own agenda puts them in, so a day read here and a day read there scan the
+same way.
+
+The gutter is drawn to scale, in the colours the bar above uses for the same
+things. A journey appears where it falls, usually answering "where did the
+afternoon go" — and lands as late as it can without running over anything, so
+a workable day is not reported as an impossible one. The gutter saturates at
+two hours, roughly where a piece of work stops being one piece; past that the
+number carries it.
+
+Work with no time yet has =?= where the span would be, and still draws a
+gutter: how much of a day it wants is the reason to place it at all. The key
+names only the marks the day actually contains.
+
+** A note on the block characters
+
+Everything is drawn in full blocks and told apart by colour. Shading it with
+=▓ ▒ ░= would be the obvious choice and is the wrong one: in several monospace
+fonts those sit on a different box from =█= — in PlemolJP, =▓= is 74 units
+high and 55 left of it on a 1000 em, and narrower besides — so every seam
+between them visibly steps.
+
+The part-width blocks =▏▎▍▌▋▊▉= are kept for what they are actually for: the
+last cell of a run, where the duration does not fill a whole one. They share
+the full block's box exactly, and nothing follows them to be pushed out of
+line.
 
 * Not everything wants all of you
 
@@ -207,16 +234,35 @@ time, some of it is spent getting somewhere, and the hours that belong to
 neither are not absent — they are private time that happens to be unclaimed.
 
 #+begin_example
-Work 8:30 · spare 1:15 · ends 16:45 · surge 1:00 (n=12) · est ×1.4
-█ booked 3:45  ▓ promised 2:30  ▒ surge 1:00  ░ spare 1:15
-████████████████████▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒░░░░
-Grey 6:30 · borrowed 1:00
+Work 8:30 · 1:15 left to promise · ends 16:45 · surge from 12 days · est ×1.4
+Work  8:30 = █booked 2:45 + █travel 1:00 + █promised 2:30 + █surge 1:00 + █spare 1:15
+             ████████████████████████████████████████
+Off   7:00 = █private 1:30 + █unclaimed 5:30
+             ██████████████████████████████
 #+end_example
 
-The whole bar is the work span, so meetings and journeys appear in it rather
-than being quietly deducted first: "where did the day go" and "what is left"
-are answered by the same picture. Work that lands outside the span is not
-absorbed silently — it is *borrowed* from private time, and says so.
+Two bars, written as the sums they are, so the parts can be checked against
+the whole without adding them up and hoping. They share one scale: an hour is
+the same length in both, which is what lets a working day be set against the
+evening it leaves behind.
+
+| Segment    | What it is                                          |
+|------------+-----------------------------------------------------|
+| =booked=   | meetings and work already at a time                 |
+| =travel=   | getting to and from them                            |
+| =private=  | life that falls inside working hours                |
+| =promised= | effort accepted without a time yet                  |
+| =surge=    | the reserve, for work that has not arrived          |
+| =spare=    | the span less all five — what may still be promised |
+
+The =Off= bar accounts for the rest of the waking day: =private= for
+commitments outside working hours, =unclaimed= for the hours nothing has
+claimed. Work that lands out there is not absorbed silently — it appears as
+=borrowed=, and says so.
+
+An overcommitted day is drawn past the width with =┃= where the span actually
+ended, rather than being scaled back until it fits. The one day that must not
+look workable is the one that is not.
 
 "I leave at 17:30" is therefore not the end of a window. It is that the evening
 is already spoken for.

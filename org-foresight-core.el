@@ -402,14 +402,16 @@ time is beside the point: a meeting that can only happen at the office costs
 the journey as well as the hour, and a day that hides that cost will keep
 running over.  So travel is booked like any other occupation.
 
-The outward legs arrive just in time.  The journey home ends when the work
-span does -- the commute is inside the working day, not appended to it, so a
-day that ends at 17:30 means being home at 17:30.
+The outward legs arrive just in time -- but not necessarily immediately
+before.  Leaving at the last possible moment is only the best plan when the
+last possible moment is free; where something else already occupies it, the
+journey moves earlier into whatever gap will take it, which is what a person
+does.  Only when no gap will take it at all is the day genuinely impossible,
+and that is left to be reported as a clash rather than smoothed over.
 
-A journey is not shortened to fit around whatever else was in the diary.  If
-it runs over something already booked then the day genuinely cannot be done
-as written, and that is reported as a clash rather than quietly smoothed
-over -- moving the commute would only hide the problem."
+The journey home ends when the work span does -- the commute is inside the
+working day, not appended to it, so a day that ends at 17:30 means being home
+at 17:30."
   (let* ((work (org-foresight-workday-window day))
          (placed (seq-filter (lambda (e)
                                (and (plist-get e :start)
@@ -419,34 +421,78 @@ over -- moving the commute would only hide the problem."
                                     (not (eq (plist-get e :attention)
                                              'informational))))
                              ledger))
+         (taken (seq-keep (lambda (e)
+                            (and (plist-get e :start)
+                                 (cons (plist-get e :start) (plist-get e :end))))
+                          ledger))
          (here org-foresight-home-place)
+         ;; When you become free to set off.  You cannot leave for the
+         ;; afternoon's client while still sitting in the morning's meeting,
+         ;; and without this the backward search happily puts the second
+         ;; journey before the first.
+         (since (and work (car work)))
          out)
     (dolist (e placed)
       (let ((there (plist-get e :place)))
         (unless (eq there here)
           (let ((mins (org-foresight--travel-minutes here there)))
             (when (> mins 0)
-              (push (list :kind 'travel
-                          :title (format "→ %s" there)
-                          :marker (plist-get e :marker)
-                          :effort (float mins)
-                          :start (time-subtract (plist-get e :start) (* 60 mins))
-                          :end (plist-get e :start)
-                          :place there :location nil :category nil)
-                    out)))
-          (setq here there))))
+              (let ((leg (org-foresight--travel-slot
+                          (plist-get e :start) mins taken since)))
+                (push (list :kind 'travel
+                            :title (format "→ %s" there)
+                            :marker (plist-get e :marker)
+                            :effort (float mins)
+                            :start (car leg) :end (cdr leg)
+                            :place there :location nil :category nil)
+                      out)
+                (push leg taken))))
+          (setq here there))
+        (setq since (if since
+                        (org-foresight--max-time since (plist-get e :end))
+                      (plist-get e :end)))))
     (when (and work (not (eq here org-foresight-home-place)))
       (let ((mins (org-foresight--travel-minutes here org-foresight-home-place)))
         (when (> mins 0)
-          (push (list :kind 'travel
-                      :title (format "→ %s" org-foresight-home-place)
-                      :marker nil
-                      :effort (float mins)
-                      :start (time-subtract (cdr work) (* 60 mins))
-                      :end (cdr work)
-                      :place org-foresight-home-place :location nil :category nil)
-                out))))
+          (let ((leg (org-foresight--travel-slot
+                      (cdr work) mins taken since)))
+            (push (list :kind 'travel
+                        :title (format "→ %s" org-foresight-home-place)
+                        :marker nil
+                        :effort (float mins)
+                        :start (car leg) :end (cdr leg)
+                        :place org-foresight-home-place
+                        :location nil :category nil)
+                  out)))))
     (nreverse out)))
+
+(defun org-foresight--travel-slot (arrive mins taken earliest)
+  "Return (START . END) for a MINS journey that has to be finished by ARRIVE.
+
+The latest slot that does not run over anything in TAKEN, searched backwards
+from ARRIVE and not before EARLIEST.  Leaving at the last moment is only
+right when the last moment is free; otherwise a person goes earlier, and so
+does this.  When nothing fits, the last-moment slot is returned anyway -- a
+day where the journey cannot be made is a fact about the day, and hiding it
+by inventing a slot would be worse than showing the clash."
+  (let* ((secs (* 60 mins))
+         (latest (cons (time-subtract arrive secs) arrive))
+         (busy (org-foresight--intervals-normalize taken))
+         (end arrive)
+         (found nil))
+    (while (and (not found) end
+                (or (null earliest)
+                    (not (time-less-p (time-subtract end secs) earliest))))
+      (let* ((start (time-subtract end secs))
+             (hit (seq-find (lambda (iv)
+                              (and (time-less-p start (cdr iv))
+                                   (time-less-p (car iv) end)))
+                            busy)))
+        (if hit
+            ;; Slide to finish exactly when the obstruction begins.
+            (setq end (car hit))
+          (setq found (cons start end)))))
+    (or found latest)))
 
 ;;;; Attention
 ;; Occupying time and demanding all of it are not the same thing, and treating
@@ -868,8 +914,8 @@ any total taken over them is guaranteed to add up to the day."
         ;; What gets trimmed away is not lost -- the grid recovers it from the
         ;; ledger, because two things booked over each other is a day that
         ;; cannot happen and must not be quietly tidied into one that can.
-        (let ((s (org-foresight--max-time s cursor)))
-          (when (time-less-p s n)
+        (let ((trimmed (org-foresight--max-time s cursor)))
+          (when (time-less-p trimmed n)
             (setq out (nconc out (list (append
                                        ;; Only work can be borrowed; private
                                        ;; time outside the span is just life.
@@ -877,8 +923,17 @@ any total taken over them is guaranteed to add up to the day."
                                              (and (memq (plist-get occ :kind)
                                                         '(meeting task travel))
                                                   (not (org-foresight--within-p
-                                                        s n work))))
-                                       (plist-put (copy-sequence occ) :start s)))))
+                                                        trimmed n work)))
+                                             ;; A band cut short to keep the
+                                             ;; day a partition still needs to
+                                             ;; say so: an hour's journey shown
+                                             ;; as fifteen minutes is a day
+                                             ;; that reads as workable and is
+                                             ;; not.
+                                             :trimmed (time-less-p s trimmed)
+                                             :full-start s)
+                                       (plist-put (copy-sequence occ)
+                                                  :start trimmed)))))
             (setq cursor n)))))
     (when (time-less-p cursor (cdr awake))
       (setq out (nconc out (org-foresight--gap-bands cursor (cdr awake) work))))
@@ -1187,21 +1242,33 @@ day that has already gone."
 (defun org-foresight-capacity (day &optional scan now)
   "Return a plist describing how much of DAY may still be promised.
 
-  :window     the work span, or nil on a day that has none
-  :span-min   the whole span in minutes -- what every part below adds up to
-  :booked-min meetings, travel and work already placed at a time
-  :free       stretches nothing has claimed yet, from NOW onwards
-  :free-min   minutes in those stretches
+Within the work span, these divide it exactly:
+
+  :span-min   the whole span in minutes
+  :booked-min meetings and work already placed at a time
+  :travel-min getting to and from them
+  :private-min-in-span  life that happens to fall in working hours
   :committed-min  effort promised for DAY but not placed at a time
   :surge-min  reserve held back for work that has not arrived
-  :headroom-min   what is left after both -- negative means overcommitted
-  :finish     when the remaining commitment runs out, or nil if it does not fit
-  :borrowed-min   work that fell outside the span, taken from private time
-  :grey-min   waking hours that are neither work nor a private commitment
+  :spare-min  what survives all five -- negative means overcommitted
 
-`:span-min' and `:booked-min' cover the whole span rather than only what is
-left of it, so a bar drawn from them shows the day that was planned; the
-other figures answer what can still be promised from NOW.
+Outside it, these divide the rest of the waking day:
+
+  :off-min        the waking day less the work span
+  :private-min    commitments that are life rather than work
+  :borrowed-min   work that fell outside the span, taken from private time
+  :unclaimed-min  waking hours nothing has claimed at all
+  :grey-min       an alias of `:unclaimed-min'
+
+And what is left of today, as opposed to what the day was shaped like:
+
+  :free       stretches nothing has claimed yet, from NOW onwards
+  :free-min   minutes in those stretches
+  :headroom-min   `:free-min' less what is promised and reserved
+  :finish     when the remaining commitment runs out, or nil if it does not fit
+
+The two groups answer different questions and must not be mixed: the first
+describes the day that was planned, the second what can still be promised.
 
 NOW defaults to the current time; passing it makes the whole calculation
 reproducible, which is what lets this be tested at all."
@@ -1209,6 +1276,10 @@ reproducible, which is what lets this be tested at all."
          (scan (or scan (org-foresight-scan 1 day)))
          (idx (org-foresight--day-of day (plist-get scan :from)))
          (window (org-foresight-workday-window day))
+         (span (if window
+                   (/ (float-time (time-subtract (cdr window) (car window)))
+                      60.0)
+                 0.0))
          (free (org-foresight-free-intervals day scan now))
          (free-min (/ (org-foresight--intervals-seconds free) 60.0))
          (committed (if (and (>= idx 0) (< idx (plist-get scan :days)))
@@ -1216,31 +1287,51 @@ reproducible, which is what lets this be tested at all."
                       0.0))
          (surge (org-foresight-surge-minutes))
          (bands (org-foresight-day-blocks day scan))
-         (booked 0.0) (borrowed 0.0) (grey 0.0))
+         (awake (plist-get (org-foresight-day-shape day) :awake))
+         (booked 0.0) (travel 0.0) (private 0.0) (private-in 0.0)
+         (borrowed 0.0) (grey 0.0))
     (dolist (b bands)
       (let ((mins (/ (float-time (time-subtract (plist-get b :end)
                                                 (plist-get b :start)))
                      60.0)))
         (pcase (plist-get b :kind)
           ('grey (setq grey (+ grey mins)))
-          ((or 'meeting 'task 'travel)
+          ;; A private commitment is not work and not empty time; without a
+          ;; figure of its own it vanished from the account entirely, leaving
+          ;; an evening that was spoken for looking like a free one.  One that
+          ;; falls in working hours is counted separately, because it is time
+          ;; the span cannot spend and must not be handed back as spare.
+          ('private
+           (setq private (+ private mins))
+           (when (org-foresight--within-p (plist-get b :start) (plist-get b :end)
+                                          window)
+             (setq private-in (+ private-in mins))))
+          ('travel (if (plist-get b :borrowed)
+                       (setq borrowed (+ borrowed mins))
+                     (setq travel (+ travel mins))))
+          ((or 'meeting 'task)
            (if (plist-get b :borrowed)
                (setq borrowed (+ borrowed mins))
              (setq booked (+ booked mins))))
           (_ nil))))
     (list :window window
-          :span-min (if window
-                        (/ (float-time (time-subtract (cdr window) (car window)))
-                           60.0)
-                      0.0)
+          :span-min span
           :booked-min booked
+          :travel-min travel
+          :private-min-in-span private-in
           :free free
           :free-min free-min
           :committed-min committed
           :surge-min surge
+          :spare-min (- span booked travel private-in committed surge)
           :headroom-min (- free-min committed surge)
           :finish (org-foresight--pour free (+ committed surge))
+          :off-min (- (/ (float-time (time-subtract (cdr awake) (car awake)))
+                         60.0)
+                      span)
+          :private-min (- private private-in)
           :borrowed-min borrowed
+          :unclaimed-min grey
           :grey-min grey)))
 
 (defun org-foresight--pour (intervals minutes)
