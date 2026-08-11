@@ -1,0 +1,115 @@
+#+title: org-foresight
+#+options: toc:nil
+
+Forward-looking capacity, signals and scheduling for Org.
+
+Org records the past well and the future badly. Clock reports, logbooks and
+agenda logs all answer /what happened/; almost nothing answers /what can still
+be promised/. =org-foresight= adds that missing axis.
+
+* What it answers
+
+- *How much can I still take on today?* — available time, minus what is already
+  committed, minus a reserve for work that has not arrived yet.
+- *When will I be done?* — the remaining commitment poured into the gaps between
+  meetings, which gives a finish time rather than a hope.
+- *When could I take this on?* — the same calculation over the next fortnight,
+  which is what turns "I'm busy" into a date.
+
+* The reserve
+
+Interruptions are not controllable, but their volume is remarkably stable — and
+it is measurable. Time spent active at the machine with no clock running is work
+that was done but never planned. =org-foresight= learns the size of that from
+history and subtracts it up front, so a day that gets interrupted still ends
+where it was supposed to.
+
+This requires [[https://activitywatch.net/][ActivityWatch]] running locally. Without it the package still works;
+the reserve simply falls back to a configured constant.
+
+* Signals
+
+Work that exists but has not been planned for. Shown on the plan board.
+
+| Signal              | What it catches                                          |
+|---------------------+----------------------------------------------------------|
+| After hours         | work parked outside the working window, so it is          |
+|                     | subtracted from nothing and warns about nothing           |
+| Meetings, unprepared| an invitation implies preparation and follow-up that no    |
+|                     | one has budgeted for                                      |
+| Unplannable         | a near deadline with no estimate cannot be placed at all  |
+| Gone quiet          | handed-off work whose check-in date has passed            |
+| Kept moving         | repeated reschedules — a decision that is not being made  |
+| Orphaned prep       | preparation for a meeting that has been cancelled         |
+
+=M-x org-foresight-prepare-meetings= turns the second of these into real
+tasks, filed either side of the meeting. It marks each meeting it handles, so
+re-running creates nothing, and each generated task points back at its
+meeting, which is what makes the orphan signal possible later.
+
+* Placement
+
+=M-x org-foresight-plan-fill= proposes times for work that has been accepted
+but never given a place to happen — unscheduled tasks, and tasks scheduled for
+today with no time on them.
+
+#+begin_example
+free 5:45 · surge 1:00 · budget 4:45
+
+  09:00–09:30   0:30  Prepare the board pack  [no estimate]
+  09:45–11:45   2:00  Draft next quarter's objectives
+  11:50–12:05   0:15  Chase the invoice
+  ...
+  1:30  Review the migration plan       no budget left
+#+end_example
+
+The reserve comes out before anything is placed, so what it proposes is a day
+that survives an ordinary number of interruptions rather than one that only
+works if nothing happens. Nearest deadline goes first; among equals, the
+shortest job, which clears the most open loops per hour.
+
+Two things it will not do: split a task across a meeting, and write anything
+without being asked. Proposals open in a review buffer — =d= drops one,
+=C-c C-c= writes the rest — and whatever did not fit is listed with the reason
+rather than quietly dropped.
+
+* Trying it without real data
+
+#+begin_src
+M-x org-foresight-demo-mode
+#+end_src
+
+Generates a week's worth of tasks, meetings, clock history and one example of
+every signal, points the agenda at it, and puts everything back when switched
+off. The data is written relative to today rather than stored with fixed
+dates, so it describes the same situation whenever it is generated —
+=M-x org-foresight-demo-regenerate= is also the way back to a clean slate
+after experimenting.
+
+Real files are never touched: fabricated clock entries would otherwise enter
+every report and every learned average, with no undo.
+
+* Layout
+
+| File                       | Role                                        |
+|----------------------------+---------------------------------------------|
+| =org-foresight-core.el=    | the model — intervals, clock, capacity      |
+| =org-foresight-observe.el= | ActivityWatch client (optional at runtime)  |
+| =org-foresight-report.el=  | rendering into agenda buffers               |
+| =org-foresight-plan.el=    | signals and placement (the only writer)     |
+| =org-foresight-demo.el=    | generated data to develop against           |
+
+* Status
+
+Early development. The interfaces are not stable yet.
+
+* Tests
+
+#+begin_src sh
+emacs --batch -Q -L . -l test/org-foresight-test.el -f ert-run-tests-batch-and-exit
+emacs --batch -Q -L . -f batch-byte-compile *.el
+#+end_src
+
+* License
+
+GPL-3.0-or-later.
