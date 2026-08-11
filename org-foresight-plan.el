@@ -258,7 +258,16 @@ than asking for one."
                                  org-foresight-meeting-follow))
                         meetings))
                 ;; (f) Work already parked outside the hours being defended.
+                ;; Excluded: private commitments, because dinner at seven is
+                ;; not work that escaped the day; and anything belonging to
+                ;; somebody else, because a child's fixture is not overtime.
+                ;; A board that says otherwise is telling its reader off for
+                ;; having an evening.
                 (when-let ((occ (and stamps
+                                     (not (member cat
+                                                  org-foresight-private-categories))
+                                     (eq (org-foresight--entry-attention cat)
+                                         'blocking)
                                      (org-foresight--after-hours
                                       stamps now horizon))))
                   (push (org-foresight--finding
@@ -364,6 +373,10 @@ harder at it will help.  Worth saying before anything else on the board."
       (dolist (other ledger)
         (when (and (not (eq other tb))
                    (memq (plist-get other :kind) '(meeting task))
+                   ;; A call you only have to hear can be heard on the way,
+                   ;; and somebody else's fixture was never yours to attend.
+                   ;; Neither is a day that cannot happen.
+                   (eq (or (plist-get other :attention) 'blocking) 'blocking)
                    (plist-get other :start)
                    (time-less-p (plist-get tb :start) (plist-get other :end))
                    (time-less-p (plist-get other :start) (plist-get tb :end)))
@@ -459,6 +472,15 @@ is already booked.  A non-working day reports (0 . 0)."
                   (cons (+ committed surge) (/ free 60.0)))))))
     out))
 
+(defcustom org-foresight-load-rows 5
+  "How many working days the forward-load table shows.
+
+Enough to answer \"then when?\", and no more.  A fortnight of rows is a
+fortnight of scrolling for a question that is nearly always settled by the
+first day with room in it."
+  :type 'integer
+  :group 'org-foresight)
+
 (defun org-foresight-report-load (&optional days scan now)
   "Return the forward-load table: which of the coming days can still take work.
 This is the block that turns \"I'm busy\" into a date."
@@ -472,7 +494,7 @@ This is the block that turns \"I'm busy\" into a date."
              (free (cdr (aref load i))))
         (when (> free 0)
           (push (list day promised free) rows))))
-    (setq rows (nreverse rows))
+    (setq rows (seq-take (nreverse rows) org-foresight-load-rows))
     (if (null rows)
         (propertize "(no working days in the horizon)" 'face 'org-table)
       (propertize
@@ -510,31 +532,48 @@ This is the block that turns \"I'm busy\" into a date."
           (mapconcat
            (lambda (f)
              ;; 2 + 40 + 2 + note, budgeted so the longest note a signal can
-             ;; produce still lands inside 80 columns.
-             (format "  %s  %s"
-                     (truncate-string-to-width
-                      (replace-regexp-in-string
-                       "[\n\r]" " " (or (plist-get f :title) "?"))
-                      40 0 ?\s)
-                     (truncate-string-to-width
-                      (propertize (plist-get f :note) 'face 'shadow) 36)))
+             ;; produce still lands inside 80 columns.  The row carries the
+             ;; entry's marker, which is what lets it be fixed from here
+             ;; rather than merely reported.
+             (org-foresight-report--actionable
+              (format "  %s  %s"
+                      (truncate-string-to-width
+                       (replace-regexp-in-string
+                        "[\n\r]" " " (or (plist-get f :title) "?"))
+                       40 0 ?\s)
+                      (truncate-string-to-width
+                       (propertize (plist-get f :note) 'face 'shadow) 36))
+              (plist-get f :marker)))
            (cdr group) "\n")))
        signals "\n\n"))))
 
 (defun org-foresight-plan-report ()
-  "Return the plan board: what is coming, and what has not been planned for."
-  (concat "\n"
+  "Return the plan board's body: today, where else work could go, and what
+has not been planned for at all.
+
+The order follows how the day is actually adjusted.  Read the verdict; if it
+is over, look at today and move something out; check the load to see which
+day can take it; then work down the signals for anything with no date at
+all.  Nothing between those steps that is not part of them."
+  (concat (org-foresight-report--badge "Today" "where the hours go")
+          "\n"
+          (org-foresight-report-capacity)
+          "\n\n"
           (org-foresight-report--badge "Load" "when I could take this on")
           "\n"
           (org-foresight-report-load)
           "\n\n"
-          (org-foresight-report--badge "Signals" "work that exists but is not planned")
+          (org-foresight-report--badge "Signals"
+                                       "work that exists but is not planned")
           "\n"
           (org-foresight-report-signals)
           "\n"))
 
 (add-to-list 'org-foresight-report-renderers
-             '(plan . org-foresight-plan-report))
+             '(plan :body org-foresight-plan-report :place top))
+
+(add-hook 'org-foresight-report-invalidate-functions
+          #'org-foresight--invalidate-signals)
 
 (defun org-foresight-plan--verdict-line ()
   "Return a one-line summary of outstanding signals, or nil when there are none.
@@ -542,34 +581,87 @@ This is the block that turns \"I'm busy\" into a date."
 The daily agenda otherwise gives no hint that the board has anything on it,
 and a signal nobody is prompted to look at is not really being caught.  The
 key is resolved rather than written down, so it stays right whatever the
-command has been bound to."
-  (let ((n (apply #'+ (mapcar (lambda (g) (length (cdr g)))
-                              (org-foresight-signals)))))
-    (when (> n 0)
-      (format "%d signal%s unplanned · %s"
-              n (if (= n 1) "" "s")
-              (substitute-command-keys "\\[org-foresight-plan-board]")))))
+command has been bound to.
+
+Suppressed on the board itself, where the signals are listed in full a few
+lines below: pointing at what is already on screen only costs a line."
+  (unless (eq org-foresight-report-style 'plan)
+    (let ((n (apply #'+ (mapcar (lambda (g) (length (cdr g)))
+                                (org-foresight-signals)))))
+      (when (> n 0)
+        (format "%d signal%s unplanned · %s"
+                n (if (= n 1) "" "s")
+                (substitute-command-keys "\\[org-foresight-plan-board]"))))))
 
 (add-to-list 'org-foresight-verdict-extras #'org-foresight-plan--verdict-line)
 
+(defconst org-foresight-plan-buffer "*Org Foresight Plan*"
+  "Name of the plan board's buffer.")
+
+(define-derived-mode org-foresight-plan-mode org-agenda-mode "Foresight"
+  "Major mode for the plan board.
+
+Derived from `org-agenda-mode' rather than merely resembling it, so that
+every command the agenda already provides -- \\`s' to schedule, \\`e' to
+estimate, \\`t' to change state, \\`RET' to visit -- works on these rows
+without being reimplemented.  What the board adds is the arrangement: the
+day drawn as a grid, where else work could go, and what has no date at all,
+in the order those questions are actually asked."
+  (setq-local org-agenda-type 'agenda)
+  (setq-local org-foresight-report-style 'plan)
+  (setq-local org-agenda-redo-command '(org-foresight-plan-board))
+  (setq-local truncate-lines t))
+
 ;;;###autoload
-(defun org-foresight-plan-board ()
-  "Open the plan board: capacity, forward load and unplanned work.
+(defun org-foresight-plan-board (&optional _match)
+  "Open the plan board: what today holds, where else work could go, and what
+has not been planned for.
+
 The morning counterpart to a review -- it looks at what is arriving rather
-than at what has been done."
+than at what has been done.
+
+MATCH is accepted and ignored so that this can be named directly in
+`org-agenda-custom-commands', which calls such a function with the entry's
+match string."
   (interactive)
-  (let ((org-foresight-report-style 'plan)
-        (org-agenda-custom-commands
-         '(("__foresight-plan" "Plan"
-            ((agenda "" ((org-agenda-overriding-header "Today and tomorrow")
-                         (org-agenda-span 2)
-                         (org-agenda-start-day "+0d")
-                         (org-agenda-start-on-weekday nil)
-                         (org-agenda-start-with-log-mode nil)
-                         (org-super-agenda-groups nil))))
-            ((org-foresight-report-style 'plan)
-             (org-agenda-compact-blocks nil))))))
-    (org-agenda nil "__foresight-plan")))
+  (let ((buf (get-buffer-create org-foresight-plan-buffer)))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t)
+            (line (line-number-at-pos)))
+        (erase-buffer)
+        (unless (derived-mode-p 'org-foresight-plan-mode)
+          (org-foresight-plan-mode))
+        (insert (org-foresight-report--badge
+                 "Capacity" "what today can still take")
+                "\n"
+                (or (org-foresight-report--guarded
+                     #'org-foresight-report-capacity-line)
+                    "(not a working day)")
+                "\n\n"
+                (org-foresight-report--guarded #'org-foresight-plan-report))
+        ;; Whole-buffer property so a command run anywhere -- including on a
+        ;; blank line between blocks -- still finds an agenda to act in.
+        (put-text-property (point-min) (point-max) 'org-agenda-type 'agenda)
+        (setq buffer-read-only t)
+        ;; Refreshing should not throw the reader back to the top of a board
+        ;; they were halfway down.
+        (goto-char (point-min))
+        (forward-line (1- line))))
+    (pop-to-buffer buf)))
+
+(defun org-foresight-plan--refresh-board (&rest _)
+  "Redraw the plan board after an edit made from it."
+  (when (derived-mode-p 'org-foresight-plan-mode)
+    (org-foresight--invalidate-signals)
+    (org-foresight-plan-board)))
+
+(dolist (cmd '(org-agenda-schedule
+               org-agenda-deadline
+               org-agenda-todo
+               org-agenda-set-effort
+               org-agenda-set-tags
+               org-agenda-priority))
+  (advice-add cmd :after #'org-foresight-plan--refresh-board))
 
 ;;;; Filing new work
 ;; The only writes org-foresight makes.  They go through one function so there

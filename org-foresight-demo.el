@@ -148,7 +148,18 @@ CATEGORY, because that is what the meeting signal keys on."
      ;; swallow the working day either.
      "* Club practice\n:PROPERTIES:\n:UID: demo-club\n"
      ":CATEGORY: club\n:END:\n"
-     (org-foresight-demo--stamp 2) "\n")))
+     (org-foresight-demo--stamp 2) "\n\n"
+
+     ;; Somebody else's fixture: it says when the house is empty and takes
+     ;; none of the day.
+     "* Kids' basketball\n:PROPERTIES:\n:UID: demo-basketball\n"
+     ":CATEGORY: club\n:LOCATION: 体育館\n:END:\n"
+     (org-foresight-demo--stamp 0 "18:00" "20:00") "\n\n"
+
+     ;; An hour of yours, but one that will share itself with the commute.
+     "* All-hands\n:PROPERTIES:\n:UID: demo-allhands\n"
+     ":CATEGORY: outlook\n:ATTENTION: background\n:PLAN_PREP: t\n:END:\n"
+     (org-foresight-demo--stamp 0 "13:00" "14:00") "\n")))
 
 (defun org-foresight-demo--datetree (blocks)
   "Render BLOCKS, an alist of (OFFSET . ENTRIES), as a date tree.

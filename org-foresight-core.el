@@ -412,7 +412,12 @@ as written, and that is reported as a clash rather than quietly smoothed
 over -- moving the commute would only hide the problem."
   (let* ((work (org-foresight-workday-window day))
          (placed (seq-filter (lambda (e)
-                               (and (plist-get e :start) (plist-get e :place)))
+                               (and (plist-get e :start)
+                                    (plist-get e :place)
+                                    ;; Somebody else going somewhere is not a
+                                    ;; journey of yours to make.
+                                    (not (eq (plist-get e :attention)
+                                             'informational))))
                              ledger))
          (here org-foresight-home-place)
          out)
@@ -442,6 +447,53 @@ over -- moving the commute would only hide the problem."
                       :place org-foresight-home-place :location nil :category nil)
                 out))))
     (nreverse out)))
+
+;;;; Attention
+;; Occupying time and demanding all of it are not the same thing, and treating
+;; them as one is what makes a day look impossible when it is merely full.
+;;
+;;   blocking       you must be there, doing that              (the default)
+;;   background     your hour, but it will share -- a call you
+;;                  only have to hear can happen while walking
+;;   informational  not yours at all.  A child's fixture is a
+;;                  fact about the household, not work; it says
+;;                  when the house is empty, and takes nothing
+;;
+;; Capacity was already right about this: busy intervals are unioned, so an
+;; hour spent on two things at once has always counted once.  What was wrong
+;; was the display, which had to drop one of the pair, and the clash signal,
+;; which called every overlap impossible.
+
+(defcustom org-foresight-attention-property "ATTENTION"
+  "Property naming how much of you an entry demands.
+Its value is `blocking', `background' or `informational'; anything else, or
+nothing at all, means `blocking'."
+  :type 'string
+  :group 'org-foresight)
+
+(defcustom org-foresight-background-categories nil
+  "CATEGORY values whose entries take your time but will share it."
+  :type '(repeat string)
+  :group 'org-foresight)
+
+(defcustom org-foresight-informational-categories nil
+  "CATEGORY values whose entries are somebody else's commitment.
+They are shown for what they say about the day and take none of it."
+  :type '(repeat string)
+  :group 'org-foresight)
+
+(defun org-foresight--entry-attention (&optional category)
+  "Return how much of you the entry at point demands.
+An explicit property wins over the category default, so \"this one I only
+have to listen to\" can be said about a single meeting."
+  (let ((explicit (org-entry-get (point) org-foresight-attention-property)))
+    (cond
+     ((member explicit '("background" "listen")) 'background)
+     ((member explicit '("informational" "info" "context")) 'informational)
+     ((equal explicit "blocking") 'blocking)
+     ((member category org-foresight-informational-categories) 'informational)
+     ((member category org-foresight-background-categories) 'background)
+     (t 'blocking))))
 
 (defun org-foresight--entry-place ()
   "Return the place of the entry at point, or nil when it names none.
@@ -512,6 +564,7 @@ a done-type keyword such as DELEG drops out too."
                        (location (org-entry-get (point) "LOCATION"))
                        (place (org-foresight--entry-place))
                        (category (org-entry-get (point) "CATEGORY" t))
+                       (attention (org-foresight--entry-attention category))
                        ;; day index -> the kind of claim seen there, so one
                        ;; entry cannot be charged twice for the same day
                        (seen (make-hash-table :test 'eql)))
@@ -527,9 +580,14 @@ a done-type keyword such as DELEG drops out too."
                                                    (* 60 (if todo
                                                              effort
                                                            org-foresight-default-event-duration))))))
-                              (push (cons (car occ) end) (aref busy idx))
+                              ;; Somebody else's commitment takes none of your
+                              ;; day, so it never reaches `busy'.  It is still
+                              ;; worth knowing: it is why the house is empty.
+                              (unless (eq attention 'informational)
+                                (push (cons (car occ) end) (aref busy idx)))
                               (push (list :kind (if todo 'task 'meeting)
                                           :title title :marker marker
+                                          :attention attention
                                           :effort (/ (float-time
                                                       (time-subtract end (car occ)))
                                                      60.0)
@@ -537,7 +595,8 @@ a done-type keyword such as DELEG drops out too."
                                           :place place :location location
                                           :category category)
                                     (aref ledger idx))
-                              (puthash idx 'timed seen)))
+                              (unless (eq attention 'informational)
+                                (puthash idx 'timed seen))))
                            (todo
                             (unless (gethash idx seen)
                               (puthash idx 'untimed seen)))
@@ -765,10 +824,12 @@ any total taken over them is guaranteed to add up to the day."
          (ledger (and (>= idx 0) (< idx (plist-get scan :days))
                       (aref (plist-get scan :ledger) idx)))
          occupations out (cursor (car awake)))
-    ;; Timed entries, clipped to the waking hours and de-overlapped by
-    ;; preferring whichever started first.
+    ;; Timed entries, clipped to the waking hours.  Somebody else's commitment
+    ;; is left out: it takes none of the day, so giving it a band would make it
+    ;; displace work that is actually happening.
     (dolist (e ledger)
-      (when (plist-get e :start)
+      (when (and (plist-get e :start)
+                 (not (eq (plist-get e :attention) 'informational)))
         (let ((s (org-foresight--max-time (plist-get e :start) (car awake)))
               (n (org-foresight--min-time (plist-get e :end) (cdr awake))))
           (when (time-less-p s n)
@@ -779,12 +840,24 @@ any total taken over them is guaranteed to add up to the day."
                         :start s :end n
                         :title (plist-get e :title)
                         :marker (plist-get e :marker)
+                        :attention (or (plist-get e :attention) 'blocking)
+                        :category (plist-get e :category)
                         :place (plist-get e :place))
                   occupations)))))
+    ;; Earliest first; where two start together the one that will not share
+    ;; goes first, so the band shows what actually has to happen then and the
+    ;; obliging one is the one reported alongside it.
     (setq occupations
           (sort (nreverse occupations)
-                (lambda (a b) (time-less-p (plist-get a :start)
-                                           (plist-get b :start)))))
+                ;; `time-equal-p', not `equal': a derived start comes out of
+                ;; `time-subtract' and need not share a representation with
+                ;; one that came from `encode-time', so `equal' would call two
+                ;; identical instants different and leave the order to chance.
+                (lambda (a b)
+                  (if (time-equal-p (plist-get a :start) (plist-get b :start))
+                      (and (eq (plist-get a :attention) 'blocking)
+                           (not (eq (plist-get b :attention) 'blocking)))
+                    (time-less-p (plist-get a :start) (plist-get b :start))))))
     (dolist (occ occupations)
       (let ((s (plist-get occ :start))
             (n (plist-get occ :end)))
@@ -792,6 +865,9 @@ any total taken over them is guaranteed to add up to the day."
           (setq out (nconc out (org-foresight--gap-bands cursor s work))))
         ;; Overlapping entries: keep the day a partition by trimming the
         ;; later one rather than emitting two bands over the same minutes.
+        ;; What gets trimmed away is not lost -- the grid recovers it from the
+        ;; ledger, because two things booked over each other is a day that
+        ;; cannot happen and must not be quietly tidied into one that can.
         (let ((s (org-foresight--max-time s cursor)))
           (when (time-less-p s n)
             (setq out (nconc out (list (append
