@@ -16,6 +16,190 @@ be promised/. =org-foresight= adds that missing axis.
 - *When could I take this on?* — the same calculation over the next fortnight,
   which is what turns "I'm busy" into a date.
 
+* First use
+
+** See it working before configuring anything
+
+#+begin_src
+M-x org-foresight-demo-mode
+#+end_src
+
+Generates a week of tasks, meetings, travel, clock history and one example of
+every signal; points the agenda at it; and puts everything back when switched
+off. Real files are never touched. Then =C-c a a= for the day, =C-c a p= for
+the plan board.
+
+=M-x org-foresight-demo-regenerate= returns the demo to a clean slate after
+experimenting.
+
+** Where the settings go
+
+In an =init.el= or a module, not =custom.el=. Every value below says something
+about how you work, and the reasoning is worth keeping next to it — Customize
+records the value and loses the reason.
+
+#+begin_src emacs-lisp
+(use-package org-foresight
+  :after org-agenda
+  :config
+  ;; The shape of an ordinary day.  A declaration, not an observation: the
+  ;; end time is the hour you intend to leave, so that there is something to
+  ;; defend.  M-x org-foresight-shape-day declares an unusual one.
+  (setq org-foresight-awake         '("06:30" . "23:00")
+        org-foresight-workday-start "09:00"
+        org-foresight-workday-end   "17:30"
+        org-foresight-workdays      '(1 2 3 4 5))
+
+  ;; Where entries happen, and what moving between them costs.  Without this
+  ;; no journey is ever counted and every office meeting looks an hour long.
+  (setq org-foresight-places '((office . "HQ\\|Meeting Room")
+                               (client . "Client\\|Site"))
+        org-foresight-home-place 'home
+        org-foresight-travel-matrix '(((home . office) . 60)
+                                      ((office . client) . 45))
+        org-foresight-travel-default 45)
+
+  ;; Categories that are life rather than work.  They fill the day but never
+  ;; count against capacity, and are not reported as work in the evening.
+  (setq org-foresight-private-categories '("family" "personal"))
+
+  ;; Meetings from this category imply preparation and follow-up.
+  (setq org-foresight-meeting-categories '("work"))
+
+  ;; Where generated tasks and per-day declarations are written.
+  (setq org-foresight-task-file (expand-file-name "journal.org" org-directory)
+        org-foresight-day-file  (expand-file-name "journal.org" org-directory))
+
+  (add-hook 'org-agenda-finalize-hook #'org-foresight-report-render))
+#+end_src
+
+=M-x org-foresight-diagnose= then reports what is set, what is having no
+effect, and what to do next. Worth running once after the above and again
+whenever a figure looks wrong.
+
+** Trying it on invented data of your own
+
+A file like this exercises the whole model. Add it to =org-agenda-files=:
+
+#+begin_src org
+,* Project review
+:PROPERTIES:
+:LOCATION: HQ Meeting Room 3
+:CATEGORY: work
+:END:
+<2026-08-12 Wed 14:00-15:30>
+
+,* Remote sync
+:PROPERTIES:
+:LOCATION: https://example.com/call/123
+:CATEGORY: work
+:END:
+<2026-08-12 Wed 10:00-10:30>
+
+,* Dinner with the family
+:PROPERTIES:
+:CATEGORY: family
+:END:
+<2026-08-12 Wed 19:00-20:30>
+
+,* NEXT Write the vendor comparison
+SCHEDULED: <2026-08-12 Wed>
+:PROPERTIES:
+:EFFORT:   2:00
+:CATEGORY: procurement
+:END:
+
+,* NEXT Prepare the board pack
+DEADLINE: <2026-08-14 Fri>
+#+end_src
+
+What to look for: the office meeting costs its journey either side, the remote
+one costs nothing to get to, dinner occupies the evening without being work,
+the vendor comparison is promised but unplaced, and the board pack is reported
+as unplannable because it has no estimate.
+
+** Once there is history
+
+Two figures are learned rather than configured, so they need running once and
+then occasionally:
+
+| Command                       | When                | What it corrects              |
+|-------------------------------+---------------------+-------------------------------|
+| =org-foresight-learn-surge= | weekly              | how much of a day interruptions take |
+| =org-foresight-learn-bias=  | monthly             | how far estimates run over    |
+
+** The daily loop
+
+*Morning* — =M-x org-foresight-plan-board=. The day, drawn:
+
+#+begin_example
+Capacity  what today can still take
+Free 1:00 of 8:30 · OVER by 3:45 · will not fit · surge 1:00
+█ booked 3:45  ▓ promised 7:30  ▒ surge 1:00  ░ spare 0:00
+████████████▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓┃▓▓▓▓▓▓▓▒▒▒
+Grey 6:30
+
+Today  where the hours go
+ 09:00 ··              0:30            free
+ 09:30 █               0:15 outlook    Morning standup
+ 09:45 ·············   3:15            free
+ 13:00 ▓▓▓▓            1:00 travel     → office
+       ╰               1:00 outlook    All-hands (listen)
+ 14:00 ██████          1:30 outlook    Project review
+ 15:30 ····            1:00            free
+ 16:30 ▓▓▓▓            1:00 travel     → home
+ 17:30 ─────                           work ends
+ 19:00 ░░░░░░          1:30 family     Dinner with the family
+
+       ? not yet placed   ! due today
+       ?               6:00 reporting  Rewrite the annual report
+       !                due reporting  Prepare the board pack
+
+Alongside  happening, but not yours
+ 18:00 ┈               2:00 club       Kids' basketball
+#+end_example
+
+The gutter is drawn to scale, so a three-hour gap looks like one; its glyph
+and colour say what sort of block it is, which is why no column repeats that.
+Journeys appear where they fall, usually answering "where did the afternoon
+go". Below the day: =?= is promised but has no time yet, =!= is due today and
+takes none, =✗= is booked over something else.
+
+* Not everything wants all of you
+
+Occupying an hour and demanding all of it are different things, and treating
+them as one makes a full day look impossible.
+
+| =:ATTENTION:=   | Costs the hour | Shares it | Example                    |
+|-----------------+----------------+-----------+----------------------------|
+| (unset)         | yes            | no        | a meeting you run          |
+| =background=    | yes            | yes       | a call you only listen to  |
+| =informational= | no             | yes       | a child's fixture          |
+
+A =background= entry keeps its hour but hangs beneath whatever else is
+happening then, so listening on the commute stops being reported as a day
+that cannot happen. An =informational= one takes nothing at all and appears
+under /Alongside/ — a child's practice is not work, but it is exactly what
+decides when the house is empty.
+
+Set it per entry, or by category for things that are always so:
+
+#+begin_src emacs-lisp
+(setq org-foresight-informational-categories '("club"))
+#+end_src
+
+Then work down the board. Every row answers to the agenda's own commands —
+=s= to schedule, =e= to estimate, =t= to change state, =RET= to visit — and
+each edit moves the figures above it straight away:
+
+- *Over?* Move something off today. The load table says which day can take it.
+- *Spare?* Pull something in from the signals.
+
+*During the day* — the first line of =C-c a a=. If =spare= is small, the
+answer to a new request is a date, not a yes.
+
+*Before leaving* — whatever review command you already use.
+
 * The day
 
 A day is not one bar from nine to half five. Work and private life are mixed in
