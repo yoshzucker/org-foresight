@@ -435,36 +435,174 @@ SCHEDULED: <2026-08-10 Mon>
         "* team meeting
 <2026-08-10 Mon 10:00-11:00>
 "
-      (let ((s (org-foresight-report-capacity-line
-                (org-foresight-test--ts 0 0 10) nil
-                (org-foresight-test--ts 6 0 10))))
-        (should (string-match-p "Free" s))
-        (should (string-match-p "surge" s))
-        (should (string-match-p "ends" s))
-        (should-not (string-match-p "\n" s))
-        (should (org-foresight-test--within-80 s))))))
+      (let* ((s (org-foresight-report-capacity-line
+                 (org-foresight-test--ts 0 0 10) nil
+                 (org-foresight-test--ts 6 0 10)))
+             (verdict (car (split-string s "\n"))))
+        (should (string-match-p "Free" verdict))
+        (should (string-match-p "ends" verdict))
+        (should (string-match-p "surge" verdict))
+        ;; the verdict itself stays one line; the bar follows beneath it
+        (should (org-foresight-test--within-80 s))
+        (should (string-match-p "booked" s))))))
 
 (ert-deftest org-foresight-test-report-capacity-table ()
-  "The lower block lists the free stretches with columns that line up.
-It must not repeat the verdict: the number is stated once, at the top."
-  (org-foresight-test--with-window
-    (org-foresight-test--with-org
-        "* team meeting
+  "The lower block lists what the day is spent on, with columns that line up.
+It must not repeat the verdict: each number is stated once."
+  (org-foresight-test--with-day
+      "* team meeting
 <2026-08-10 Mon 10:00-11:00>
+* NEXT reply to procurement
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   0:30
+:END:
 "
-      (let* ((day (org-foresight-test--ts 0 0 10))
-             (s (org-foresight-report-capacity
-                 day nil (org-foresight-test--ts 6 0 10))))
-        (should-not (string-match-p "Free 9:00\\|spare\\|ends" s))
-        (should (org-foresight-test--within-80 s))
-        ;; the meeting splits the day, so both stretches are listed
-        (should (string-match-p "09:00–10:00" s))
-        (should (string-match-p "11:00–17:30" s))
-        ;; every table row must be the same width as its separator
-        (let* ((rows (seq-filter (lambda (l) (string-prefix-p "|" l))
-                                 (split-string (substring-no-properties s) "\n")))
-               (widths (seq-uniq (mapcar #'string-width rows))))
-          (should (= (length widths) 1)))))))
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (s (org-foresight-report-capacity
+               day nil (org-foresight-test--ts 6 0 10))))
+      (should-not (string-match-p "spare\\|ends\\|OVER" s))
+      (should (org-foresight-test--within-80 s))
+      ;; the meeting splits the day, and the remaining stretches are named
+      (should (string-match-p "09:00–10:00" s))
+      (should (string-match-p "11:00–17:30" s))
+      ;; both what is placed and what is merely promised appear
+      (should (string-match-p "team meeting" s))
+      (should (string-match-p "reply to procurement" s))
+      ;; every table row must be the same width as its separator
+      (let* ((rows (seq-filter (lambda (l) (string-prefix-p "|" l))
+                               (split-string (substring-no-properties s) "\n")))
+             (widths (seq-uniq (mapcar #'string-width rows))))
+        (should (= (length widths) 1))))))
+
+(ert-deftest org-foresight-test-bar-is-exactly-its-width ()
+  "Rounding the segments must never change the bar's length."
+  (org-foresight-test--with-window
+    (dolist (cap (list
+                  '(:span-min 510.0 :booked-min 0.0 :committed-min 0.0
+                    :surge-min 60.0 :headroom-min 450.0)
+                  '(:span-min 510.0 :booked-min 137.0 :committed-min 73.0
+                    :surge-min 57.0 :headroom-min 243.0)
+                  ;; overcommitted: scaled to the promises, not the span
+                  '(:span-min 510.0 :booked-min 420.0 :committed-min 240.0
+                    :surge-min 60.0 :headroom-min -210.0)
+                  ;; a day made entirely of meetings
+                  '(:span-min 510.0 :booked-min 510.0 :committed-min 0.0
+                    :surge-min 0.0 :headroom-min 0.0)))
+      (let ((bar (org-foresight-report--bar cap)))
+        (should (= (string-width bar) org-foresight-bar-width))))))
+
+(ert-deftest org-foresight-test-bar-marks-the-overflow ()
+  "An overcommitted day shows where the span ran out instead of clipping."
+  (let ((over '(:span-min 510.0 :booked-min 420.0 :committed-min 240.0
+                :surge-min 60.0 :headroom-min -210.0))
+        (fits '(:span-min 510.0 :booked-min 60.0 :committed-min 60.0
+                :surge-min 60.0 :headroom-min 330.0)))
+    (should (string-match-p "┃" (org-foresight-report--bar over)))
+    (should-not (string-match-p "┃" (org-foresight-report--bar fits)))))
+
+(ert-deftest org-foresight-test-bar-absent-without-a-span ()
+  (should (null (org-foresight-report--bar
+                 '(:span-min 0.0 :booked-min 0.0 :committed-min 0.0
+                   :surge-min 0.0 :headroom-min 0.0)))))
+
+(ert-deftest org-foresight-test-ledger-agrees-with-the-verdict ()
+  "The ledger must add up to the numbers stated above it.
+If the parts and the total ever disagree, the ledger stops being evidence."
+  (org-foresight-test--with-travel
+      "* Project review
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 14:00-15:00>
+* NEXT reply to procurement
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   0:30
+:END:
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (scan (org-foresight-scan 1 day))
+           (cap (org-foresight-capacity day scan (org-foresight-test--ts 6 0 10)))
+           (ledger (aref (plist-get scan :ledger) 0))
+           (booked 0.0) (promised 0.0))
+      (dolist (e ledger)
+        (pcase (plist-get e :kind)
+          ((or 'meeting 'task 'travel)
+           (setq booked (+ booked (plist-get e :effort))))
+          ('promised (setq promised (+ promised (plist-get e :effort))))
+          (_ nil)))
+      (should (= booked (plist-get cap :booked-min)))
+      (should (= promised (plist-get cap :committed-min)))
+      ;; and the bar's own parts fill the span exactly
+      (should (= (+ (plist-get cap :booked-min)
+                    (plist-get cap :committed-min)
+                    (plist-get cap :surge-min)
+                    (plist-get cap :headroom-min))
+                 (plist-get cap :span-min))))))
+
+(ert-deftest org-foresight-test-ledger-rows-carry-a-marker ()
+  "Every row that came from an entry must be able to lead back to it."
+  (org-foresight-test--with-day
+      "* Project review
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (s (org-foresight-report-capacity day nil
+                                             (org-foresight-test--ts 6 0 10)))
+           (pos (string-match "Project review" s)))
+      (should pos)
+      (should (markerp (get-text-property pos 'org-foresight-marker s)))
+      (should (eq (get-text-property pos 'keymap s)
+                  org-foresight-report-ledger-map)))))
+
+(ert-deftest org-foresight-test-ledger-marks-work-outside-the-span ()
+  "Work in the evening is flagged as grey so the borrowing is visible."
+  (org-foresight-test--with-day
+      "* NEXT evening call
+<2026-08-10 Mon 19:00-20:00>
+* NEXT afternoon work
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let ((s (substring-no-properties
+              (org-foresight-report-capacity (org-foresight-test--ts 0 0 10) nil
+                                             (org-foresight-test--ts 6 0 10)))))
+      ;; the kind column carries a star when the work sits outside the span
+      (should (string-match-p "evening call.*task\\*" s))
+      (should-not (string-match-p "afternoon work.*task\\*" s)))))
+
+(ert-deftest org-foresight-test-ledger-within-80 ()
+  "Long multibyte titles must be cut to the column, not widen the table."
+  (org-foresight-test--with-day
+      "* NEXT 非常に長い日本語のタスク名で桁あふれを起こしかねないもの、さらに続く
+<2026-08-10 Mon 14:00-15:00>
+"
+    (should (org-foresight-test--within-80
+             (org-foresight-report-capacity (org-foresight-test--ts 0 0 10) nil
+                                            (org-foresight-test--ts 6 0 10))))))
+
+(ert-deftest org-foresight-test-grey-line ()
+  "Unclaimed private time is reported, and borrowing from it is called out."
+  (org-foresight-test--with-day
+      "* NEXT evening call
+<2026-08-10 Mon 19:00-20:00>
+"
+    (let* ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                        (org-foresight-test--ts 6 0 10)))
+           (line (substring-no-properties
+                  (org-foresight-report--grey-line cap))))
+      (should (string-match-p "Grey" line))
+      (should (string-match-p "borrowed 1:00" line))))
+  ;; a day that stays inside its span borrows nothing
+  (org-foresight-test--with-day
+      "* NEXT afternoon work
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let* ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                        (org-foresight-test--ts 6 0 10)))
+           (line (substring-no-properties
+                  (org-foresight-report--grey-line cap))))
+      (should-not (string-match-p "borrowed" line)))))
 
 (ert-deftest org-foresight-test-report-capacity-non-workday ()
   "A non-working day yields no top line at all, and says so in the block."
@@ -502,8 +640,7 @@ SCHEDULED: <2027-06-01 Tue>
       (let ((s (org-foresight-report-capacity-line
                 (org-foresight-test--ts 0 0 10) nil
                 (org-foresight-test--ts 6 0 10))))
-        (should-not (string-match-p "signal" s))
-        (should-not (string-match-p "\n" s))))))
+        (should-not (string-match-p "signal" s))))))
 
 (ert-deftest org-foresight-test-signals-cache ()
   "The cache must serve repeats, and FORCE must go back to the files."
@@ -544,6 +681,360 @@ SCHEDULED: <2027-06-01 Tue>
   (org-foresight-test--with-window
     (should (= (org-foresight-surge-minutes) 60.0))
     (should (null (org-foresight-surge-samples)))))
+
+;;;; The day as bands
+;; The whole model rests on these partitioning the waking hours exactly.  If
+;; they ever gap or overlap, every total taken over them is quietly wrong.
+
+(defmacro org-foresight-test--with-day (text &rest body)
+  "Run BODY with TEXT as the only agenda file and a fixed default shape."
+  (declare (indent 1))
+  `(org-foresight-test--with-org ,text
+     (let ((org-foresight-awake '("07:00" . "23:00"))
+           (org-foresight-workday-start "09:00")
+           (org-foresight-workday-end "17:30")
+           (org-foresight-workdays '(1 2 3 4 5))
+           (org-foresight-private-categories '("family"))
+           (org-foresight-places '((office . "会議室\\|Office")))
+           (org-foresight-day-file nil)
+           (org-foresight--shape-cache nil))
+       ,@body)))
+
+(defun org-foresight-test--bands (day)
+  "Render DAY's bands as \"KIND HH:MM-HH:MM\" strings."
+  (mapcar (lambda (b)
+            (format "%s %s-%s%s"
+                    (plist-get b :kind)
+                    (format-time-string "%H:%M" (plist-get b :start))
+                    (format-time-string "%H:%M" (plist-get b :end))
+                    (if (plist-get b :borrowed) " borrowed" "")))
+          (org-foresight-day-blocks day)))
+
+(ert-deftest org-foresight-test-bands-partition-the-day ()
+  "Bands must tile the waking hours with no gap and no overlap."
+  (org-foresight-test--with-day
+      "* Project review
+<2026-08-10 Mon 14:00-15:30>
+* NEXT evening call
+<2026-08-10 Mon 19:00-20:00>
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (bands (org-foresight-day-blocks day))
+           (shape (org-foresight-day-shape day)))
+      (should bands)
+      ;; contiguous
+      (let ((cursor (car (plist-get shape :awake))))
+        (dolist (b bands)
+          (should (equal (float-time (plist-get b :start)) (float-time cursor)))
+          (setq cursor (plist-get b :end)))
+        (should (equal (float-time cursor)
+                       (float-time (cdr (plist-get shape :awake))))))
+      ;; and they add up to the awake window
+      (should (= (apply #'+ (mapcar (lambda (b)
+                                      (float-time (time-subtract (plist-get b :end)
+                                                                 (plist-get b :start))))
+                                    bands))
+                 (float-time (time-subtract (cdr (plist-get shape :awake))
+                                            (car (plist-get shape :awake)))))))))
+
+(ert-deftest org-foresight-test-bands-classify ()
+  "Work inside the span is booked; work outside it is borrowed from private."
+  (org-foresight-test--with-day
+      "* Project review
+<2026-08-10 Mon 14:00-15:30>
+* NEXT evening call
+<2026-08-10 Mon 19:00-20:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      (should (equal bands
+                     '("grey 07:00-09:00"
+                       "available 09:00-14:00"
+                       "meeting 14:00-15:30"
+                       "available 15:30-17:30"
+                       "grey 17:30-19:00"
+                       "task 19:00-20:00 borrowed"
+                       "grey 20:00-23:00"))))))
+
+(ert-deftest org-foresight-test-bands-private-is-not-borrowed ()
+  "A private commitment outside the span is just life, not borrowed work."
+  (org-foresight-test--with-day
+      "* dinner with family
+:PROPERTIES:
+:CATEGORY: family
+:END:
+<2026-08-10 Mon 19:00-20:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      (should (member "private 19:00-20:00" bands))
+      (should-not (seq-find (lambda (s) (string-match-p "borrowed" s)) bands)))))
+
+(ert-deftest org-foresight-test-bands-non-working-day ()
+  "With no work span the whole waking day is private time."
+  (org-foresight-test--with-day "* nothing\n"
+    ;; 2026-08-09 is a Sunday
+    (should (equal (org-foresight-test--bands (org-foresight-test--ts 0 0 9))
+                   '("grey 07:00-23:00")))))
+
+(ert-deftest org-foresight-test-bands-overlapping-entries ()
+  "Two entries over the same minutes must not produce two bands for them."
+  (org-foresight-test--with-day
+      "* first
+<2026-08-10 Mon 10:00-12:00>
+* second
+<2026-08-10 Mon 11:00-13:00>
+"
+    (let ((bands (org-foresight-day-blocks (org-foresight-test--ts 0 0 10))))
+      (let ((cursor (car (plist-get (org-foresight-day-shape
+                                     (org-foresight-test--ts 0 0 10))
+                                    :awake))))
+        (dolist (b bands)
+          (should (equal (float-time (plist-get b :start)) (float-time cursor)))
+          (setq cursor (plist-get b :end)))))))
+
+;;;; Day shape
+
+(ert-deftest org-foresight-test-day-shape-defaults ()
+  (org-foresight-test--with-day "* nothing\n"
+    (let ((shape (org-foresight-day-shape (org-foresight-test--ts 0 0 10))))
+      (should (equal (format-time-string "%H:%M" (car (plist-get shape :awake)))
+                     "07:00"))
+      (should (equal (format-time-string "%H:%M" (car (plist-get shape :work)))
+                     "09:00"))
+      (should (equal (format-time-string "%H:%M" (cdr (plist-get shape :work)))
+                     "17:30")))
+    ;; Sunday has no work span at all
+    (should-not (plist-get (org-foresight-day-shape (org-foresight-test--ts 0 0 9))
+                           :work))))
+
+(ert-deftest org-foresight-test-day-shape-honours-the-heading ()
+  "Properties on the day's own heading beat the defaults."
+  (let ((file (make-temp-file "org-foresight-day" nil ".org"
+                              "* 2026\n** 2026-08 August\n*** 2026-08-10 Mon\n:PROPERTIES:\n:WAKE:  06:00\n:SLEEP: 22:00\n:WORK:  10:00-16:00\n:END:\n")))
+    (unwind-protect
+        (let ((org-foresight-day-file file)
+              (org-foresight-awake '("07:00" . "23:00"))
+              (org-foresight-workday-start "09:00")
+              (org-foresight-workday-end "17:30")
+              (org-foresight-workdays '(1 2 3 4 5))
+              (org-foresight--shape-cache nil))
+          (let ((shape (org-foresight-day-shape (org-foresight-test--ts 0 0 10))))
+            (should (equal (format-time-string "%H:%M" (car (plist-get shape :awake)))
+                           "06:00"))
+            (should (equal (format-time-string "%H:%M" (car (plist-get shape :work)))
+                           "10:00"))
+            (should (equal (format-time-string "%H:%M" (cdr (plist-get shape :work)))
+                           "16:00")))
+          ;; a day with no heading falls back
+          (should (equal (format-time-string
+                          "%H:%M" (car (plist-get (org-foresight-day-shape
+                                                   (org-foresight-test--ts 0 0 12))
+                                                  :awake)))
+                         "07:00")))
+      (when (get-file-buffer file)
+        (with-current-buffer (get-file-buffer file) (set-buffer-modified-p nil))
+        (kill-buffer (get-file-buffer file)))
+      (delete-file file))))
+
+(ert-deftest org-foresight-test-day-shape-bedtime-after-midnight ()
+  "A bedtime at or before waking belongs to the next morning, not this one."
+  (let ((org-foresight-awake '("07:00" . "01:00"))
+        (org-foresight-day-file nil)
+        (org-foresight--shape-cache nil))
+    (let* ((shape (org-foresight-day-shape (org-foresight-test--ts 0 0 10)))
+           (awake (plist-get shape :awake)))
+      (should (time-less-p (car awake) (cdr awake)))
+      (should (= (/ (float-time (time-subtract (cdr awake) (car awake))) 3600.0)
+                 18.0)))))
+
+;;;; Places
+
+(ert-deftest org-foresight-test-entry-place ()
+  "Only a place someone wrote down counts; a bare call link is not a place."
+  (org-foresight-test--with-day
+      "* at the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+* on a call
+:PROPERTIES:
+:LOCATION: https://teams.microsoft.com/l/meetup-join/xyz
+:END:
+* explicitly placed
+:PROPERTIES:
+:LOCATION: https://teams.microsoft.com/l/meetup-join/xyz
+:PLACE:    office
+:END:
+* no location at all
+"
+    (let (places)
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (org-with-wide-buffer
+         (org-map-entries
+          (lambda () (push (cons (org-get-heading t t t t)
+                                 (org-foresight--entry-place))
+                           places))
+          nil nil)))
+      (setq places (nreverse places))
+      (should (eq (cdr (assoc "at the office" places)) 'office))
+      (should (null (cdr (assoc "on a call" places))))
+      (should (eq (cdr (assoc "explicitly placed" places)) 'office))
+      (should (null (cdr (assoc "no location at all" places)))))))
+
+;;;; Travel
+;; Getting somewhere is work, so a journey has to be booked like a meeting.
+;; The two things that must never happen: inventing a journey from a video
+;; call, and letting the commute push the end of the day outward.
+
+(defmacro org-foresight-test--with-travel (text &rest body)
+  "Run BODY over TEXT with a home/office/client travel matrix."
+  (declare (indent 1))
+  `(org-foresight-test--with-day ,text
+     (let ((org-foresight-places '((office . "会議室\\|Office")
+                                   (client . "様\\|Client")))
+           (org-foresight-home-place 'home)
+           (org-foresight-travel-matrix '(((home . office) . 60)
+                                          ((office . client) . 30)
+                                          ((client . home) . 90)))
+           (org-foresight-travel-default 30))
+       ,@body)))
+
+(ert-deftest org-foresight-test-travel-out-and-back ()
+  "One office meeting costs the hour plus both journeys."
+  (org-foresight-test--with-travel
+      "* Project review
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      ;; out arrives just in time; home lands exactly when work ends
+      (should (member "travel 13:00-14:00" bands))
+      (should (member "meeting 14:00-15:00" bands))
+      (should (member "travel 16:30-17:30" bands)))))
+
+(ert-deftest org-foresight-test-travel-chains-places ()
+  "home → office → client → home produces three journeys, not two."
+  (org-foresight-test--with-travel
+      "* Morning at the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 10:00-11:00>
+* Site visit
+:PROPERTIES:
+:LOCATION: 顧客様先
+:END:
+<2026-08-10 Mon 13:00-14:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      (should (member "travel 09:00-10:00" bands))   ; home → office, 60
+      (should (member "travel 12:30-13:00" bands))   ; office → client, 30
+      (should (member "travel 16:00-17:30" bands))))) ; client → home, 90
+
+(ert-deftest org-foresight-test-travel-not-invented-by-a-call-link ()
+  "A meeting whose only location is a video link must not move anyone."
+  (org-foresight-test--with-travel
+      "* Remote sync
+:PROPERTIES:
+:LOCATION: https://teams.microsoft.com/l/meetup-join/xyz
+:END:
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      (should-not (seq-find (lambda (b) (string-prefix-p "travel" b)) bands)))))
+
+(ert-deftest org-foresight-test-travel-same-place-twice ()
+  "Two meetings at the same place are one trip out and one back."
+  (org-foresight-test--with-travel
+      "* First
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 10:00-11:00>
+* Second
+:PROPERTIES:
+:LOCATION: 会議室B
+:END:
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let* ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10)))
+           (trips (seq-filter (lambda (b) (string-prefix-p "travel" b)) bands)))
+      (should (= (length trips) 2)))))
+
+(ert-deftest org-foresight-test-travel-eats-capacity ()
+  "The commute has to come out of the day, or the day will run over."
+  (org-foresight-test--with-travel
+      "* Project review
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (morning (org-foresight-test--ts 6 0 10))
+           (cap (org-foresight-capacity day nil morning)))
+      ;; 8:30 of span, minus 1:00 meeting and 2:00 of travel
+      (should (= (plist-get cap :free-min) (- 510 60 120))))))
+
+(ert-deftest org-foresight-test-travel-outside-the-span-is-borrowed ()
+  "An early start to reach a 09:30 meeting is taken from private time."
+  (org-foresight-test--with-travel
+      "* Early start
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 09:30-10:30>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      ;; leaving at 08:30 is before the span opens
+      (should (member "travel 08:30-09:30 borrowed" bands)))))
+
+(ert-deftest org-foresight-test-travel-minutes-is-symmetric ()
+  "Only one direction of a pair need be configured."
+  (let ((org-foresight-travel-matrix '(((home . office) . 45)))
+        (org-foresight-travel-default 30))
+    (should (= (org-foresight--travel-minutes 'home 'office) 45))
+    (should (= (org-foresight--travel-minutes 'office 'home) 45))
+    (should (= (org-foresight--travel-minutes 'home 'nowhere) 30))
+    (should (= (org-foresight--travel-minutes 'home 'home) 0))))
+
+;;;; Ledger
+
+(ert-deftest org-foresight-test-ledger-explains-the-totals ()
+  "Every total the scan reports must be reconstructible from the ledger."
+  (org-foresight-test--with-day
+      "* Project review
+<2026-08-10 Mon 14:00-15:30>
+* NEXT reply to procurement
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   0:30
+:END:
+* NEXT draft the summary
+SCHEDULED: <2026-08-10 Mon 10:00>
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+"
+    (let* ((scan (org-foresight-scan 1 (org-foresight-test--ts 0 0 10)))
+           (ledger (aref (plist-get scan :ledger) 0))
+           (kinds (mapcar (lambda (e) (plist-get e :kind)) ledger)))
+      (should (equal kinds '(task meeting promised)))
+      ;; promised in the ledger reconstructs :committed exactly
+      (should (= (apply #'+ (mapcar (lambda (e)
+                                      (if (eq (plist-get e :kind) 'promised)
+                                          (plist-get e :effort) 0))
+                                    ledger))
+                 (aref (plist-get scan :committed) 0)))
+      ;; and the timed ones reconstruct the busy total
+      (should (= (apply #'+ (mapcar (lambda (e)
+                                      (if (memq (plist-get e :kind) '(task meeting))
+                                          (plist-get e :effort) 0))
+                                    ledger))
+                 (/ (org-foresight--intervals-seconds
+                     (aref (plist-get scan :busy) 0))
+                    60.0))))))
 
 ;;;; Report blocks
 ;; Rendered from synthetic data, so these never touch the user's agenda files
@@ -631,8 +1122,10 @@ SCHEDULED: <2027-06-01 Tue>
 ;; board, because it stops being read.
 
 (defun org-foresight-test--signal (label)
-  "Return the findings filed under LABEL by `org-foresight-signals'."
-  (cdr (assoc label (org-foresight-signals))))
+  "Return the findings filed under LABEL by `org-foresight-signals'.
+Always recomputes: a test that changes a threshold and asks again must see
+the new answer, not the one cached moments earlier."
+  (cdr (assoc label (org-foresight-signals t))))
 
 (defmacro org-foresight-test--with-signals (text &rest body)
   "Run BODY over TEXT with signal thresholds pinned."
@@ -642,6 +1135,22 @@ SCHEDULED: <2027-06-01 Tue>
            (org-foresight-horizon-days 14)
            (org-foresight-followup-keywords '("WAIT"))
            (org-foresight-meeting-categories '("outlook"))
+           (org-foresight-wip-keywords nil)
+           (org-foresight-wip-limit 2)
+           (org-foresight-undecided-enabled nil)
+           (org-foresight-undecided-files nil)
+           (org-foresight-borrow-warn 180)
+           (org-foresight-leak-warn 90)
+           (org-foresight-awake '("07:00" . "23:00"))
+           (org-foresight-workday-start "09:00")
+           (org-foresight-workday-end "17:30")
+           (org-foresight-workdays '(1 2 3 4 5))
+           (org-foresight-day-file nil)
+           (org-foresight--shape-cache nil)
+           (org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           ;; Signals are memoized; a test must never read what the previous
+           ;; one computed, or the assertions describe someone else's corpus.
+           (org-foresight--signals-cache nil)
            (org-log-note-headings org-log-note-headings))
        ,@body)))
 
@@ -804,6 +1313,107 @@ must be named: it is the work that quietly stops the day ending on time."
         (should (= (length (org-foresight-test--signal
                             "After hours (invisible to capacity)"))
                    1))))))
+
+(ert-deftest org-foresight-test-signal-undecided ()
+  "Only a heading nobody has decided anything about counts.
+
+The exclusions are the whole point: measured against a real journal the naive
+rule matched 17% of headings, mostly diary entries and date-tree scaffolding.
+A board that lists things which are not problems stops being read."
+  (org-foresight-test--with-signals
+      "* a thought I never decided about
+* 2026-08-11 Tuesday
+* meeting notes <2026-08-11 Tue 14:00>
+* NEXT already decided
+* has a child
+** NEXT the child
+* was worked on
+:LOGBOOK:
+CLOCK: [2026-08-10 Mon 09:00]--[2026-08-10 Mon 10:00] =>  1:00
+:END:
+"
+    (let* ((org-foresight-undecided-enabled t)
+           (titles (mapcar (lambda (f) (plist-get f :title))
+                           (org-foresight-test--signal
+                            "Undecided (captured, not decided)"))))
+      (should (equal titles '("a thought I never decided about"))))))
+
+(ert-deftest org-foresight-test-signal-undecided-off-by-default ()
+  "The signal stays silent unless it has been asked for."
+  (org-foresight-test--with-signals "* a thought I never decided about\n"
+    (should (null (org-foresight-test--signal
+                   "Undecided (captured, not decided)")))))
+
+(ert-deftest org-foresight-test-signal-wip ()
+  "Started work is only worth reporting once there is too much of it."
+  (org-foresight-test--with-signals
+      "* ONGO one
+* ONGO two
+* ONGO three
+"
+    (let ((org-foresight-wip-keywords '("ONGO"))
+          (org-foresight-wip-limit 2))
+      (should (= (length (org-foresight-test--signal "Too much in flight")) 3)))
+    ;; at or below the limit it says nothing
+    (let ((org-foresight-wip-keywords '("ONGO"))
+          (org-foresight-wip-limit 5))
+      (should (null (org-foresight-test--signal "Too much in flight"))))
+    ;; and nothing at all when no keyword has been nominated
+    (let ((org-foresight-wip-keywords nil))
+      (should (null (org-foresight-test--signal "Too much in flight"))))))
+
+(ert-deftest org-foresight-test-signal-impossible ()
+  "A journey that overlaps a meeting is a plan that cannot happen."
+  (org-foresight-test--with-travel
+      "* At the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-11 Tue 10:00-11:00>
+* Call from home
+<2026-08-11 Tue 09:30-10:00>
+"
+    (let ((found (org-foresight-test--signal
+                  "Impossible (travel clashes with a meeting)")))
+      ;; the 09:00-10:00 journey runs straight through the 09:30 call
+      (should found)
+      (should (string-match-p "clashes with" (plist-get (car found) :note))))))
+
+(ert-deftest org-foresight-test-signal-wont-fit ()
+  "Work promised for today that no remaining gap can hold is called out."
+  (org-foresight-test--with-signals
+      "* NEXT a very long job
+SCHEDULED: <2026-08-11 Tue>
+:PROPERTIES:
+:EFFORT:   12:00
+:END:
+* NEXT a short job
+SCHEDULED: <2026-08-11 Tue>
+:PROPERTIES:
+:EFFORT:   0:15
+:END:
+"
+    (let ((titles (mapcar (lambda (f) (plist-get f :title))
+                          (org-foresight-test--signal "Won't fit today"))))
+      (should (member "a very long job" titles))
+      (should-not (member "a short job" titles)))))
+
+(ert-deftest org-foresight-test-signal-leaking-reads-only-the-cache ()
+  "The leak signal must not reach for the network while an agenda is drawing."
+  (let ((cache (make-temp-file "org-foresight-surge" nil ".eld"
+                               (prin1-to-string '(:minutes 120.0 :samples 12)))))
+    (unwind-protect
+        (let ((org-foresight-surge-cache-file cache)
+              (org-foresight-leak-warn 90))
+          (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                     (lambda (&rest _) (error "network touched"))))
+            (let ((found (org-foresight--leak-findings)))
+              (should found)
+              (should (string-match-p "2:00" (plist-get (car found) :note))))
+            ;; and below the threshold it says nothing
+            (let ((org-foresight-leak-warn 180))
+              (should (null (org-foresight--leak-findings))))))
+      (delete-file cache))))
 
 (ert-deftest org-foresight-test-signals-quiet-when-nothing-is-wrong ()
   "A clean file must produce no groups at all, not empty ones."
@@ -970,6 +1580,177 @@ evidence the procrastination signal counts."
   (should (eq (cdr (assq 'plan org-foresight-report-renderers))
               'org-foresight-plan-report)))
 
+;;;; Estimate bias
+
+(defmacro org-foresight-test--with-bias (text &rest body)
+  "Run BODY over TEXT with a scratch bias cache."
+  (declare (indent 1))
+  `(let ((cache (make-temp-file "org-foresight-bias" nil ".eld")))
+     (unwind-protect
+         (org-foresight-test--with-day ,text
+           (let ((org-foresight-bias-cache-file cache)
+                 (org-foresight-bias-enabled t)
+                 (org-foresight-bias-window 90)
+                 (org-foresight-bias-min-samples 3)
+                 (org-foresight--bias-cache nil))
+             ,@body))
+       (delete-file cache))))
+
+(defun org-foresight-test--done (title category est act-hours &optional day-offset)
+  "Return org text for a finished task estimated EST and clocked ACT-HOURS.
+Dated relative to today, so the entry stays inside the learning window
+however long after it is written the tests are run."
+  (let* ((day (org-foresight--day-start (or day-offset 1)))
+         (stamp (lambda (h)
+                  (format-time-string (format "[%%Y-%%m-%%d %%a %02d:00]" h) day))))
+    (concat "* DONE " title "\n"
+            "CLOSED: " (funcall stamp 18) "\n"
+            ":PROPERTIES:\n"
+            ":EFFORT:   " est "\n"
+            ":CATEGORY: " category "\n"
+            ":END:\n"
+            ":LOGBOOK:\n"
+            "CLOCK: " (funcall stamp 9) "--" (funcall stamp (+ 9 act-hours))
+            (format " => %d:00\n" act-hours)
+            ":END:\n")))
+
+(ert-deftest org-foresight-test-learn-bias ()
+  "The multiplier is the median ratio of clocked time to estimate."
+  (org-foresight-test--with-bias
+      (concat
+       ;; three reporting tasks, each estimated 1:00 and taking 1, 2, 3 hours
+       (org-foresight-test--done "r1" "reporting" "1:00" 1)
+       (org-foresight-test--done "r2" "reporting" "1:00" 2)
+       (org-foresight-test--done "r3" "reporting" "1:00" 3))
+    (org-foresight-learn-bias)
+    (should (= (org-foresight-bias-factor "reporting") 2.0))
+    (should (= (org-foresight-bias-factor nil) 2.0))))
+
+(ert-deftest org-foresight-test-bias-falls-back-to-overall ()
+  "A category with too little history is planned by the overall figure."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done "r1" "reporting" "1:00" 2)
+       (org-foresight-test--done "r2" "reporting" "1:00" 2)
+       (org-foresight-test--done "r3" "reporting" "1:00" 2)
+       ;; a single admin task is not enough to judge admin by
+       (org-foresight-test--done "a1" "admin" "1:00" 5))
+    (org-foresight-learn-bias)
+    (should (= (org-foresight-bias-factor "reporting") 2.0))
+    (should (= (org-foresight-bias-factor "admin")
+               (org-foresight-bias-factor nil)))))
+
+(ert-deftest org-foresight-test-bias-without-history-is-neutral ()
+  "With nothing learned the factor is 1.0: an unknown bias corrects nothing."
+  (org-foresight-test--with-bias "* NEXT nothing finished yet\n"
+    (should (= (org-foresight-bias-factor "reporting") 1.0))
+    (should (= (org-foresight-bias-factor nil) 1.0))))
+
+(ert-deftest org-foresight-test-bias-can-be-switched-off ()
+  (org-foresight-test--with-bias
+      (concat (org-foresight-test--done "r1" "reporting" "1:00" 2)
+              (org-foresight-test--done "r2" "reporting" "1:00" 2)
+              (org-foresight-test--done "r3" "reporting" "1:00" 2))
+    (org-foresight-learn-bias)
+    (should (= (org-foresight-bias-factor "reporting") 2.0))
+    (let ((org-foresight-bias-enabled nil))
+      (should (= (org-foresight-bias-factor "reporting") 1.0)))))
+
+(ert-deftest org-foresight-test-bias-applies-to-promised ()
+  "What is promised is charged at what the work actually takes."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done "r1" "reporting" "1:00" 2)
+       (org-foresight-test--done "r2" "reporting" "1:00" 2)
+       (org-foresight-test--done "r3" "reporting" "1:00" 2)
+       "* NEXT write the report
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   1:00
+:CATEGORY: reporting
+:END:
+")
+    (org-foresight-learn-bias)
+    (let ((scan (org-foresight-scan 1 (org-foresight-test--ts 0 0 10))))
+      (should (= (aref (plist-get scan :committed) 0) 120.0)))
+    ;; and turning the correction off returns the raw estimate
+    (let ((org-foresight-bias-enabled nil))
+      (let ((scan (org-foresight-scan 1 (org-foresight-test--ts 0 0 10))))
+        (should (= (aref (plist-get scan :committed) 0) 60.0))))))
+
+(ert-deftest org-foresight-test-bias-ledger-keeps-both-figures ()
+  "The ledger shows the estimate beside what it is being treated as."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done "r1" "reporting" "1:00" 2)
+       (org-foresight-test--done "r2" "reporting" "1:00" 2)
+       (org-foresight-test--done "r3" "reporting" "1:00" 2)
+       "* NEXT write the report
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   1:00
+:CATEGORY: reporting
+:END:
+")
+    (org-foresight-learn-bias)
+    (let* ((scan (org-foresight-scan 1 (org-foresight-test--ts 0 0 10)))
+           (e (seq-find (lambda (e) (eq (plist-get e :kind) 'promised))
+                        (aref (plist-get scan :ledger) 0))))
+      (should (= (plist-get e :effort) 60.0))
+      (should (= (plist-get e :effort-adj) 120.0)))))
+
+(ert-deftest org-foresight-test-bias-of-one-changes-nothing ()
+  "A neutral multiplier must leave every figure exactly as it was.
+This is the regression that keeps the correction honest: turning it on for a
+person whose estimates are accurate should be invisible."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done "r1" "reporting" "1:00" 1)
+       (org-foresight-test--done "r2" "reporting" "1:00" 1)
+       (org-foresight-test--done "r3" "reporting" "1:00" 1)
+       "* NEXT write the report
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   1:30
+:CATEGORY: reporting
+:END:
+")
+    (org-foresight-learn-bias)
+    (should (= (org-foresight-bias-factor "reporting") 1.0))
+    (let ((with-bias
+           (let ((org-foresight-bias-enabled t))
+             (aref (plist-get (org-foresight-scan 1 (org-foresight-test--ts 0 0 10))
+                              :committed)
+                   0)))
+          (without
+           (let ((org-foresight-bias-enabled nil))
+             (aref (plist-get (org-foresight-scan 1 (org-foresight-test--ts 0 0 10))
+                              :committed)
+                   0))))
+      (should (= with-bias without))
+      (should (= with-bias 90.0)))))
+
+(ert-deftest org-foresight-test-bias-sizes-the-placement-slot ()
+  "A task known to overrun is given the time it will actually need."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done "r1" "reporting" "1:00" 2)
+       (org-foresight-test--done "r2" "reporting" "1:00" 2)
+       (org-foresight-test--done "r3" "reporting" "1:00" 2)
+       "* NEXT write the report
+:PROPERTIES:
+:EFFORT:   1:00
+:CATEGORY: reporting
+:END:
+")
+    (org-foresight-learn-bias)
+    (let* ((cands (org-foresight--candidates (org-foresight-test--ts 0 0 10)))
+           (c (seq-find (lambda (c) (equal (plist-get c :title) "write the report"))
+                        cands)))
+      (should c)
+      (should (= (plist-get c :effort) 120.0))
+      (should (= (plist-get c :estimate) 60.0)))))
+
 ;;;; Placement
 
 (defun org-foresight-test--cand (title effort &optional deadline priority)
@@ -1103,7 +1884,22 @@ SCHEDULED: <2026-08-10 Mon>
                 (org-foresight-workdays '(1 2 3 4 5))
                 (org-foresight-followup-keywords '("WAIT" "DELEG"))
                 (org-foresight-meeting-categories '("outlook"))
+                (org-foresight-private-categories '("family" "club"))
+                (org-foresight-places '((office . "本社\\|会議室")
+                                        (client . "様")))
+                (org-foresight-travel-matrix '(((home . office) . 60)
+                                               ((home . client) . 75)
+                                               ((office . client) . 45)))
+                (org-foresight-travel-default 45)
+                (org-foresight-wip-keywords '("ONGO"))
+                (org-foresight-wip-limit 2)
+                (org-foresight-awake '("06:30" . "23:00"))
+                (org-foresight-day-file nil)
+                (org-foresight--shape-cache nil)
+                (org-foresight--signals-cache nil)
                 (org-foresight-surge-cache-file (expand-file-name "s.eld" dir))
+                (org-foresight-bias-cache-file (expand-file-name "b.eld" dir))
+                (org-foresight--bias-cache nil)
                 (org-agenda-files (org-foresight-demo-regenerate)))
            ,@body)
        (dolist (f (directory-files dir t "\\.org\\'"))
@@ -1134,8 +1930,33 @@ SCHEDULED: <2026-08-10 Mon>
                           "Unplannable (deadline, no estimate)"
                           "Gone quiet (follow-up overdue)"
                           "Kept moving (not really NEXT)"
-                          "Orphaned prep"))
+                          "Orphaned prep"
+                          "Impossible (travel clashes with a meeting)"
+                          "Won't fit today"
+                          "Too much in flight"))
         (should (member expected labels))))))
+
+(ert-deftest org-foresight-test-demo-has-travel-and-private-time ()
+  "The demo must exercise the whole day model, not just the working part."
+  (org-foresight-test--with-demo
+    (let* ((day (org-foresight--day-start 0))
+           (kinds (mapcar (lambda (b) (plist-get b :kind))
+                          (org-foresight-day-blocks day))))
+      ;; an office meeting, so there is a journey either side of it
+      (should (memq 'travel kinds))
+      ;; a private commitment, which occupies the evening without being work
+      (should (memq 'private kinds))
+      ;; and unclaimed private time around the edges
+      (should (memq 'grey kinds)))))
+
+(ert-deftest org-foresight-test-demo-teaches-the-bias ()
+  "The demo's history must contain a real estimate/outcome gap to learn from."
+  (org-foresight-test--with-demo
+    (org-foresight-learn-bias)
+    ;; reporting is written to run consistently over
+    (should (> (org-foresight-bias-factor "reporting") 1.2))
+    ;; while admin is estimated accurately
+    (should (< (abs (- (org-foresight-bias-factor "admin") 1.0)) 0.2))))
 
 (ert-deftest org-foresight-test-demo-has-a-workable-day ()
   "The demo day must have real busy intervals, real effort and real clocks,

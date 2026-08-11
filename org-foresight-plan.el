@@ -81,6 +81,48 @@ be treated as a commitment."
   :type 'string
   :group 'org-foresight)
 
+(defcustom org-foresight-wip-keywords nil
+  "TODO keywords meaning work is actually underway.
+Nil disables the signal.  Set this to the keyword used for started work."
+  :type '(repeat string)
+  :group 'org-foresight)
+
+(defcustom org-foresight-wip-limit 2
+  "How many things may be in flight before it is worth saying so.
+Every extra piece of started work costs the switch back into it, so a rising
+count is a slowing day even when each item looks reasonable."
+  :type 'integer
+  :group 'org-foresight)
+
+(defcustom org-foresight-leak-warn 90
+  "Minutes of learned surge above which the reserve itself is a problem.
+Surge is measured from time worked without a clock running; left alone it
+grows, and every future day is planned with that much less in it."
+  :type 'integer
+  :group 'org-foresight)
+
+(defcustom org-foresight-borrow-warn 180
+  "Minutes of work taken from private time in a week before it is flagged."
+  :type 'integer
+  :group 'org-foresight)
+
+(defcustom org-foresight-undecided-enabled nil
+  "Whether to report captured items that have not been decided about.
+
+Off by default, and deliberately so.  Measured against a real journal the
+rule matches 17% of all headings -- date-tree scaffolding, ordinary diary
+entries, notes that were never meant to become anything.  A board that
+mostly lists things which are not problems stops being read, which costs
+more than the signal is worth.  Turn it on only where captures live in a
+file of their own."
+  :type 'boolean
+  :group 'org-foresight)
+
+(defcustom org-foresight-undecided-files nil
+  "Files whose entries the undecided signal considers, or nil for all of them."
+  :type '(repeat file)
+  :group 'org-foresight)
+
 ;;;; Signals
 
 (defun org-foresight--log-prefix (kind)
@@ -91,16 +133,6 @@ reworded their log entries still gets counted correctly."
     (when (and h (string-match "\\`\\([^%]+\\)" h))
       (match-string 1 h))))
 
-(defun org-foresight--entry-limit ()
-  "Return the end of the entry at point's own text, before any child."
-  (save-excursion
-    (org-back-to-heading t)
-    (let ((subtree-end (save-excursion (org-end-of-subtree t t) (point))))
-      (forward-line 1)
-      (if (re-search-forward org-heading-regexp subtree-end t)
-          (line-beginning-position)
-        subtree-end))))
-
 (defun org-foresight--reschedule-count ()
   "Return how many times the entry at point has been rescheduled.
 Reads what `org-log-reschedule' has already been recording, so this costs
@@ -109,13 +141,12 @@ for.  Returns 0 when reschedule logging is off."
   (let ((prefix (org-foresight--log-prefix 'reschedule)))
     (if (null prefix)
         0
-      (save-excursion
-        (org-back-to-heading t)
-        (let ((limit (org-foresight--entry-limit))
-              (n 0))
-          (while (re-search-forward (regexp-quote prefix) limit t)
-            (setq n (1+ n)))
-          n)))))
+      (let ((text (org-foresight--entry-text))
+            (re (regexp-quote prefix))
+            (pos 0) (n 0))
+        (while (string-match re text pos)
+          (setq pos (match-end 0) n (1+ n)))
+        n))))
 
 (defun org-foresight--entry-has-future-time-p (stamps now)
   "Non-nil when STAMPS contains a timed stamp at or after NOW."
@@ -195,8 +226,9 @@ than asking for one."
          (today (org-foresight--day-start 0))
          (horizon (time-add today (days-to-time org-foresight-horizon-days)))
          (uids (make-hash-table :test 'equal))
+         (scan (org-foresight-scan 1 today))
          meetings procrastinated unplannable followups after-hours
-         orphan-candidates)
+         orphan-candidates undecided in-flight)
     (dolist (file (org-agenda-files))
       (when (file-exists-p file)
         (with-current-buffer (find-file-noselect file)
@@ -267,7 +299,15 @@ than asking for one."
                   (unless done
                     (push (cons ref (org-foresight--finding
                                      title "meeting no longer in the calendar"))
-                          orphan-candidates)))))
+                          orphan-candidates)))
+                ;; (f) Work that has been started but not finished.
+                (when (and todo (member todo org-foresight-wip-keywords))
+                  (push (org-foresight--finding title "in flight") in-flight))
+                ;; (g) Something captured that was never decided about.
+                (when (and org-foresight-undecided-enabled
+                           (org-foresight--undecided-p todo stamps))
+                  (push (org-foresight--finding title "captured, not decided")
+                        undecided))))
             nil nil)))))
     ;; Orphans can only be judged once every UID in the agenda has been seen.
     (let ((orphans (seq-keep (lambda (c)
@@ -275,12 +315,125 @@ than asking for one."
                              orphan-candidates)))
       (seq-filter
        #'cdr
-       (list (cons "Meetings without prep" (nreverse meetings))
+       (list (cons "Impossible (travel clashes with a meeting)"
+                   (org-foresight--clash-findings scan))
+             (cons "Meetings without prep" (nreverse meetings))
              (cons "After hours (invisible to capacity)" (nreverse after-hours))
+             (cons "Won't fit today" (org-foresight--wont-fit-findings scan))
              (cons "Unplannable (deadline, no estimate)" (nreverse unplannable))
              (cons "Gone quiet (follow-up overdue)" (nreverse followups))
              (cons "Kept moving (not really NEXT)" (nreverse procrastinated))
+             (cons "Too much in flight"
+                   (if (> (length in-flight) org-foresight-wip-limit)
+                       (nreverse in-flight)
+                     nil))
+             (cons "Borrowed from private time" (org-foresight--borrow-findings))
+             (cons "Leaking (unclocked work)" (org-foresight--leak-findings))
+             (cons "Undecided (captured, not decided)" (nreverse undecided))
              (cons "Orphaned prep" orphans))))))
+
+(defun org-foresight--undecided-p (todo stamps)
+  "Non-nil when the entry at point was captured but never decided about.
+
+Deliberately narrow.  Anything with a state, a date, a clock, a child or a
+timestamp in its own heading is already being handled, and a date-tree
+heading is scaffolding rather than a thought.  What is left is a heading
+someone wrote down and walked away from."
+  (and (null todo)
+       (null stamps)
+       (not (save-excursion (org-goto-first-child)))
+       ;; A timestamp written into the heading itself is an appointment.
+       (not (string-match-p org-ts-regexp-both (org-get-heading t t nil nil)))
+       ;; `*** 2026-08-11 Tuesday' and friends are structure, not capture.
+       (not (string-match-p "\\`[0-9]\\{4\\}\\(-[0-9]\\{2\\}\\)\\{0,2\\}\\b"
+                            (org-get-heading t t t t)))
+       (not (string-match-p "CLOCK:" (org-foresight--entry-text)))
+       (or (null org-foresight-undecided-files)
+           (member (buffer-file-name) org-foresight-undecided-files))))
+
+(defun org-foresight--clash-findings (scan)
+  "Return findings for journeys that overlap something else in SCAN.
+
+Being in two places at once is not a scheduling preference to be weighed
+against others -- the day as written cannot happen, and no amount of working
+harder at it will help.  Worth saying before anything else on the board."
+  (let ((ledger (aref (plist-get scan :ledger) 0))
+        (seen (make-hash-table :test 'equal))
+        out)
+    (dolist (tb (seq-filter (lambda (e) (eq (plist-get e :kind) 'travel)) ledger))
+      (dolist (other ledger)
+        (when (and (not (eq other tb))
+                   (memq (plist-get other :kind) '(meeting task))
+                   (plist-get other :start)
+                   (time-less-p (plist-get tb :start) (plist-get other :end))
+                   (time-less-p (plist-get other :start) (plist-get tb :end)))
+          (let ((key (cons (plist-get other :title) (plist-get tb :title))))
+            (unless (gethash key seen)
+              (puthash key t seen)
+              (push (list :file nil :point nil
+                          :marker (plist-get other :marker)
+                          :title (plist-get other :title)
+                          :note (format "clashes with %s at %s"
+                                        (plist-get tb :title)
+                                        (format-time-string
+                                         "%H:%M" (plist-get tb :start))))
+                    out))))))
+    (nreverse out)))
+
+(defun org-foresight--wont-fit-findings (scan)
+  "Return findings for work promised today that no remaining gap can hold."
+  (let* ((today (org-foresight--day-start 0))
+         (free (org-foresight-free-intervals today scan))
+         (longest (if free
+                      (/ (apply #'max
+                                (mapcar (lambda (iv)
+                                          (float-time (time-subtract (cdr iv)
+                                                                     (car iv))))
+                                        free))
+                         60.0)
+                    0.0))
+         out)
+    (dolist (e (aref (plist-get scan :ledger) 0))
+      (when (and (eq (plist-get e :kind) 'promised)
+                 (> (or (plist-get e :effort-adj) (plist-get e :effort)) longest))
+        (push (list :file nil :point nil
+                    :marker (plist-get e :marker)
+                    :title (plist-get e :title)
+                    :note (format "needs %s, longest gap %s"
+                                  (org-duration-from-minutes
+                                   (or (plist-get e :effort-adj)
+                                       (plist-get e :effort)))
+                                  (org-duration-from-minutes longest)))
+              out)))
+    (nreverse out)))
+
+(defun org-foresight--borrow-findings ()
+  "Return a finding when this week has taken too much from private time."
+  (let ((total 0.0)
+        (days 0))
+    (dotimes (i 7)
+      (let* ((day (org-foresight--day-start i))
+             (cap (ignore-errors (org-foresight-capacity day))))
+        (when-let ((borrowed (and cap (plist-get cap :borrowed-min))))
+          (when (> borrowed 0)
+            (setq total (+ total borrowed) days (1+ days))))))
+    (when (> total org-foresight-borrow-warn)
+      (list (list :file nil :point nil :marker nil
+                  :title "Work in private time"
+                  :note (format "%s over %d day(s) this week"
+                                (org-duration-from-minutes total) days))))))
+
+(defun org-foresight--leak-findings ()
+  "Return a finding when the learned reserve has grown past what is tolerable.
+
+Reads only the cached figure -- signals are computed while an agenda is being
+drawn, and reaching for the network there would stall the display."
+  (let ((surge (org-foresight-surge-minutes)))
+    (when (and (org-foresight-surge-samples) (> surge org-foresight-leak-warn))
+      (list (list :file nil :point nil :marker nil
+                  :title "Time worked without a clock"
+                  :note (format "%s/day is being reserved"
+                                (org-duration-from-minutes surge)))))))
 
 ;;;; Forward load
 
@@ -588,13 +741,21 @@ given a place to happen."
                  (not timed)
                  (or (null sched)
                      (= (org-foresight--day-of sched day) 0)))
-        (list :marker (point-marker)
-              :title (org-get-heading t t t t)
-              :effort (org-foresight--entry-effort-minutes)
-              :estimated (and (org-entry-get (point) "EFFORT") t)
-              :deadline (org-get-deadline-time (point))
-              :priority (org-entry-get (point) "PRIORITY")
-              :scheduled sched)))))
+        (let* ((raw (org-foresight--entry-effort-minutes))
+               (category (org-entry-get (point) "CATEGORY" t))
+               (factor (org-foresight-bias-factor category)))
+          (list :marker (point-marker)
+                :title (org-get-heading t t t t)
+                ;; The slot is sized by what the work actually takes, not by
+                ;; what it was estimated at -- a plan built on estimates known
+                ;; to run over is a plan that is wrong before the day begins.
+                :effort (* raw factor)
+                :estimate raw
+                :estimated (and (org-entry-get (point) "EFFORT") t)
+                :category category
+                :deadline (org-get-deadline-time (point))
+                :priority (org-entry-get (point) "PRIORITY")
+                :scheduled sched))))))
 
 (defun org-foresight--candidates (day)
   "Return the placement candidates for DAY, most pressing first."
@@ -709,8 +870,15 @@ estimate was wrong."
                       (replace-regexp-in-string "[\n\r]" " "
                                                 (plist-get p :title))
                       44 0 ?\s)
+                     ;; Say when a slot is longer than what was asked for, so
+                     ;; a surprising length is explained where it appears.
                      (concat (if (plist-get p :rejected) "skip" "")
-                             (if (plist-get p :estimated) "" " est?")))))
+                             (if (plist-get p :estimated) "" " est?")
+                             (let ((raw (plist-get p :estimate))
+                                   (adj (plist-get p :effort)))
+                               (if (and raw (> (abs (- adj raw)) 1))
+                                   (format " ←%s" (org-duration-from-minutes raw))
+                                 ""))))))
           org-foresight-plan--placed)
          (mapcar
           (lambda (s)
