@@ -16,16 +16,69 @@ be promised/. =org-foresight= adds that missing axis.
 - *When could I take this on?* — the same calculation over the next fortnight,
   which is what turns "I'm busy" into a date.
 
-* The reserve
+* The day
 
-Interruptions are not controllable, but their volume is remarkably stable — and
-it is measurable. Time spent active at the machine with no clock running is work
-that was done but never planned. =org-foresight= learns the size of that from
-history and subtracts it up front, so a day that gets interrupted still ends
-where it was supposed to.
+A day is not one bar from nine to half five. Work and private life are mixed in
+time, some of it is spent getting somewhere, and the hours that belong to
+neither are not absent — they are private time that happens to be unclaimed.
 
-This requires [[https://activitywatch.net/][ActivityWatch]] running locally. Without it the package still works;
-the reserve simply falls back to a configured constant.
+#+begin_example
+Work 8:30 · spare 1:15 · ends 16:45 · surge 1:00 (n=12) · est ×1.4
+█ booked 3:45  ▓ promised 2:30  ▒ surge 1:00  ░ spare 1:15
+████████████████████▓▓▓▓▓▓▓▓▓▓▓▓▒▒▒▒░░░░
+Grey 6:30 · borrowed 1:00
+#+end_example
+
+The whole bar is the work span, so meetings and journeys appear in it rather
+than being quietly deducted first: "where did the day go" and "what is left"
+are answered by the same picture. Work that lands outside the span is not
+absorbed silently — it is *borrowed* from private time, and says so.
+
+"I leave at 17:30" is therefore not the end of a window. It is that the evening
+is already spoken for.
+
+The span is *declared*, never inferred. Measuring when work actually stopped
+and calling that the working day would teach the system to plan around the late
+nights it exists to prevent. =M-x org-foresight-shape-day= declares an unusual
+day on its own heading; ordinary days need no input at all.
+
+* Travel is work
+
+Whether an employer counts the commute as paid time is beside the point: an
+hour spent getting to a meeting is an hour of your life spent on that meeting.
+Journeys are derived from where entries actually are and booked like anything
+else.
+
+#+begin_example
+the same one-hour meeting, held remotely:   free 7:30 · spare 6:30
+                          held at the office: free 5:30 · spare 4:30
+#+end_example
+
+Only a place someone wrote down counts. Every imported invitation carries a
+video link, and a link says nothing about where the body has to be — so an
+unhelpful =LOCATION= leaves you where you already were rather than inventing a
+journey. Set =org-foresight-places= to map locations onto places, and
+=org-foresight-travel-matrix= to say what moving between them costs.
+
+* The reserve, and the estimates
+
+Two corrections are learned from history, because neither can be got by asking
+harder.
+
+*Interruptions* are not controllable, but their volume is stable and
+measurable. Time spent active at the machine with no clock running is work that
+was done but never planned. =M-x org-foresight-learn-surge= takes the median of
+that and subtracts it up front, so an interrupted day still ends on time. This
+needs [[https://activitywatch.net/][ActivityWatch]]; without it the reserve falls back to a configured constant.
+
+*Estimates* are wrong in a consistent direction per kind of work, and the
+evidence is already in the file: every finished task that carried an =EFFORT=
+and was clocked is one estimate measured against its outcome.
+=M-x org-foresight-learn-bias= reads them back into a per-category multiplier
+and applies it to what is promised and to how long a task is given when placed.
+
+The multiplier is always shown (=est ×1.4=), so a shrinking day reads as "my
+estimates are optimistic" rather than as the tool being pessimistic.
 
 * Signals
 
@@ -33,14 +86,23 @@ Work that exists but has not been planned for. Shown on the plan board.
 
 | Signal              | What it catches                                          |
 |---------------------+----------------------------------------------------------|
+| Impossible          | a journey that overlaps a meeting — the day as written    |
+|                     | cannot happen, whatever effort is put into it             |
 | After hours         | work parked outside the working window, so it is          |
 |                     | subtracted from nothing and warns about nothing           |
+| Won't fit today     | promised for today, and longer than any gap that remains  |
 | Meetings, unprepared| an invitation implies preparation and follow-up that no    |
 |                     | one has budgeted for                                      |
 | Unplannable         | a near deadline with no estimate cannot be placed at all  |
 | Gone quiet          | handed-off work whose check-in date has passed            |
 | Kept moving         | repeated reschedules — a decision that is not being made  |
+| Too much in flight  | several things started at once, each costing the switch    |
+|                     | back into the others                                      |
+| Borrowed            | too much of the week's work taken out of private time     |
+| Leaking             | the reserve itself has grown large enough to be a problem |
 | Orphaned prep       | preparation for a meeting that has been cancelled         |
+| Undecided           | captured and never decided about (off by default: against |
+|                     | a real journal it matched 17% of headings, mostly diary)  |
 
 =M-x org-foresight-prepare-meetings= turns the second of these into real
 tasks, filed either side of the meeting. It marks each meeting it handles, so
