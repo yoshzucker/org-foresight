@@ -159,7 +159,15 @@ CATEGORY, because that is what the meeting signal keys on."
      ;; An hour of yours, but one that will share itself with the commute.
      "* All-hands\n:PROPERTIES:\n:UID: demo-allhands\n"
      ":CATEGORY: outlook\n:ATTENTION: background\n:PLAN_PREP: t\n:END:\n"
-     (org-foresight-demo--stamp 0 "13:00" "14:00") "\n")))
+     (org-foresight-demo--stamp 0 "13:00" "14:00") "\n\n"
+
+     ;; A day that cannot be worked as written: this starts fifteen minutes
+     ;; after the office meeting ends, and the client is forty-five minutes
+     ;; away.  Nothing about the entries looks wrong on its own, which is
+     ;; exactly why a clash is worth being told about.
+     "* Client review\n:PROPERTIES:\n:UID: demo-client\n"
+     ":CATEGORY: outlook\n:LOCATION: 顧客様先\n:PLAN_PREP: t\n:END:\n"
+     (org-foresight-demo--stamp 0 "15:45" "16:30") "\n")))
 
 (defun org-foresight-demo--datetree (blocks)
   "Render BLOCKS, an alist of (OFFSET . ENTRIES), as a date tree.
@@ -196,12 +204,10 @@ example of every situation the signals look for."
       (cons
        (cons 0 (list (concat
      ;; --- today: placed work, so the day has real busy intervals ---------
-     ;; Deliberately left where the afternoon's commute runs over it: a day
-     ;; that cannot physically happen is exactly what the clash signal is for,
-     ;; and the demo should contain one.
      "**** NEXT Draft the quarterly summary\n"
      "SCHEDULED: " (org-foresight-demo--stamp 0 "13:00") "\n"
      ":PROPERTIES:\n:EFFORT:   1:00\n:CATEGORY: reporting\n:END:\n"
+
 
      ;; --- today: promised but unplaced, so `promised' is non-zero --------
      "**** NEXT Reply to the procurement thread\n"

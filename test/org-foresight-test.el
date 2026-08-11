@@ -439,9 +439,9 @@ SCHEDULED: <2026-08-10 Mon>
                  (org-foresight-test--ts 0 0 10) nil
                  (org-foresight-test--ts 6 0 10)))
              (verdict (car (split-string s "\n"))))
-        (should (string-match-p "Free" verdict))
+        (should (string-match-p "Work" verdict))
         (should (string-match-p "ends" verdict))
-        (should (string-match-p "surge" verdict))
+        (should (string-match-p "left to promise" verdict))
         ;; the verdict itself stays one line; the bar follows beneath it
         (should (org-foresight-test--within-80 s))
         (should (string-match-p "booked" s))))))
@@ -466,10 +466,12 @@ SCHEDULED: <2026-08-10 Mon>
       (should-not (string-match-p "spare\\|OVER" plain))
       (should (org-foresight-test--within-80 s))
       ;; the day is read top to bottom, so the rows are in clock order
-      (should (< (string-search "09:00" plain) (string-search "10:00" plain)))
-      (should (< (string-search "10:00" plain) (string-search "11:00" plain)))
+      (should (< (string-search "09:00-10:00" plain)
+                 (string-search "10:00-11:00" plain)))
+      (should (< (string-search "10:00-11:00" plain)
+                 (string-search "11:00-17:30" plain)))
       ;; a gap says how long it is, in the same column as everything else
-      (should (string-match-p " 1:00 +free" plain))
+      (should (string-match-p "1:00 .*free" plain))
       ;; what is placed, and what is merely promised, both appear
       (should (string-match-p "team meeting" plain))
       (should (string-match-p "reply to procurement" plain))
@@ -513,24 +515,24 @@ says how much unclaimed time there is."
   "Two things booked over the same minutes: the bands can only draw one, so
 the grid must recover the other.  Tidying the clash away would turn a day
 that cannot be worked into one that looks like it can."
+  ;; The trip needs an hour before 14:00 and the whole span before it is
+  ;; taken, so there is nowhere left for it to move to.
   (org-foresight-test--with-travel
       "* At the office
 :PROPERTIES:
 :LOCATION: 会議室A
 :END:
 <2026-08-10 Mon 14:00-15:00>
-* Something else entirely
-<2026-08-10 Mon 13:00-14:00>
+* Solid all morning
+<2026-08-10 Mon 09:00-14:00>
 "
     (let ((plain (substring-no-properties
                   (org-foresight-report-capacity
                    (org-foresight-test--ts 0 0 10) nil
                    (org-foresight-test--ts 6 0 10)))))
-      ;; the 13:00–14:00 journey lost its slot to the 13:00 entry, and is
-      ;; recovered below the day under a key rather than losing its title to
-      ;; an explanatory suffix
-      (should (string-match-p "double-booked" plain))
-      (should (string-match-p "✗.*→ office" plain))))
+      ;; the journey lost its slot outright, and is recovered below the day
+      ;; under a flag rather than losing its title to an explanatory suffix
+      (should (string-match-p "⨯.*→ office" plain))))
   ;; a day with no clash says nothing about one
   (org-foresight-test--with-travel
       "* At the office
@@ -539,12 +541,38 @@ that cannot be worked into one that looks like it can."
 :END:
 <2026-08-10 Mon 14:00-15:00>
 "
-    (should-not (string-match-p
-                 "double-booked"
-                 (substring-no-properties
+    (let ((plain (substring-no-properties
                   (org-foresight-report-capacity
                    (org-foresight-test--ts 0 0 10) nil
-                   (org-foresight-test--ts 6 0 10)))))))
+                   (org-foresight-test--ts 6 0 10)))))
+      (should-not (string-match-p "⨯" plain))
+      ;; and the key does not explain a mark that never appears
+      (should-not (string-match-p "double-booked" plain)))))
+
+(ert-deftest org-foresight-test-grid-shows-a-squeezed-band-at-full-length ()
+  "A band cut short to keep the day a partition must still say what it needs.
+
+An hour's journey drawn as the fifteen minutes left for it turns a day that
+cannot be worked into one that reads as though it can -- the worst kind of
+wrong, because nothing on the screen looks unusual."
+  (org-foresight-test--with-travel
+      "* At the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 10:00-14:00>
+* At the client
+:PROPERTIES:
+:LOCATION: 顧客様先
+:END:
+<2026-08-10 Mon 14:15-15:00>
+"
+    (let ((plain (substring-no-properties
+                  (org-foresight-report-capacity
+                   (org-foresight-test--ts 0 0 10) nil
+                   (org-foresight-test--ts 6 0 10)))))
+      ;; 30 minutes office→client, but only 15 are free before it starts
+      (should (string-match-p "13:45-14:15.*0:30 ⨯.*→ client" plain)))))
 
 (ert-deftest org-foresight-test-grid-lists-what-is-due ()
   "A deadline occupies no time, so it appears in no band -- which is exactly
@@ -560,36 +588,74 @@ DEADLINE: <2026-08-10 Mon>
       (should (string-match-p "ship the report" plain))
       (should (string-match-p "due today" plain)))))
 
-(ert-deftest org-foresight-test-bar-is-exactly-its-width ()
-  "Rounding the segments must never change the bar's length."
-  (org-foresight-test--with-window
-    (dolist (cap (list
-                  '(:span-min 510.0 :booked-min 0.0 :committed-min 0.0
-                    :surge-min 60.0 :headroom-min 450.0)
-                  '(:span-min 510.0 :booked-min 137.0 :committed-min 73.0
-                    :surge-min 57.0 :headroom-min 243.0)
-                  ;; overcommitted: scaled to the promises, not the span
-                  '(:span-min 510.0 :booked-min 420.0 :committed-min 240.0
-                    :surge-min 60.0 :headroom-min -210.0)
-                  ;; a day made entirely of meetings
-                  '(:span-min 510.0 :booked-min 510.0 :committed-min 0.0
-                    :surge-min 0.0 :headroom-min 0.0)))
-      (let ((bar (org-foresight-report--bar cap)))
-        (should (= (string-width bar) org-foresight-bar-width))))))
+(defun org-foresight-test--bar-cells (bar)
+  "Return the number of block cells drawn in BAR, ignoring its indent."
+  (length (seq-filter (lambda (c) (memq c '(?█ ?┃)))
+                      (string-to-list (substring-no-properties bar)))))
+
+(ert-deftest org-foresight-test-bar-fits-a-full-day ()
+  "A day whose parts fill the span exactly is drawn at the configured width."
+  (let ((cap '(:span-min 510.0 :booked-min 137.0 :travel-min 60.0
+               :private-min-in-span 0.0 :committed-min 73.0
+               :surge-min 57.0 :spare-min 183.0
+               :private-min 0.0 :borrowed-min 0.0 :unclaimed-min 0.0)))
+    (should (= (org-foresight-test--bar-cells (org-foresight-report--bar cap))
+               org-foresight-bar-width))))
+
+(ert-deftest org-foresight-test-bars-share-one-scale ()
+  "The two bars must be comparable, or setting them side by side says nothing.
+
+Equal spans of time have to draw equal numbers of cells whichever bar they
+are in -- otherwise a long evening could look shorter than a short workday."
+  (let* ((cap '(:span-min 480.0 :booked-min 480.0 :travel-min 0.0
+                :private-min-in-span 0.0 :committed-min 0.0
+                :surge-min 0.0 :spare-min 0.0
+                :private-min 240.0 :borrowed-min 0.0 :unclaimed-min 240.0))
+         (work (org-foresight-test--bar-cells (org-foresight-report--bar cap)))
+         (off (org-foresight-test--bar-cells (org-foresight-report--off-bar cap))))
+    ;; 8:00 of work against 8:00 off: the same length
+    (should (= work off))))
 
 (ert-deftest org-foresight-test-bar-marks-the-overflow ()
   "An overcommitted day shows where the span ran out instead of clipping."
-  (let ((over '(:span-min 510.0 :booked-min 420.0 :committed-min 240.0
-                :surge-min 60.0 :headroom-min -210.0))
-        (fits '(:span-min 510.0 :booked-min 60.0 :committed-min 60.0
-                :surge-min 60.0 :headroom-min 330.0)))
+  (let ((over '(:span-min 510.0 :booked-min 420.0 :travel-min 0.0
+                :private-min-in-span 0.0 :committed-min 240.0
+                :surge-min 60.0 :spare-min -210.0))
+        (fits '(:span-min 510.0 :booked-min 60.0 :travel-min 0.0
+                :private-min-in-span 0.0 :committed-min 60.0
+                :surge-min 60.0 :spare-min 330.0)))
     (should (string-match-p "┃" (org-foresight-report--bar over)))
+    ;; The overflow is shown, not cut back to something that fits.  The mark
+    ;; replaces the cell it stands on, so the count is the width itself.
+    (should (>= (org-foresight-test--bar-cells (org-foresight-report--bar over))
+                org-foresight-bar-width))
     (should-not (string-match-p "┃" (org-foresight-report--bar fits)))))
 
 (ert-deftest org-foresight-test-bar-absent-without-a-span ()
   (should (null (org-foresight-report--bar
-                 '(:span-min 0.0 :booked-min 0.0 :committed-min 0.0
-                   :surge-min 0.0 :headroom-min 0.0)))))
+                 '(:span-min 0.0 :booked-min 0.0 :travel-min 0.0
+                   :private-min-in-span 0.0 :committed-min 0.0
+                   :surge-min 0.0 :spare-min 0.0)))))
+
+(ert-deftest org-foresight-test-private-in-span-is-not-spare ()
+  "An appointment in working hours is time the span cannot spend.
+Counted nowhere, it used to come back as time still available to promise."
+  (org-foresight-test--with-day
+      "* dentist
+:PROPERTIES:
+:CATEGORY: family
+:END:
+<2026-08-10 Mon 11:00-12:00>
+"
+    (let* ((org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-surge-default "1:00")
+           (cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                        (org-foresight-test--ts 6 0 10))))
+      (should (= (plist-get cap :private-min-in-span) 60.0))
+      ;; 8:30 of span, less the hour and the reserve
+      (should (= (plist-get cap :spare-min) (- 510 60 60)))
+      ;; and it is not double-counted as time off
+      (should (= (plist-get cap :private-min) 0.0)))))
 
 (ert-deftest org-foresight-test-ledger-agrees-with-the-verdict ()
   "The ledger must add up to the numbers stated above it.
@@ -610,20 +676,23 @@ SCHEDULED: <2026-08-10 Mon>
            (scan (org-foresight-scan 1 day))
            (cap (org-foresight-capacity day scan (org-foresight-test--ts 6 0 10)))
            (ledger (aref (plist-get scan :ledger) 0))
-           (booked 0.0) (promised 0.0))
+           (booked 0.0) (travel 0.0) (promised 0.0))
       (dolist (e ledger)
         (pcase (plist-get e :kind)
-          ((or 'meeting 'task 'travel)
-           (setq booked (+ booked (plist-get e :effort))))
+          ((or 'meeting 'task) (setq booked (+ booked (plist-get e :effort))))
+          ('travel (setq travel (+ travel (plist-get e :effort))))
           ('promised (setq promised (+ promised (plist-get e :effort))))
           (_ nil)))
       (should (= booked (plist-get cap :booked-min)))
+      (should (= travel (plist-get cap :travel-min)))
       (should (= promised (plist-get cap :committed-min)))
-      ;; and the bar's own parts fill the span exactly
+      ;; and the bar's own parts fill the span exactly -- if the segments and
+      ;; the whole ever disagree, the picture stops being evidence
       (should (= (+ (plist-get cap :booked-min)
+                    (plist-get cap :travel-min)
                     (plist-get cap :committed-min)
                     (plist-get cap :surge-min)
-                    (plist-get cap :headroom-min))
+                    (plist-get cap :spare-min))
                  (plist-get cap :span-min))))))
 
 (ert-deftest org-foresight-test-ledger-rows-are-actionable ()
@@ -680,15 +749,47 @@ rather than quietly rescheduling whatever produced it."
       (should (> (string-search "evening call" s) close))
       (should (< (string-search "afternoon work" s) close)))))
 
-(ert-deftest org-foresight-test-ledger-within-80 ()
-  "Long multibyte titles must be cut to the column, not widen the table."
+(ert-deftest org-foresight-test-glyphs-are-single-cell ()
+  "Every mark the grid draws must occupy exactly one cell.
+
+A wider one shifts the column behind it, and the usual cause is a character
+the font simply lacks: what appears then comes from the fallback, at whatever
+width that font uses.  `✗' U+2717 was one such -- absent from PlemolJP and
+rendered slightly too wide, which is exactly the failure this guards."
+  (dolist (s (append (mapcar #'car org-foresight-report--grid-flags)
+                     '("█" "·" "─" "┈" "→" "┃" "▏" "▎" "▍" "▌" "▋" "▊" "▉")))
+    (should (= (string-width s) 1))))
+
+(ert-deftest org-foresight-test-grid-columns-align ()
+  "Every column up to the title starts at the same place, whatever is in it.
+
+The title itself is not held to a width: it is the last thing on the line,
+so nothing after it needs to line up, and cutting it would only lose words
+that were the point of the row.  A long multibyte title is the case that
+would drag the columns out of true if any of them were sized from content."
   (org-foresight-test--with-day
       "* NEXT 非常に長い日本語のタスク名で桁あふれを起こしかねないもの、さらに続く
 <2026-08-10 Mon 14:00-15:00>
+* NEXT x
+<2026-08-10 Mon 10:00-10:15>
 "
-    (should (org-foresight-test--within-80
-             (org-foresight-report-capacity (org-foresight-test--ts 0 0 10) nil
-                                            (org-foresight-test--ts 6 0 10))))))
+    (let* ((plain (substring-no-properties
+                   (org-foresight-report-capacity
+                    (org-foresight-test--ts 0 0 10) nil
+                    (org-foresight-test--ts 6 0 10))))
+           ;; rows drawn from a band carry a span; the boundary rules carry a
+           ;; single time and no duration, by design
+           (rows (seq-filter (lambda (l)
+                               (string-match-p "[0-9][0-9]:[0-9][0-9]-" l))
+                             (split-string plain "\n")))
+           ;; the span column starts at the same offset on every one of them
+           (offsets (seq-uniq
+                     (mapcar (lambda (l) (string-match "[0-9][0-9]:[0-9][0-9]-" l))
+                             rows))))
+      (should (> (length rows) 2))
+      (should (= (length offsets) 1))
+      ;; and the long title survived to the end of its line
+      (should (string-match-p "さらに続く" plain)))))
 
 (ert-deftest org-foresight-test-grey-line ()
   "Unclaimed private time is reported, and borrowing from it is called out."
@@ -700,7 +801,7 @@ rather than quietly rescheduling whatever produced it."
                                         (org-foresight-test--ts 6 0 10)))
            (line (substring-no-properties
                   (org-foresight-report--grey-line cap))))
-      (should (string-match-p "Grey" line))
+      (should (string-match-p "Off" line))
       (should (string-match-p "borrowed 1:00" line))))
   ;; a day that stays inside its span borrows nothing
   (org-foresight-test--with-day
@@ -1230,6 +1331,47 @@ all: the numbers look right, and the commute is simply missing from them."
       ;; leaving at 08:30 is before the span opens
       (should (member "travel 08:30-09:30 borrowed" bands)))))
 
+(ert-deftest org-foresight-test-travel-moves-out-of-the-way ()
+  "Leaving at the last moment is only right when the last moment is free.
+
+A journey that would run over something already booked slides earlier into
+whatever gap will take it -- which is what a person does, and what keeps a
+perfectly workable day from being reported as impossible."
+  (org-foresight-test--with-travel
+      "* At the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 14:00-15:00>
+* Something already at 13:00
+<2026-08-10 Mon 13:00-14:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      ;; the hour before the meeting is taken, so the trip goes before that
+      (should (member "travel 12:00-13:00" bands))
+      (should-not (member "travel 13:00-14:00" bands)))))
+
+(ert-deftest org-foresight-test-travel-still-arrives-in-time ()
+  "Moving earlier must not mean arriving late: the slot still ends by the
+meeting it serves, however far back it had to go."
+  (org-foresight-test--with-travel
+      "* At the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 14:00-15:00>
+* Busy all morning
+<2026-08-10 Mon 09:00-13:30>
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (scan (org-foresight-scan 1 day))
+           (trip (seq-find (lambda (e) (eq (plist-get e :kind) 'travel))
+                           (aref (plist-get scan :ledger) 0))))
+      (should trip)
+      ;; 13:30–14:30 would overrun the meeting, so it must not be chosen
+      (should (not (time-less-p (org-foresight-test--ts 14 0 10)
+                                (plist-get trip :end)))))))
+
 (ert-deftest org-foresight-test-travel-minutes-is-symmetric ()
   "Only one direction of a pair need be configured."
   (let ((org-foresight-travel-matrix '(((home . office) . 45)))
@@ -1351,10 +1493,10 @@ alongside whatever else is happening, rather than instead of it."
                   (org-foresight-report-capacity
                    (org-foresight-test--ts 0 0 10) nil
                    (org-foresight-test--ts 6 0 10)))))
-      ;; the journey keeps the band; the call hangs beneath it
+      ;; both are shown, and the call is not treated as a clash
       (should (string-match-p "→ office" plain))
-      (should (string-match-p "listen" plain))
-      (should-not (string-match-p "double-booked" plain)))
+      (should (string-match-p "全社定例" plain))
+      (should-not (string-match-p "⨯" plain)))
     ;; and the signal agrees
     (let ((org-foresight-background-categories nil)
           (org-foresight-informational-categories nil))
@@ -1761,21 +1903,22 @@ CLOCK: [2026-08-10 Mon 09:00]--[2026-08-10 Mon 10:00] =>  1:00
       (should (string-match-p "clashes with" (plist-get (car found) :note))))))
 
 (ert-deftest org-foresight-test-signal-wont-fit ()
-  "Work promised for today that no remaining gap can hold is called out."
+  "Work promised for today that no remaining gap can hold is called out.
+NOW is pinned to the morning, or the answer would depend on the hour the
+tests happen to run -- which is also the point of the signal: what fits
+shrinks as the day goes on."
   (org-foresight-test--with-signals
-      "* NEXT a very long job
-SCHEDULED: <2026-08-11 Tue>
-:PROPERTIES:
-:EFFORT:   12:00
-:END:
-* NEXT a short job
-SCHEDULED: <2026-08-11 Tue>
-:PROPERTIES:
-:EFFORT:   0:15
-:END:
-"
-    (let ((titles (mapcar (lambda (f) (plist-get f :title))
-                          (org-foresight-test--signal "Won't fit today"))))
+      (let ((today (format-time-string "<%Y-%m-%d %a>"
+                                       (org-foresight--day-start 0))))
+        (concat "* NEXT a very long job\nSCHEDULED: " today
+                "\n:PROPERTIES:\n:EFFORT:   12:00\n:END:\n"
+                "* NEXT a short job\nSCHEDULED: " today
+                "\n:PROPERTIES:\n:EFFORT:   0:15\n:END:\n"))
+    (let* ((day (org-foresight--day-start 0))
+           (morning (org-foresight--hhmm-on day "06:00"))
+           (titles (mapcar (lambda (f) (plist-get f :title))
+                           (org-foresight--wont-fit-findings
+                            (org-foresight-scan 1 day) morning))))
       (should (member "a very long job" titles))
       (should-not (member "a short job" titles)))))
 

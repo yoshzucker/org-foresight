@@ -377,16 +377,31 @@ summary without this one having to know about it.")
                  ""))
              org-foresight-verdict-extras ""))
 
-(defface org-foresight-report-booked '((t :inherit org-agenda-structure))
-  "Bar segment for meetings, travel and work already placed at a time.")
-(defface org-foresight-report-promised '((t :inherit org-scheduled))
-  "Bar segment for effort accepted but not yet placed.")
+;; Every bar and gutter is drawn in full blocks and told apart by colour, not
+;; by shading.  Mixing `█' with `▓ ▒ ░' is the obvious way to make a bar and
+;; the wrong one: in several monospace fonts -- PlemolJP among them -- the
+;; shades sit on a different box from the full block (74 units high and 55
+;; left of it, on a 1000 em), so every seam between them visibly steps.  The
+;; part-width blocks are kept for what they are actually for: the last cell of
+;; a run, where the duration does not fill a whole one.
+;;
+;; The faces inherit from the semantic ones every theme defines distinctly,
+;; rather than from `org-agenda-structure' and `org-scheduled', which many
+;; themes -- reasonably -- give the same colour.
+
+(defface org-foresight-report-booked
+  '((t :inherit font-lock-function-name-face))
+  "Meetings and work already placed at a time.")
+(defface org-foresight-report-travel '((t :inherit font-lock-keyword-face))
+  "Time spent getting somewhere: booked, but not spent working.")
+(defface org-foresight-report-promised '((t :inherit warning))
+  "Effort accepted but not yet placed.")
 (defface org-foresight-report-surge '((t :inherit shadow))
-  "Bar segment for the reserve held back for interruptions.")
+  "The reserve held back for interruptions.")
 (defface org-foresight-report-spare '((t :inherit success))
-  "Bar segment for time that may still be promised.")
+  "Time that may still be promised.")
 (defface org-foresight-report-grey '((t :inherit font-lock-comment-face))
-  "Bar for waking hours that are neither work nor a private commitment.")
+  "Waking hours that are neither work nor a private commitment.")
 
 (defcustom org-foresight-bar-width 40
   "Width in columns of the capacity bar."
@@ -394,61 +409,137 @@ summary without this one having to know about it.")
   :group 'org-foresight)
 
 (defvar org-foresight-report--bar-segments
-  '((:key :booked-min   :char ?█ :face org-foresight-report-booked   :label "booked")
-    (:key :committed-min :char ?▓ :face org-foresight-report-promised :label "promised")
-    (:key :surge-min    :char ?▒ :face org-foresight-report-surge    :label "surge")
-    (:key :headroom-min :char ?░ :face org-foresight-report-spare    :label "spare"))
-  "The bar's segments in order, each a plist of plist-key, glyph, face, label.")
+  '((:key :booked-min    :face org-foresight-report-booked   :label "booked")
+    (:key :travel-min    :face org-foresight-report-travel   :label "travel")
+    (:key :private-min-in-span :face org-foresight-report-grey :label "private")
+    (:key :committed-min :face org-foresight-report-promised :label "promised")
+    (:key :surge-min     :face org-foresight-report-surge    :label "surge")
+    (:key :spare-min     :face org-foresight-report-spare    :label "spare"))
+  "The bar's segments in order, each a plist of plist-key, face and label.
+
+They divide the work span exactly: booked and travel are the hours already
+spoken for, promised the effort accepted without a time, surge the reserve,
+and spare whatever survives all four.  The words are the ones the grid below
+uses for the same things, so the two blocks can be read as one account.
+
+All drawn in full blocks; the colour is what tells them apart.")
+
+(defvar org-foresight-report--off-segments
+  '((:key :private-min  :face org-foresight-report-booked   :label "private")
+    (:key :borrowed-min :face org-foresight-report-travel   :label "borrowed")
+    (:key :unclaimed-min :face org-foresight-report-spare   :label "unclaimed"))
+  "Segments of the second bar, dividing the waking day outside the work span.
+
+`unclaimed' rather than `free': the grid uses `free' for work time nothing
+has claimed, and an hour with no work in it and an evening with no plans in
+it are not the same kind of emptiness.")
+
+(defun org-foresight-report--bar-scale (cap)
+  "Return minutes per column, chosen so both bars can share a scale.
+
+Two bars drawn to their own widths cannot be compared, and comparing them is
+the point: a working day that dwarfs the evening is the thing worth seeing.
+So one scale serves both, taken from the longer of the two *spans*.
+
+Deliberately not from the promises.  Scaling to those would shrink an
+overcommitted day back until it fitted the width, which is the one day that
+must not be made to look like it fits."
+  (let ((longest (max (plist-get cap :span-min)
+                      (+ (max 0.0 (or (plist-get cap :private-min) 0.0))
+                         (max 0.0 (or (plist-get cap :borrowed-min) 0.0))
+                         (max 0.0 (or (plist-get cap :unclaimed-min) 0.0)))
+                      1.0)))
+    (/ longest (float org-foresight-bar-width))))
+
+(defcustom org-foresight-bar-max-width 64
+  "Widest a bar may be drawn, including any overflow past the span.
+The line it sits on has to fit the screen; a day promised three times over
+would otherwise run off the end of it."
+  :type 'integer
+  :group 'org-foresight)
+
+(defun org-foresight-report--draw-bar (cap segments per-column &optional limit)
+  "Return SEGMENTS of CAP drawn at PER-COLUMN minutes to the column.
+
+LIMIT, when given, marks where the span runs out -- so an overcommitted day
+shows its overflow rather than being clipped back to something that fits.
+Runaway overflow is cut at `org-foresight-bar-max-width' and ended with `…',
+since past a point the exact length of the impossible stops mattering and the
+figure above says it anyway."
+  (let ((bar "")
+        (total 0.0))
+    (dolist (seg segments)
+      (let* ((mins (max 0.0 (or (plist-get cap (plist-get seg :key)) 0.0)))
+             (n (round (/ mins per-column))))
+        (setq total (+ total mins))
+        (setq bar (concat bar (propertize (make-string (max 0 n) ?█)
+                                          'face (plist-get seg :face))))))
+    (when (and limit (> total limit))
+      (let ((mark (round (/ limit per-column))))
+        (when (< mark (length bar))
+          (setq bar (concat (substring bar 0 mark)
+                            (propertize "┃" 'face
+                                        'org-foresight-report-overcommitted)
+                            (substring bar (1+ mark)))))))
+    (if (<= (length bar) org-foresight-bar-max-width)
+        bar
+      (concat (substring bar 0 (1- org-foresight-bar-max-width))
+              (propertize "…" 'face 'org-foresight-report-overcommitted)))))
 
 (defun org-foresight-report--bar (cap)
-  "Return a stacked bar showing how CAP's day divides up, or nil.
+  "Return the work span drawn as a stacked bar, or nil.
 
 The whole bar is the work span, so meetings and journeys appear in it rather
 than being silently deducted first: the question \"where did the day go\" is
-answered by the same picture as \"what is left\".
+answered by the same picture as \"what is left\"."
+  (when (> (plist-get cap :span-min) 0)
+    (concat (make-string 13 ?\s)          ; under the sum's "=" in the key
+            (org-foresight-report--draw-bar
+             cap org-foresight-report--bar-segments
+             (org-foresight-report--bar-scale cap)
+             (plist-get cap :span-min)))))
 
-When more has been promised than the span holds, the bar is scaled to the
-promises and a mark is placed where the span actually ends.  The overflow is
-shown rather than clipped -- a day that does not fit is exactly the day worth
-seeing."
-  (let* ((span (plist-get cap :span-min))
-         (parts (mapcar (lambda (seg)
-                          (max 0.0 (or (plist-get cap (plist-get seg :key)) 0.0)))
-                        org-foresight-report--bar-segments))
-         (total (apply #'+ parts))
-         (scale (max span total)))
-    (when (> scale 0)
-      (let* ((width org-foresight-bar-width)
-             (cells (mapcar (lambda (m) (round (* width (/ m scale)))) parts))
-             (bar "")
-             (over (> total span)))
-        (cl-loop for seg in org-foresight-report--bar-segments
-                 for n in cells
-                 do (setq bar (concat bar (propertize
-                                           (make-string (max 0 n)
-                                                        (plist-get seg :char))
-                                           'face (plist-get seg :face)))))
-        ;; Rounding must not change the bar's length, or columns drift.
-        (setq bar (truncate-string-to-width bar width 0 ?\s))
-        (when over
-          (let ((mark (min (1- width) (round (* width (/ span scale))))))
-            (setq bar (concat (substring bar 0 mark)
-                              (propertize "┃" 'face
-                                          'org-foresight-report-overcommitted)
-                              (substring bar (1+ mark))))))
-        bar))))
+(defun org-foresight-report--off-bar (cap)
+  "Return the waking day outside the work span, drawn to the same scale."
+  (let ((total (+ (max 0.0 (or (plist-get cap :private-min) 0.0))
+                  (max 0.0 (or (plist-get cap :borrowed-min) 0.0))
+                  (max 0.0 (or (plist-get cap :unclaimed-min) 0.0)))))
+    (when (> total 0)
+      (concat (make-string 13 ?\s)
+              (org-foresight-report--draw-bar
+               cap org-foresight-report--off-segments
+               (org-foresight-report--bar-scale cap))))))
+
+(defun org-foresight-report--key (cap segments total-key total-label)
+  "Return a legend for SEGMENTS of CAP, led by TOTAL-LABEL and TOTAL-KEY.
+
+Written as the sum it is, so the parts can be checked against the whole
+without the reader having to add them up and hope.  Segments that are zero
+are left out: a day with no travel in it has nothing to say about travel,
+and saying it anyway costs the width the rest of the sum needs."
+  (let ((parts (seq-keep
+                (lambda (seg)
+                  (let ((mins (max 0.0 (or (plist-get cap (plist-get seg :key))
+                                           0.0))))
+                    (when (> mins 0)
+                      (concat (propertize "█" 'face (plist-get seg :face))
+                              (plist-get seg :label) " "
+                              (org-duration-from-minutes mins)))))
+                segments)))
+    (format "%-4s %5s = %s" total-label
+            (org-duration-from-minutes
+             (max 0.0 (or (plist-get cap total-key) 0.0)))
+            (if parts (string-join parts " + ") "nothing"))))
 
 (defun org-foresight-report--bar-key (cap)
-  "Return the legend naming each of the bar's segments in CAP, with its size.
-The legend carries the breakdown so the verdict line above need only carry
-the conclusion; stating both twice would cost a line and say nothing more."
-  (mapconcat (lambda (seg)
-               (concat (propertize (char-to-string (plist-get seg :char))
-                                   'face (plist-get seg :face))
-                       " " (plist-get seg :label) " "
-                       (org-duration-from-minutes
-                        (max 0.0 (or (plist-get cap (plist-get seg :key)) 0.0)))))
-             org-foresight-report--bar-segments "  "))
+  "Return the legend naming each of the work bar's segments in CAP."
+  (org-foresight-report--key cap org-foresight-report--bar-segments
+                             :span-min "Work"))
+
+(defun org-foresight-report--off-key (cap)
+  "Return the legend naming each of the off bar's segments in CAP."
+  (org-foresight-report--key cap org-foresight-report--off-segments
+                             :off-min "Off"))
 
 (defun org-foresight-report--verdict (cap)
   "Return the one-line answer for capacity plist CAP.
@@ -458,20 +549,16 @@ left, what has been promised away, and the hour the day actually ends."
         (finish (plist-get cap :finish))
         (samples (org-foresight-surge-samples)))
     (concat
-     (format "Free %s of %s"
-             (org-duration-from-minutes (plist-get cap :free-min))
-             (org-duration-from-minutes (plist-get cap :span-min)))
+     (format "Work %s" (org-duration-from-minutes (plist-get cap :span-min)))
      (if (>= headroom 0)
-         (format " · spare %s" (org-duration-from-minutes headroom))
+         (format " · %s left to promise" (org-duration-from-minutes headroom))
        (propertize
         (format " · OVER by %s" (org-duration-from-minutes (- headroom)))
         'face 'org-foresight-report-overcommitted))
      (if finish
          (format " · ends %s" (format-time-string "%H:%M" finish))
        (propertize " · will not fit" 'face 'org-foresight-report-overcommitted))
-     (format " · surge %s%s"
-             (org-duration-from-minutes (plist-get cap :surge-min))
-             (if samples (format " (n=%d)" samples) ""))
+     (when samples (format " · surge from %d day(s)" samples))
      ;; Shown whenever it is doing anything, so a day that has shrunk reads as
      ;; "my estimates are optimistic" rather than "the tool is being harsh".
      (let ((factor (org-foresight-bias-factor nil)))
@@ -480,20 +567,15 @@ left, what has been promised away, and the hour the day actually ends."
          "")))))
 
 (defun org-foresight-report--grey-line (cap)
-  "Return the line describing unclaimed private time in CAP, or nil.
+  "Return CAP's day outside the work span: its key and its bar, or nil.
 
-Kept apart from the work bar deliberately.  Unclaimed evenings are not
+Kept apart from the work bar deliberately, but drawn to the same scale, so
+the two can be set against each other -- a working day that dwarfs the
+evening is exactly the thing worth seeing.  Unclaimed evenings are not
 capacity waiting to be spent: the emptiness is what makes room for anything
 new, and a day that quietly borrows from it should have to say so."
-  (let ((grey (or (plist-get cap :grey-min) 0))
-        (borrowed (or (plist-get cap :borrowed-min) 0)))
-    (when (> (+ grey borrowed) 0)
-      (concat
-       (format "Grey %s" (org-duration-from-minutes grey))
-       (when (> borrowed 0)
-         (propertize (format " · borrowed %s"
-                             (org-duration-from-minutes borrowed))
-                     'face 'org-foresight-report-overcommitted))))))
+  (when-let ((bar (org-foresight-report--off-bar cap)))
+    (concat (org-foresight-report--off-key cap) "\n" bar)))
 
 (defun org-foresight-report-capacity-line (&optional day scan now)
   "Return DAY's capacity verdict as one line, or nil on a non-working day.
@@ -546,48 +628,157 @@ row's marker would quietly reschedule the wrong thing."
   :type 'integer
   :group 'org-foresight)
 
-(defcustom org-foresight-grid-gutter-width 14
+(defcustom org-foresight-grid-gutter-width 8
   "Widest the grid's gutter may grow, in columns.
-A long empty evening would otherwise push the titles off the screen."
+
+Eight quarter-hours is two hours, and two hours is about where a piece of
+work stops being one piece: past that it wants breaking up rather than
+drawing longer.  So the gutter saturates there instead of running on, and
+the number in the effort column carries anything above it."
   :type 'integer
   :group 'org-foresight)
 
+(defconst org-foresight-report--partials [?▏ ?▎ ?▍ ?▌ ?▋ ?▊ ?▉]
+  "Blocks filling 1/8 to 7/8 of a cell, for a run's last, partial cell.")
+
+(defvar org-foresight-report--grid-faces
+  '((meeting   . org-foresight-report-booked)
+    (task      . org-foresight-report-booked)
+    (travel    . org-foresight-report-travel)
+    (promised  . org-foresight-report-promised)
+    (private   . org-foresight-report-grey)
+    (context   . org-foresight-report-grey)
+    (available . org-foresight-report-spare)
+    (grey      . org-foresight-report-grey))
+  "Alist of band kind to the face its gutter is drawn in.
+One shape throughout, so nothing can step at a seam; the kind is carried by
+colour, which is what colour is for.")
+
 (defvar org-foresight-report--grid-glyphs
-  '((meeting   . (?█ . org-foresight-report-booked))
-    (task      . (?█ . org-foresight-report-booked))
-    (travel    . (?▓ . org-foresight-report-promised))
-    (private   . (?░ . org-foresight-report-grey))
-    (available . (?· . org-foresight-report-spare))
-    (grey      . (?░ . org-foresight-report-grey)))
-  "Alist of band kind to (GLYPH . FACE) for the grid's gutter.")
+  '((available . ?·))
+  "Kinds drawn with something other than a full block.
+Unclaimed time is the exception worth making: a run of dots reads as absence
+in a way that a coloured block, however pale, does not.")
+
+(defvar org-foresight-report--grid-legend
+  '((meeting . "booked") (travel . "travel") (promised . "promised")
+    (private . "private") (available . "free"))
+  "Kinds named in the grid's key, in the order they are shown.
+The same words the capacity bar uses, for the same things.")
+
+(defvar org-foresight-report--grid-flags
+  '(("?" . "no time yet") ("!" . "due today")
+    ("⨯" . "double-booked") ("╰" . "alongside"))
+  "Marks in the grid's flag column and what each stands for.
+
+Each has to occupy exactly one cell or the column behind it steps.  That
+rules out characters a monospace font is likely to be missing -- a glyph it
+does not have comes from wherever the fallback finds it, at whatever width
+that font happens to use.  `✗' U+2717 is one such: absent from PlemolJP, and
+rendered a little too wide by the substitute.  `⨯' U+2A2F says the same thing
+and is present.")
+
+(defun org-foresight-report--grid-key (&optional flags)
+  "Return the grid's key: what the gutter shapes and the FLAGS mean.
+
+The bar above the grid carries its own key, and without one here the same
+shape would appear in two blocks with nothing saying whether it means the
+same thing.  It does -- and saying so is cheaper than leaving it assumed.
+
+Only the flags actually used are explained.  A key that lists what a clash
+looks like on a day that has none is describing a problem the reader does
+not have, which is a slower way of saying nothing."
+  (concat
+   (mapconcat (lambda (c)
+                (concat (propertize
+                         (char-to-string
+                          (or (cdr (assq (car c) org-foresight-report--grid-glyphs))
+                              ?█))
+                         'face (cdr (assq (car c)
+                                          org-foresight-report--grid-faces)))
+                        " " (cdr c)))
+              org-foresight-report--grid-legend "  ")
+   (when flags
+     (concat
+      "\n"
+      (propertize
+       (mapconcat (lambda (f) (concat f " "
+                                      (cdr (assoc f
+                                                  org-foresight-report--grid-flags))))
+                  flags "  ")
+       'face 'shadow)))))
 
 (defun org-foresight-report--grid-gutter (kind minutes)
-  "Return the gutter for a band of KIND lasting MINUTES."
-  (let* ((cell (or (cdr (assq kind org-foresight-report--grid-glyphs))
-                   (cons ?\s 'default)))
-         (n (max 1 (min org-foresight-grid-gutter-width
-                        (round (/ minutes
-                                  (float org-foresight-grid-minutes-per-column)))))))
-    (truncate-string-to-width
-     (propertize (make-string n (car cell)) 'face (cdr cell))
-     org-foresight-grid-gutter-width 0 ?\s)))
+  "Return the gutter for a band of KIND lasting MINUTES.
 
-(defun org-foresight-report--grid-row (time gutter effort category title marker)
+Whole cells are full blocks; what is left over draws the part-width block
+nearest to it, so twenty minutes at a quarter-hour to the cell reads as one
+cell and a third rather than being rounded to one or to two.  That is what
+those characters are for, and the only place they are metrically safe to sit
+beside a full block -- at the end of a run, where nothing follows them."
+  (let* ((face (or (cdr (assq kind org-foresight-report--grid-faces)) 'default))
+         (glyph (cdr (assq kind org-foresight-report--grid-glyphs)))
+         (cells (/ minutes (float org-foresight-grid-minutes-per-column)))
+         (full (min org-foresight-grid-gutter-width (floor cells)))
+         (rest (- cells full))
+         (eighths (round (* 8 rest)))
+         (text
+          (cond
+           ;; A kind with a glyph of its own is a texture, not a measure.
+           (glyph (make-string (max 1 (min org-foresight-grid-gutter-width
+                                           (round cells)))
+                               glyph))
+           ((>= full org-foresight-grid-gutter-width)
+            (make-string org-foresight-grid-gutter-width ?█))
+           ((and (zerop full) (zerop eighths)) "▏")
+           ((zerop eighths) (make-string full ?█))
+           ((>= eighths 8) (make-string (1+ full) ?█))
+           (t (concat (make-string full ?█)
+                      (char-to-string
+                       (aref org-foresight-report--partials (1- eighths))))))))
+    (truncate-string-to-width (propertize text 'face face)
+                              org-foresight-grid-gutter-width 0 ?\s)))
+
+(defun org-foresight-report--grid-row (span flag gutter effort category title
+                                            marker)
   "Return one grid row, actionable when MARKER is a marker.
 
-Columns are time, gutter, effort, category, title.  The kind of block is not
-among them on purpose: the gutter already says it in glyph and colour, and a
-column repeating that would cost width the title needs.  CATEGORY is the one
-thing about a block that nothing else on the row conveys."
+Columns are category, span, effort, flag, gutter, title -- the order Org's
+own agenda puts them in (`org-agenda-prefix-format' reads category, time,
+effort), so a day read here and a day read there scan the same way.
+
+SPAN is \"HH:MM-HH:MM\", or \"?\" where the work has no time yet.  The kind
+of block gets no column of its own: the gutter says it in shape and colour,
+and repeating that would cost width the title wants.  TITLE is last and is
+not truncated -- nothing after it needs to line up, so cutting it would only
+lose words to no purpose."
   (org-foresight-report--actionable
-   (format " %5s %s %5s %s %s"
-           (or time "")
-           gutter
+   (format " %s %-11s %5s %s %s %s"
+           (truncate-string-to-width (or category "") 8 0 ?\s)
+           (or span "")
            (or effort "")
-           (truncate-string-to-width (or category "") 10 0 ?\s)
-           (truncate-string-to-width
-            (replace-regexp-in-string "[\n\r]" " " (or title "")) 32 0 ?\s))
+           (or flag " ")
+           gutter
+           (replace-regexp-in-string "[\n\r]" " " (or title "")))
    marker))
+
+(defun org-foresight-report--grid-span (start end)
+  "Return START and END as \"HH:MM-HH:MM\"."
+  (concat (format-time-string "%H:%M" start) "-"
+          (format-time-string "%H:%M" end)))
+
+(defun org-foresight-report--grid-todo (marker)
+  "Return the TODO keyword of MARKER's entry, with a trailing space, or \"\".
+The agenda shows the state beside the heading and it is worth having here for
+the same reason: NEXT and WAIT are different answers to \"can this move\"."
+  (or (and (markerp marker)
+           (marker-buffer marker)
+           (with-current-buffer (marker-buffer marker)
+             (org-with-wide-buffer
+              (goto-char marker)
+              (when-let ((kw (org-get-todo-state)))
+                (concat (propertize kw 'face (org-get-todo-face kw)) " ")))))
+      ""))
 
 (defun org-foresight-report--grid-category (b)
   "Return the category column for band or ledger entry B.
@@ -608,33 +799,49 @@ its own but is not nothing either."
     ;; says how much of it there is, and a row per stretch of nothing pushes
     ;; the day itself off the screen.
     (unless (eq kind 'grey)
-      (org-foresight-report--grid-row
-       (format-time-string "%H:%M" (plist-get b :start))
-       (org-foresight-report--grid-gutter kind mins)
-       (org-duration-from-minutes mins)
-       (if (eq kind 'available) "" (org-foresight-report--grid-category b))
-       (if (eq kind 'available) "free" (or (plist-get b :title) "?"))
-       (plist-get b :marker)))))
+      (let* ((trimmed (plist-get b :trimmed))
+             ;; What it actually needs, not what was left for it.
+             (wanted (if trimmed
+                         (/ (float-time (time-subtract (plist-get b :end)
+                                                       (plist-get b :full-start)))
+                            60.0)
+                       mins)))
+        (org-foresight-report--grid-row
+         (org-foresight-report--grid-span (if trimmed
+                                              (plist-get b :full-start)
+                                            (plist-get b :start))
+                                          (plist-get b :end))
+         (when trimmed
+           (propertize "⨯" 'face 'org-foresight-report-overcommitted))
+         (org-foresight-report--grid-gutter kind wanted)
+         (org-duration-from-minutes wanted)
+         (if (eq kind 'available) "" (org-foresight-report--grid-category b))
+         (if (eq kind 'available)
+             "free"
+           (concat (org-foresight-report--grid-todo (plist-get b :marker))
+                   (or (plist-get b :title) "?")))
+         (plist-get b :marker))))))
 
 (defun org-foresight-report--grid-alongside (e)
   "Return the row for ledger entry E, shown beneath whatever it shares with."
   (org-foresight-report--grid-row
-   nil
-   (truncate-string-to-width
-    (propertize "╰" 'face 'org-foresight-report-surge)
-    org-foresight-grid-gutter-width 0 ?\s)
+   (org-foresight-report--grid-span (plist-get e :start) (plist-get e :end))
+   (propertize "╰" 'face 'org-foresight-report-surge)
+   (org-foresight-report--grid-gutter 'promised (plist-get e :effort))
    (org-duration-from-minutes (plist-get e :effort))
    (org-foresight-report--grid-category e)
-   (concat (or (plist-get e :title) "?") " (listen)")
+   (or (plist-get e :title) "?")
    (plist-get e :marker)))
 
 (defun org-foresight-report--grid-boundary (time label)
-  "Return the rule drawn where the working day opens or closes."
+  "Return the rule drawn where the working day opens or closes.
+Drawn the full width of the gutter, so it reads as a line across the day
+rather than as another block in it."
   (org-foresight-report--grid-row
    (format-time-string "%H:%M" time)
-   (truncate-string-to-width
-    (propertize "─────" 'face 'org-agenda-structure)
-    org-foresight-grid-gutter-width 0 ?\s)
+   nil
+   (propertize (make-string org-foresight-grid-gutter-width ?─)
+               'face 'org-agenda-structure)
    "" "" label nil))
 
 (defun org-foresight-report--grid-eclipsed (ledger bands)
@@ -661,10 +868,11 @@ happens."
                   (not (member (cons (plist-get e :title) (plist-get e :end))
                                shown)))
          (org-foresight-report--grid-row
-          (format-time-string "%H:%M" (plist-get e :start))
-          (truncate-string-to-width
-           (propertize "✗" 'face 'org-foresight-report-overcommitted)
-           org-foresight-grid-gutter-width 0 ?\s)
+          (org-foresight-report--grid-span (plist-get e :start)
+                                           (plist-get e :end))
+          (propertize "⨯" 'face 'org-foresight-report-overcommitted)
+          (org-foresight-report--grid-gutter
+           (plist-get e :kind) (plist-get e :effort))
           (org-duration-from-minutes (plist-get e :effort))
           (org-foresight-report--grid-category e)
           (or (plist-get e :title) "?")
@@ -682,10 +890,9 @@ and a plan made without knowing it is a plan made blind."
      (when (and (plist-get e :start)
                 (eq (plist-get e :attention) 'informational))
        (org-foresight-report--grid-row
-        (format-time-string "%H:%M" (plist-get e :start))
-        (truncate-string-to-width
-         (propertize "┈" 'face 'org-foresight-report-grey)
-         org-foresight-grid-gutter-width 0 ?\s)
+        (org-foresight-report--grid-span (plist-get e :start) (plist-get e :end))
+        nil
+        (org-foresight-report--grid-gutter 'context (plist-get e :effort))
         (org-duration-from-minutes (plist-get e :effort))
         (org-foresight-report--grid-category e)
         (or (plist-get e :title) "?")
@@ -699,14 +906,18 @@ and a plan made without knowing it is a plan made blind."
      (when (eq (plist-get e :kind) 'promised)
        (let ((est (plist-get e :effort))
              (adj (plist-get e :effort-adj)))
+         ;; The question mark stands where the clock would be, because that is
+         ;; precisely what is missing.  It still has a length, so it still
+         ;; gets a gutter: how much of a day it wants is the reason to place
+         ;; it at all.
          (org-foresight-report--grid-row
+          (propertize "?" 'face 'org-foresight-report-promised)
           nil
-          (truncate-string-to-width
-           (propertize "?" 'face 'org-foresight-report-promised)
-           org-foresight-grid-gutter-width 0 ?\s)
+          (org-foresight-report--grid-gutter 'promised (or adj est))
           (org-duration-from-minutes (or adj est))
           (org-foresight-report--grid-category e)
-          (concat (or (plist-get e :title) "?")
+          (concat (org-foresight-report--grid-todo (plist-get e :marker))
+                  (or (plist-get e :title) "?")
                   (when (and adj (> (abs (- adj est)) 1))
                     (format " (est %s)" (org-duration-from-minutes est))))
           (plist-get e :marker)))))
@@ -728,14 +939,18 @@ exactly how a day gets planned without it."
                            (not (org-entry-is-done-p))
                            (= (org-foresight--day-of dead day) 0))
                   (push (org-foresight-report--grid-row
-                         nil
-                         (truncate-string-to-width
-                          (propertize "!" 'face
-                                      'org-foresight-report-overcommitted)
-                          org-foresight-grid-gutter-width 0 ?\s)
-                         "due"
+                         (propertize "?" 'face
+                                     'org-foresight-report-overcommitted)
+                         (propertize "!" 'face
+                                     'org-foresight-report-overcommitted)
+                         (make-string org-foresight-grid-gutter-width ?\s)
+                         ""
                          (or (org-entry-get (point) "CATEGORY" t) "")
-                         (org-get-heading t t t t)
+                         (concat (when-let ((kw (org-get-todo-state)))
+                                   (concat (propertize kw 'face
+                                                       (org-get-todo-face kw))
+                                           " "))
+                                 (org-get-heading t t t t))
                          (point-marker))
                         out))))
             nil nil)))))
@@ -765,9 +980,8 @@ today\" has to be a list of things, in the order they happen."
           ;; below the rules is visibly work that escaped the working day.
           (unless (or opened (time-less-p (plist-get b :start) (car work)))
             (setq opened t)
-            (when rows
-              (push (org-foresight-report--grid-boundary (car work) "work starts")
-                    rows)))
+            (push (org-foresight-report--grid-boundary (car work) "work starts")
+                  rows))
           (unless (or closed (time-less-p (plist-get b :start) (cdr work)))
             (setq closed t opened t)
             (push (org-foresight-report--grid-boundary (cdr work) "work ends")
@@ -779,6 +993,9 @@ today\" has to be a list of things, in the order they happen."
             ;; one line down the page.
             (dolist (a (org-foresight-report--grid-sharers ledger b))
               (push a rows))))
+        (unless opened
+          (push (org-foresight-report--grid-boundary (car work) "work starts")
+                rows))
         (unless closed
           (push (org-foresight-report--grid-boundary (cdr work) "work ends")
                 rows)))
@@ -786,21 +1003,26 @@ today\" has to be a list of things, in the order they happen."
              (unplaced (org-foresight-report--grid-unplaced ledger))
              (due (org-foresight-report--grid-due day))
              (extra (append eclipsed unplaced due))
-             (context (org-foresight-report--grid-context ledger))
-             ;; A key, rather than a word appended to each row: the suffix was
-             ;; the first thing a long title truncated away, so exactly the
-             ;; rows that most needed explaining lost the explanation.
-             (legend (string-join
-                      (delq nil
-                            (list (and unplaced "? not yet placed")
-                                  (and due "! due today")
-                                  (and eclipsed "✗ double-booked")))
-                      "   ")))
+             (context (org-foresight-report--grid-context ledger)))
         (mapconcat
          #'identity
-         (append (nreverse rows)
-                 (and extra (list "" (propertize (concat "       " legend)
-                                                 'face 'shadow)))
+         (append (list (org-foresight-report--grid-key
+                        (delq nil
+                              (list (and (or eclipsed
+                                             (seq-find
+                                              (lambda (r)
+                                                (string-match-p "⨯" r))
+                                              rows))
+                                         "⨯")
+                                    (and unplaced "?")
+                                    (and due "!")
+                                    (and (seq-find
+                                          (lambda (r)
+                                            (string-match-p "╰" r)) rows)
+                                         "╰"))))
+                       "")
+                 (nreverse rows)
+                 (and extra '(""))
                  extra
                  (and context
                       (list "" (org-foresight-report--badge
