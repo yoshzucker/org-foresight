@@ -452,30 +452,8 @@ drawn, and reaching for the network there would stall the display."
 
 ;;;; Forward load
 
-(defun org-foresight-load (days &optional scan now)
-  "Return a DAYS-length vector of (PROMISED-MIN . FREE-MIN) starting today.
-PROMISED counts effort promised but not yet placed, plus the surge reserve, so
-it is what the day still has to absorb.  FREE is the working window minus what
-is already booked.  A non-working day reports (0 . 0)."
-  (let* ((now (or now (current-time)))
-         (today (org-foresight--day-start 0))
-         (scan (or scan (org-foresight-scan days today)))
-         (surge (org-foresight-surge-minutes))
-         (out (make-vector days nil)))
-    (dotimes (i days)
-      (let* ((day (time-add today (days-to-time i)))
-             (window (org-foresight-workday-window day)))
-        (aset out i
-              (if (null window)
-                  (cons 0.0 0.0)
-                (let ((free (org-foresight--intervals-seconds
-                             (org-foresight-free-intervals day scan now)))
-                      (committed (aref (plist-get scan :committed) i)))
-                  (cons (+ committed surge) (/ free 60.0)))))))
-    out))
-
 (defcustom org-foresight-load-rows 5
-  "How many working days the forward-load table shows.
+  "How many working days the forward-load block shows.
 
 Enough to answer \"then when?\", and no more.  A fortnight of rows is a
 fortnight of scrolling for a question that is nearly always settled by the
@@ -484,39 +462,66 @@ first day with room in it."
   :group 'org-foresight)
 
 (defun org-foresight-report-load (&optional days scan now)
-  "Return the forward-load table: which of the coming days can still take work.
-This is the block that turns \"I'm busy\" into a date."
+  "Return the coming days drawn as today is, so that they can be compared.
+
+This is the block that turns \"I'm busy\" into a date.  Each row is one
+working day: what may still be promised on it, and the same stacked bar the
+capacity block draws above -- same segments, same colours, same scale.  The
+point of a forward view is to hold it against today, and two pictures of the
+same thing drawn differently cannot be held against each other.
+
+The figure is `:headroom-min': free time less what is already promised and
+the reserve held back for interruptions.  Positive is what may still be taken
+on, negative is what would have to come off first.  It is the number the
+verdict states for today, asked of each day in turn -- one definition, not a
+second one that happens to live in a table.
+
+Capacity is worked out only for the days that will be drawn.  Costing out a
+fortnight to print five rows is the sort of expense that never shows in a
+benchmark and always shows in a keystroke."
   (let* ((days (or days org-foresight-horizon-days))
-         (load (org-foresight-load days scan now))
          (today (org-foresight--day-start 0))
-         rows)
-    (dotimes (i days)
-      (let* ((day (time-add today (days-to-time i)))
-             (promised (car (aref load i)))
-             (free (cdr (aref load i))))
-        (when (> free 0)
-          (push (list day promised free) rows))))
-    (setq rows (seq-take (nreverse rows) org-foresight-load-rows))
+         (scan (or scan (org-foresight-scan days today)))
+         today-cap rows)
+    (catch 'enough
+      (dotimes (i days)
+        (let ((day (time-add today (days-to-time i))))
+          (when (org-foresight-workday-window day)
+            (let ((cap (org-foresight-capacity day scan now)))
+              (when (zerop i) (setq today-cap cap))
+              (when (plist-get cap :window)
+                (push (cons day cap) rows)
+                (when (>= (length rows) org-foresight-load-rows)
+                  (throw 'enough nil))))))))
+    (setq rows (nreverse rows))
     (if (null rows)
         (propertize "(no working days in the horizon)" 'face 'org-table)
-      (propertize
-       (concat
-        (format "| %-9s | %8s | %6s | %-18s |" "Day" "Promised" "Free" "Load")
-        "\n|" (make-string 11 ?-) "+" (make-string 10 ?-) "+" (make-string 8 ?-)
-        "+" (make-string 20 ?-) "|\n"
+      ;; One scale for every row, and the same one the block above used, so a
+      ;; day appearing in both is drawn at the same length in both.
+      (let ((per-column
+             (max (/ (apply #'max 1.0
+                            (mapcar (lambda (r) (plist-get (cdr r) :span-min))
+                                    rows))
+                     (float org-foresight-bar-width))
+                  (if today-cap
+                      (org-foresight-report--bar-scale today-cap)
+                    0.0))))
         (mapconcat
          (lambda (r)
-           (let* ((day (nth 0 r)) (promised (nth 1 r)) (free (nth 2 r)))
-             (format "| %-9s | %8s | %6s | %s |"
-                     (format-time-string "%a %m-%d" day)
-                     (org-duration-from-minutes promised)
-                     (org-duration-from-minutes free)
-                     (truncate-string-to-width
-                      (orgtbl-ascii-draw (min promised free) 0 (max free 1) 18
-                                         org-foresight-bar-chars)
-                      18 0 ?\s))))
-         rows "\n"))
-       'face 'org-table))))
+           (let ((head (plist-get (cdr r) :headroom-min)))
+             (concat
+              (format " %-9s %15s  "
+                      (format-time-string "%a %m-%d" (car r))
+                      (if (>= head 0)
+                          (format "%s to promise" (org-duration-from-minutes head))
+                        (propertize
+                         (format "OVER by %s"
+                                 (org-duration-from-minutes (- head)))
+                         'face 'org-foresight-report-overcommitted)))
+              (org-foresight-report--draw-bar
+               (cdr r) org-foresight-report--bar-segments per-column
+               (plist-get (cdr r) :span-min)))))
+         rows "\n")))))
 
 ;;;; The plan board
 
