@@ -136,32 +136,36 @@ then occasionally:
 Capacity  what today can still take
 Work 8:30 · OVER by 3:45 · will not fit
 Work  8:30 = █booked 2:45 + █travel 2:00 + █promised 7:30 + █surge 1:00
-             ████████████████████████████████████████┃██████████████████
+████████████████████████████████████████┃██████████████████
 Off   7:00 = █private 1:30 + █unclaimed 5:30
-             ██████████████████████████████
+██████████████████████████████
 
 Today  where the hours go
 █ booked  █ travel  █ promised  █ private  · free
 ⨯ double-booked  ? no time yet  ╰ alongside
 
-          09:00               ──────── work starts
-          09:00-09:30  0:30   ··       free
- outlook  09:30-09:45  0:15   █        Morning standup
-          09:45-12:00  2:15   ········ free
- travel   12:00-13:00  1:00   ████     → office
- reportin 13:00-14:00  1:00   ████     NEXT Draft the quarterly summary
- outlook  13:00-14:00  1:00 ╰ ████     All-hands
- outlook  14:00-15:30  1:30   ██████   Project review
-          15:30-16:30  1:00   ····     free
- travel   16:30-17:30  1:00   ████     → home
-          17:30               ──────── work ends
- family   19:00-20:30  1:30   ██████   Dinner with the family
+          09:00               ────────      work starts
+          09:00-09:30  0:30   ··            free
+          ↳ fits Reply to the procurem… 0:30
+ outlook  09:30-09:45  0:15   █             Morning standup
+          09:45-12:00  2:15   ········      free
+          ↳ fits Write the vendor comp… 2:00 · Review the migration … 1:30 +1
+ travel   12:00-13:00  1:00   ████          → office
+ reportin 13:00-14:00  1:00   ████      +3d NEXT Draft the quarterly summary
+ outlook  13:00-14:00  1:00 ╰ ████          All-hands
+ outlook  14:00-15:30  1:30   ██████        Project review
+ travel   15:00-15:45  0:45 ⨯ ███           → client
+ outlook  15:45-16:30  0:45   ███           Client review
+ travel   17:00-17:30  0:30   ██            → home
+          17:30               ────────      work ends
+ family   19:00-20:30  1:30   ██████        Dinner with the family
 
- reportin ?            6:00   ████████ NEXT Rewrite the annual report
- reportin ? !                          NEXT Prepare the board pack
+ procurem ?            2:00   ████████  +1d NEXT Write the vendor comparison
+ reportin ?            6:00   ████████      NEXT Rewrite the annual report
+ reportin ? !                              NEXT Prepare the board pack
 
 Alongside  happening, but not yours
- club     18:00-20:00  2:00   ████████ Kids' basketball
+ club     18:00-20:00  2:00   ████████      Kids' basketball
 #+end_example
 
 Columns run category, span, effort, flag, gutter, heading — the order Org's
@@ -178,6 +182,18 @@ number carries it.
 Work with no time yet has =?= where the span would be, and still draws a
 gutter: how much of a day it wants is the reason to place it at all. The key
 names only the marks the day actually contains.
+
+A gap says what it would hold. Under each free stretch, =↳ fits= names the
+promised work that is short enough to go there, largest first — the biggest
+piece that will go in is the one worth knowing about, since anything smaller
+still fits afterwards, and =+2= counts what was left unsaid. Without it a gap
+is a hole to be reasoned about; with it the day suggests its own next move.
+=org-foresight-grid-suggest= sets how many are named, or =nil= for none.
+
+Deadlines get a column of their own, in days rather than dates — =+3d= can
+wait, =0d= cannot, =-2d= should already have gone. Every row on the board
+invites the same question, and this is the answer to it, lined up so the
+whole day can be asked at once.
 
 ** A note on the block characters
 

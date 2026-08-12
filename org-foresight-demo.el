@@ -230,8 +230,14 @@ example of every situation the signals look for."
 
      ;; --- the signals ----------------------------------------------------
      ;; Kept moving: four reschedules, written the way org-log-reschedule does.
+     ;; Deadlines on promised work: which of these can be pushed to another
+     ;; day is the question the board is there to answer.  Both keywords go on
+     ;; ONE line -- Org's planning line is a single line, and splitting it
+     ;; leaves the second half as body text, which stops the PROPERTIES drawer
+     ;; below from being a property drawer at all.
      "**** NEXT Write the vendor comparison\n"
-     "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
+     "SCHEDULED: " (org-foresight-demo--stamp 0)
+     " DEADLINE: " (org-foresight-demo--stamp d1) "\n"
      ":PROPERTIES:\n:EFFORT:   2:00\n:CATEGORY: procurement\n:END:\n"
      ":LOGBOOK:\n"
      "- Rescheduled from \"" (org-foresight-demo--inactive -8) "\" on "
