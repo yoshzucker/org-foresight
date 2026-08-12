@@ -409,8 +409,17 @@ summary without this one having to know about it.")
   "Time spent getting somewhere: booked, but not spent working.")
 (defface org-foresight-report-promised '((t :inherit warning))
   "Effort accepted but not yet placed.")
-(defface org-foresight-report-surge '((t :inherit shadow))
-  "The reserve held back for interruptions.")
+(defface org-foresight-report-surge '((t :inherit warning))
+  "The reserve held back for interruptions: an outline around nothing.
+
+Drawn as a rule rather than as a fill, because that is what it is -- room
+kept open for work that has not arrived, and filling it in would claim it for
+something.  The outline takes the colour that marks an overrun, since the
+reserve is the last thing between a day and one: when it has to be spent, the
+day is over its limit and simply has not admitted it yet.
+
+Emacs draws a face box around each run of the face, so a segment becomes one
+rectangle rather than a fence of separate cells.")
 (defface org-foresight-report-spare '((t :inherit success))
   "Time that may still be promised, and the gaps it is made of.
 The one quantity on the board worth growing, so it is worth a colour of its
@@ -423,6 +432,20 @@ question \"can this move\" has an obvious answer.")
 (defface org-foresight-report-grey '((t :inherit font-lock-comment-face))
   "Waking hours that are neither work nor a private commitment.")
 
+;; The reserve's outline, set here rather than in its `defface' for the same
+;; reason the badges' boxes are: `defface' does not touch a face that already
+;; exists, so a spec written there is silently ignored on every reload after
+;; the first -- and the box is the whole of how the reserve is drawn.
+;;
+;; No `:color': a box without one takes the face's own foreground, which is
+;; `warning' by inheritance and so follows the theme.  Naming a colour here
+;; would freeze whatever was loaded at the time, which on a theme switch is
+;; the wrong one and on a bare load is none at all.  A line-width of -1 draws
+;; the rule inside the line rather than making the row taller than its
+;; neighbours.
+(set-face-attribute 'org-foresight-report-surge nil
+                    :box '(:line-width -1))
+
 (defcustom org-foresight-bar-width 40
   "Width in columns of the capacity bar."
   :type 'integer
@@ -434,21 +457,28 @@ question \"can this move\" has an obvious answer.")
     (:key :private-min-in-span :face org-foresight-report-private
           :label "private")
     (:key :committed-min :face org-foresight-report-promised :label "promised")
-    (:key :surge-min     :face org-foresight-report-surge    :label "surge")
-    (:key :spare-min     :face org-foresight-report-spare    :label "spare"))
-  "The bar's segments in order, each a plist of plist-key, face and label.
+    (:key :surge-min     :face org-foresight-report-surge    :label "surge"
+          :glyph ?\s)
+    (:key :spare-min     :face org-foresight-report-spare    :label "spare"
+          :glyph ?·))
+  "The bar's segments in order, each a plist of plist-key, face, label and glyph.
 
 They divide the work span exactly: booked and travel are the hours already
 spoken for, promised the effort accepted without a time, surge the reserve,
 and spare whatever survives all four.  The words are the ones the grid below
 uses for the same things, so the two blocks can be read as one account.
 
-All drawn in full blocks; the colour is what tells them apart.")
+Claimed time is drawn in full blocks and told apart by colour.  Spare is
+drawn in dots, as the grid draws a free stretch -- one word for one thing,
+and the same reason it works there: a run of dots reads as absence in a way
+that a coloured block, however pale, does not.  Nothing is lost by it, since
+a horizontal bar carries its quantity in length rather than in ink.")
 
 (defvar org-foresight-report--off-segments
   '((:key :private-min  :face org-foresight-report-private  :label "private")
     (:key :borrowed-min :face org-foresight-report-travel   :label "borrowed")
-    (:key :unclaimed-min :face org-foresight-report-spare   :label "unclaimed"))
+    (:key :unclaimed-min :face org-foresight-report-spare   :label "unclaimed"
+          :glyph ?·))
   "Segments of the second bar, dividing the waking day outside the work span.
 
 `unclaimed' rather than `free': the grid uses `free' for work time nothing
@@ -494,7 +524,9 @@ figure above says it anyway."
              (n (round (/ mins per-column))))
         (setq total (+ total mins))
         (setq bar (concat bar (propertize
-                               (make-string (max 0 n) org-foresight-block)
+                               (make-string (max 0 n)
+                                            (or (plist-get seg :glyph)
+                                                org-foresight-block))
                                'face (plist-get seg :face))))))
     (when (and limit (> total limit))
       (let ((mark (round (/ limit per-column))))
@@ -530,42 +562,59 @@ answered by the same picture as \"what is left\"."
        cap org-foresight-report--off-segments
        (org-foresight-report--bar-scale cap)))))
 
-(defun org-foresight-report--key (cap segments total-key total-label)
-  "Return a legend for SEGMENTS of CAP, led by TOTAL-LABEL and TOTAL-KEY.
+(defconst org-foresight-report--bar-stub "%-4s %5s "
+  "Format of the label a bar carries: what it is, and how long it is.
+The total sits on the bar's own line rather than above it, which is what
+lets the two bars be drawn one under the other -- and drawn one under the
+other is the only way a shared scale is any use, since comparing them is the
+whole reason they share one.")
 
-Written as the sum it is, so the parts can be checked against the whole
-without the reader having to add them up and hope.  Segments that are zero
-are left out: a day with no travel in it has nothing to say about travel,
-and saying it anyway costs the width the rest of the sum needs."
+(defun org-foresight-report--bar-column ()
+  "Return the column every bar starts at, and every legend lines up with."
+  (length (format org-foresight-report--bar-stub "Work" "00:00")))
+
+(defun org-foresight-report--bar-line (label total-min bar)
+  "Return BAR led by LABEL and TOTAL-MIN, or nil without a BAR."
+  (when bar
+    (concat (format org-foresight-report--bar-stub label
+                    (org-duration-from-minutes (max 0.0 (or total-min 0.0))))
+            bar)))
+
+(defun org-foresight-report--key (cap segments)
+  "Return a legend naming each of SEGMENTS of CAP, aligned under its bar.
+
+Sits with its bar rather than between the two, so the bars stay adjacent.
+Segments that are zero are left out: a day with no travel in it has nothing
+to say about travel, and saying it anyway costs the width the rest needs.
+
+Two spaces between terms rather than a `+' chain.  The total is on the bar's
+own line now, so the legend has stopped being a sum to check and gone back to
+being what it is -- a list of what the colours mean."
   (let* ((parts (seq-keep
                  (lambda (seg)
                    (let ((mins (max 0.0 (or (plist-get cap (plist-get seg :key))
                                             0.0))))
                      (when (> mins 0)
-                       (concat (propertize (string org-foresight-block)
+                       (concat (propertize (string (or (plist-get seg :glyph)
+                                                       org-foresight-block))
                                            'face (plist-get seg :face))
                                " " (plist-get seg :label) " "
                                (org-duration-from-minutes mins)))))
                  segments))
-         (lead (format "%-4s %5s = " total-label
-                       (org-duration-from-minutes
-                        (max 0.0 (or (plist-get cap total-key) 0.0)))))
-         (indent (make-string (length lead) ?\s))
-         (line lead)
+         (indent (make-string (org-foresight-report--bar-column) ?\s))
+         (line indent)
          out)
-    (if (null parts)
-        (concat lead "nothing")
-      ;; Wrapped rather than truncated: with every segment in play the sum is
-      ;; simply longer than a line, and a sum missing its last term is worse
+    (when parts
+      ;; Wrapped rather than truncated: with every segment in play the legend
+      ;; is simply longer than a line, and one missing its last term is worse
       ;; than one that takes two lines to finish.
       (while parts
-        (let* ((part (pop parts))
-               (piece (concat part (and parts " +"))))
-          (if (or (equal line lead)
-                  (<= (+ (string-width line) 1 (string-width piece)) 80))
-              (setq line (if (equal line lead)
+        (let ((piece (pop parts)))
+          (if (or (equal line indent)
+                  (<= (+ (string-width line) 2 (string-width piece)) 80))
+              (setq line (if (equal line indent)
                              (concat line piece)
-                           (concat line " " piece)))
+                           (concat line "  " piece)))
             (push line out)
             (setq line (concat indent piece)))))
       (push line out)
@@ -573,13 +622,11 @@ and saying it anyway costs the width the rest of the sum needs."
 
 (defun org-foresight-report--bar-key (cap)
   "Return the legend naming each of the work bar's segments in CAP."
-  (org-foresight-report--key cap org-foresight-report--bar-segments
-                             :span-min "Work"))
+  (org-foresight-report--key cap org-foresight-report--bar-segments))
 
 (defun org-foresight-report--off-key (cap)
   "Return the legend naming each of the off bar's segments in CAP."
-  (org-foresight-report--key cap org-foresight-report--off-segments
-                             :off-min "Off"))
+  (org-foresight-report--key cap org-foresight-report--off-segments))
 
 (defun org-foresight-report--verdict (cap)
   "Return the one-line answer for capacity plist CAP.
@@ -606,16 +653,30 @@ left, what has been promised away, and the hour the day actually ends."
            (format " · est ×%.1f" factor)
          "")))))
 
-(defun org-foresight-report--grey-line (cap)
-  "Return CAP's day outside the work span: its key and its bar, or nil.
+(defun org-foresight-report--bars (cap)
+  "Return CAP's two bars with a legend above the first and below the second.
 
-Kept apart from the work bar deliberately, but drawn to the same scale, so
-the two can be set against each other -- a working day that dwarfs the
-evening is exactly the thing worth seeing.  Unclaimed evenings are not
-capacity waiting to be spent: the emptiness is what makes room for anything
-new, and a day that quietly borrows from it should have to say so."
-  (when-let ((bar (org-foresight-report--off-bar cap)))
-    (concat (org-foresight-report--off-key cap) "\n" bar)))
+The bars are set one directly under the other, which is the whole use of
+their shared scale: a working day that dwarfs the evening it leaves behind is
+exactly the thing worth seeing, and nothing between them would let it be
+seen.  So each legend sits on the far side of its own bar, and the totals
+move on to the bars themselves.
+
+Unclaimed evenings are not capacity waiting to be spent: the emptiness is
+what makes room for anything new, and a day that quietly borrows from it
+should have to say so."
+  (let ((work (org-foresight-report--bar cap))
+        (off (org-foresight-report--off-bar cap)))
+    (when work
+      (string-join
+       (delq nil
+             (list (org-foresight-report--bar-key cap)
+                   (org-foresight-report--bar-line
+                    "Work" (plist-get cap :span-min) work)
+                   (org-foresight-report--bar-line
+                    "Off" (plist-get cap :off-min) off)
+                   (and off (org-foresight-report--off-key cap))))
+       "\n"))))
 
 (defun org-foresight-report-capacity-line (&optional day scan now)
   "Return DAY's capacity verdict as one line, or nil on a non-working day.
@@ -628,19 +689,41 @@ not have to go looking for is a number you will not look at."
          (ledger (and (>= idx 0) (< idx (plist-get scan :days))
                       (aref (plist-get scan :ledger) idx))))
     (when (plist-get cap :window)
-      (concat (org-foresight-report--verdict cap)
-              ;; Directly under the overflow, because the number and the way
-              ;; out of it are one thought and reading them apart is what
-              ;; makes an overcommitted day feel like weather.
-              (when-let ((frees (org-foresight-report--frees
-                                 (- (min 0.0 (plist-get cap :headroom-min)))
-                                 ledger)))
-                (concat "\n" frees))
-              (when-let ((bar (org-foresight-report--bar cap)))
-                (concat "\n" (org-foresight-report--bar-key cap) "\n" bar))
-              (when-let ((grey (org-foresight-report--grey-line cap)))
-                (concat "\n" grey))
-              (org-foresight-report--verdict-extras)))))
+      (org-foresight-report--indent
+       (concat (org-foresight-report--verdict cap)
+               ;; Directly under the overflow, because the number and the way
+               ;; out of it are one thought and reading them apart is what
+               ;; makes an overcommitted day feel like weather.
+               (when-let ((frees (org-foresight-report--frees
+                                  (- (min 0.0 (plist-get cap :headroom-min)))
+                                  ledger)))
+                 (concat "\n" frees))
+               (when-let ((bars (org-foresight-report--bars cap)))
+                 (concat "\n" bars))
+               (org-foresight-report--verdict-extras))))))
+
+(defconst org-foresight-report-margin " "
+  "The column every line but a badge starts at.
+
+One rule, three levels.  A badge is the only thing outdented to the frame
+edge, because a badge is the one thing read by scanning rather than by
+reading -- an eye running down the left edge should hit section headings and
+nothing else.  Everything a section contains sits at the margin: verdicts,
+keys, bars and rows alike, so a block's picture lines up with the block's
+words.  Anything indented further belongs to the line above it, which is the
+only thing depth is allowed to mean here.
+
+It is also what Org's agenda does, and a foresight row is meant to be
+indistinguishable from an agenda line to the commands that act on it.")
+
+(defun org-foresight-report--indent (text)
+  "Return TEXT with every line moved off the frame edge by the margin.
+Applied to the blocks whose lines do not already carry it, rather than to
+the rows, which are built at the margin because that is where a line the
+agenda can act on belongs."
+  (when text
+    (mapconcat (lambda (line) (concat org-foresight-report-margin line))
+               (split-string text "\n") "\n")))
 
 (defun org-foresight-report--actionable (string marker &optional stamp)
   "Return STRING carrying the text properties Org's agenda commands look for.
@@ -745,25 +828,26 @@ same thing.  It does -- and saying so is cheaper than leaving it assumed.
 Only the flags actually used are explained.  A key that lists what a clash
 looks like on a day that has none is describing a problem the reader does
 not have, which is a slower way of saying nothing."
-  (concat
-   (mapconcat (lambda (c)
-                (concat (propertize
-                         (char-to-string
-                          (or (cdr (assq (car c) org-foresight-report--grid-glyphs))
-                              org-foresight-block))
-                         'face (cdr (assq (car c)
-                                          org-foresight-report--grid-faces)))
-                        " " (cdr c)))
-              org-foresight-report--grid-legend "  ")
-   (when flags
-     (concat
-      "\n"
-      (propertize
-       (mapconcat (lambda (f) (concat f " "
-                                      (cdr (assoc f
-                                                  org-foresight-report--grid-flags))))
-                  flags "  ")
-       'face 'shadow)))))
+  (org-foresight-report--indent
+   (concat
+    (mapconcat (lambda (c)
+                 (concat (propertize
+                          (char-to-string
+                           (or (cdr (assq (car c) org-foresight-report--grid-glyphs))
+                               org-foresight-block))
+                          'face (cdr (assq (car c)
+                                           org-foresight-report--grid-faces)))
+                         " " (cdr c)))
+               org-foresight-report--grid-legend "  ")
+    (when flags
+      (concat
+       "\n"
+       (propertize
+        (mapconcat (lambda (f) (concat f " "
+                                       (cdr (assoc f
+                                                   org-foresight-report--grid-flags))))
+                   flags "  ")
+        'face 'shadow))))))
 
 (defun org-foresight-report--grid-gutter (kind minutes)
   "Return the gutter for a band of KIND lasting MINUTES.
@@ -1040,7 +1124,7 @@ asked you to attend was never yours to move in the first place."
   "Return the row for ledger entry E, shown beneath whatever it shares with."
   (org-foresight-report--grid-row
    (org-foresight-report--grid-span (plist-get e :start) (plist-get e :end))
-   (propertize "╰" 'face 'org-foresight-report-surge)
+   (propertize "╰" 'face 'org-foresight-report-promised)
    (org-foresight-report--grid-gutter 'promised (plist-get e :effort))
    (org-duration-from-minutes (plist-get e :effort))
    (org-foresight-report--grid-category e)

@@ -679,8 +679,12 @@ DEADLINE: <2026-08-10 Mon>
       (should (string-match-p "due today" plain)))))
 
 (defun org-foresight-test--bar-cells (bar)
-  "Return the number of block cells drawn in BAR, ignoring its indent."
-  (length (seq-filter (lambda (c) (memq c (list org-foresight-block ?┃)))
+  "Return how many columns BAR draws, whatever glyph each one uses.
+
+Every character is a column of the day, including the spaces the reserve is
+outlined around; only the ellipsis that ends a cut-off bar stands for
+something other than time."
+  (length (seq-remove (lambda (c) (eq c ?…))
                       (string-to-list (substring-no-properties bar)))))
 
 (ert-deftest org-foresight-test-bar-fits-a-full-day ()
@@ -705,6 +709,27 @@ are in -- otherwise a long evening could look shorter than a short workday."
          (off (org-foresight-test--bar-cells (org-foresight-report--off-bar cap))))
     ;; 8:00 of work against 8:00 off: the same length
     (should (= work off))))
+
+(ert-deftest org-foresight-test-reserve-is-outlined-not-filled ()
+  "The reserve is room kept open, so it is drawn as a rule around nothing.
+
+Filling it in would claim it for something, and the mono ramp it used to
+occupy is needed for the three kinds of claimed work.  The outline is a face
+box, which Emacs draws once around the whole run rather than per cell."
+  (let* ((cap '(:span-min 510.0 :booked-min 137.0 :travel-min 60.0
+                :private-min-in-span 0.0 :committed-min 73.0
+                :surge-min 57.0 :spare-min 183.0
+                :private-min 0.0 :borrowed-min 0.0 :unclaimed-min 0.0))
+         (bar (org-foresight-report--bar cap))
+         (at (string-match " " (substring-no-properties bar))))
+    (should at)
+    (should (eq (get-text-property at 'face bar) 'org-foresight-report-surge))
+    (should (face-attribute 'org-foresight-report-surge :box nil t))
+    ;; and the reserve still occupies its columns, or the bar would not sum
+    (should (= (org-foresight-test--bar-cells bar) org-foresight-bar-width))
+    ;; the key names it with the same glyph the bar drew
+    (let ((key (org-foresight-report--bar-key cap)))
+      (should (string-match-p "  surge" (substring-no-properties key))))))
 
 (ert-deftest org-foresight-test-bar-marks-the-overflow ()
   "An overcommitted day shows where the span ran out instead of clipping."
@@ -899,6 +924,38 @@ rather than quietly rescheduling whatever produced it."
       (should (> (string-search "evening call" s) close))
       (should (< (string-search "afternoon work" s) close)))))
 
+(ert-deftest org-foresight-test-only-badges-touch-the-frame-edge ()
+  "Column zero belongs to badges alone.
+
+A badge is read by scanning rather than by reading, so an eye running down
+the left edge has to hit section headings and nothing else.  Every block
+therefore starts its lines at the margin -- verdicts, keys, bars and rows
+alike, which is also what makes a block's picture line up with its words.
+The badge is added by whatever assembles the blocks, so what is checked here
+is that no block emits a line at the edge itself."
+  (org-foresight-test--with-day
+      "* Project review
+<2026-08-10 Mon 14:00-15:00>
+* NEXT Write the vendor comparison
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+"
+    (let ((day (org-foresight-test--ts 0 0 10))
+          (now (org-foresight-test--ts 6 0 10)))
+      (dolist (block (list (org-foresight-report-capacity-line day nil now)
+                           (org-foresight-report-capacity day nil now)
+                           (org-foresight-report-load 14 nil now)
+                           (org-foresight-report--grid-key '("⨯"))
+                           (org-foresight-report-signals
+                            '(("Something (1)"
+                               . ((:title "a thing" :note "a note"
+                                          :marker nil)))))))
+        (dolist (line (split-string (substring-no-properties (or block "")) "\n"))
+          (unless (string-empty-p line)
+            (should (string-prefix-p org-foresight-report-margin line))))))))
+
 (ert-deftest org-foresight-test-glyphs-are-single-cell ()
   "Every mark the grid draws must occupy exactly one cell.
 
@@ -944,7 +1001,7 @@ would drag the columns out of true if any of them were sized from content."
       ;; and the long title survived to the end of its line
       (should (string-match-p "さらに続く" plain)))))
 
-(ert-deftest org-foresight-test-grey-line ()
+(ert-deftest org-foresight-test-off-bar ()
   "Unclaimed private time is reported, and borrowing from it is called out."
   (org-foresight-test--with-day
       "* NEXT evening call
@@ -953,7 +1010,7 @@ would drag the columns out of true if any of them were sized from content."
     (let* ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
                                         (org-foresight-test--ts 6 0 10)))
            (line (substring-no-properties
-                  (org-foresight-report--grey-line cap))))
+                  (org-foresight-report--bars cap))))
       (should (string-match-p "Off" line))
       (should (string-match-p "borrowed 1:00" line))))
   ;; a day that stays inside its span borrows nothing
@@ -964,7 +1021,7 @@ would drag the columns out of true if any of them were sized from content."
     (let* ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
                                         (org-foresight-test--ts 6 0 10)))
            (line (substring-no-properties
-                  (org-foresight-report--grey-line cap))))
+                  (org-foresight-report--bars cap))))
       (should-not (string-match-p "borrowed" line)))))
 
 (ert-deftest org-foresight-test-report-capacity-non-workday ()

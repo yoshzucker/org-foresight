@@ -134,16 +134,16 @@ then occasionally:
 
 #+begin_example
 Capacity  what today can still take
-Work 8:30 · OVER by 3:45 · will not fit
-↳ any one of Rewrite the annual re… 6:00 · Project review 1:30
-Work  8:30 = █ booked 2:45 + █ travel 2:00 + █ promised 7:30 + █ surge 1:00
-████████████████████████████████████████┃██████████████████
-Off   7:00 = █ private 1:30 + █ unclaimed 5:30
-██████████████████████████████
+ Work 8:30 · OVER by 3:45 · will not fit
+ ↳ any one of Rewrite the annual re… 6:00 · Project review 1:30
+            █ booked 2:45  █ travel 2:00  █ promised 7:30  ▭ surge 1:00
+ Work  8:30 ████████████████████████████████████████┃██████████████████
+ Off   7:00 ███████··························
+            █ private 1:30  · unclaimed 5:30
 
 Today  where the hours go
-█ booked  █ travel  █ promised  █ private  · free
-⨯ double-booked  ? no time yet  ╰ alongside
+ █ booked  █ travel  █ promised  █ private  · free
+ ⨯ double-booked  ? no time yet  ╰ alongside
 
           09:00               ────────      work starts
           09:00-09:30  0:30   ··            free
@@ -171,7 +171,31 @@ Alongside  happening, but not yours
 
 Columns run category, span, effort, flag, gutter, heading — the order Org's
 own agenda puts them in, so a day read here and a day read there scan the
-same way.
+same way. A row with nothing in its category column (a free stretch, the
+rules that open and close the day) simply leaves it blank rather than
+shifting left, so every column holds whatever the row is.
+
+*** The left edge
+
+One rule, three levels:
+
+| Column | What sits there                                              |
+|--------+--------------------------------------------------------------|
+|      0 | badges, and nothing else                                     |
+|      1 | everything a section contains: verdicts, keys, bars, rows     |
+|     2+ | subordinate to the line above — a signal's findings under its heading |
+
+A badge is read by *scanning* rather than by reading, so it gets the frame
+edge to itself: an eye running down the left of the buffer hits section
+headings and nothing else. Everything a section contains starts one column
+in, which is also where Org's agenda puts its lines — and a foresight row is
+meant to be indistinguishable from an agenda line to the commands that act on
+it. Depth past that means one thing only: this line belongs to the one above
+it.
+
+That is why the bars are not flush left. A bar is not a label; it is the
+picture of the numbers beside it, and it belongs at the same margin as the
+words it illustrates.
 
 The gutter is drawn to scale, in the colours the bar above uses for the same
 things. A journey appears where it falls, usually answering "where did the
@@ -229,22 +253,47 @@ whole day can be asked at once.
 
 ** A note on the block characters
 
-Everything is drawn in full blocks and told apart by colour. Shading it with
-=▓ ▒ ░= would be the obvious choice and is the wrong one: in several monospace
-fonts those sit on a different box from =█= — in PlemolJP, =▓= is 74 units
-high and 55 left of it on a 1000 em, and narrower besides — so every seam
-between them visibly steps.
+Three shapes, and each says something the colour cannot.
+
+| Shape        | What it is                 | Segments                          |
+|--------------+----------------------------+-----------------------------------|
+| filled block | claimed                    | booked, travel, promised, private |
+| outline      | held open, holding nothing | surge                             |
+| dots         | not claimed at all         | spare, unclaimed, free            |
+
+Only the claimed hours need telling apart from each other, so only they spend
+the grey ramp — three steps, two apart, which is as fine as an eye reliably
+resolves. Everything else is a shape, and shapes are read faster than shades.
+(The examples render the outline as =▭= for want of a way to draw a face box
+in a text file; on screen it is one rectangle around the whole run, in the
+same yellow as =┃= and =OVER by=. The reserve is the last thing between a day
+and an overrun, so spending it *is* being over without having said so.)
+
+Nothing is lost by drawing the unclaimed part in dots, because a horizontal
+bar carries its quantity in *length*, not in ink — the run is the same length
+either way. What is gained is that the one thing on the board worth growing
+stops shouting: a saturated hue at full block density outweighs the same area
+of grey by far more than its share of the day, so a bar with plenty of room
+in it reads as the busiest of the lot.
+
+Shading the segments with =▓ ▒ ░= would be the obvious choice and is the
+wrong one: in several monospace fonts those sit on a different box from =█=
+— in PlemolJP, =▓= is 74 units high and 55 left of it on a 1000 em, and
+narrower besides — so every seam between them visibly steps.
 
 The part-width blocks =▏▎▍▌▋▊▉= are kept for what they are actually for: the
 last cell of a run, where the duration does not fill a whole one. They share
 the full block's box exactly, and nothing follows them to be pushed out of
 line.
 
-One thing to know about =█=: it is drawn to *overflow* its em box — 1300
-units against a 1175-unit line in PlemolJP — because the glyph exists to tile
-a screen seamlessly. A column of bars therefore reads as one mass rather than
-as separate bars, and stands slightly taller than boxed text on the same
-line. That is the glyph's design, not a rendering fault.
+One thing to check in your own font: =█= is normally drawn to *overflow* its
+em box, because the glyph exists to tile a screen without seams. Where it
+does, a gutter of bars stands visibly taller than boxed text on the same line
+and consecutive rows fuse into one mass. Measure it — in an unpatched
+PlemolJP the block runs 1300 units against a 1175-unit line, i.e. ~10% proud
+at the bottom. Fonts that normalise tile glyphs to the line box (as a patched
+PlemolJP NF does, at 890/−210) draw the gutter flush with everything else.
+That is a property of the font, not of this package.
 
 * Not everything wants all of you
 
@@ -306,12 +355,12 @@ time, some of it is spent getting somewhere, and the hours that belong to
 neither are not absent — they are private time that happens to be unclaimed.
 
 #+begin_example
-Work 8:30 · 1:15 left to promise · ends 16:45 · surge from 12 days · est ×1.4
-Work  8:30 = █ booked 2:45 + █ travel 1:00 + █ promised 2:30 + █ surge 1:00 +
-             █ spare 1:15
-████████████████████████████████████████
-Off   7:00 = █ private 1:30 + █ unclaimed 5:30
-██████████████████████████████
+ Work 8:30 · 1:15 left to promise · ends 16:45 · surge from 12 days · est ×1.4
+            █ booked 2:45  █ travel 1:00  █ promised 2:30  ▭ surge 1:00
+            · spare 1:15
+ Work  8:30 ██████████████████████████████▭▭▭▭▭······
+ Off   7:00 ███████··························
+            █ private 1:30  · unclaimed 5:30
 #+end_example
 
 Two bars, written as the sums they are, so the parts can be checked against
