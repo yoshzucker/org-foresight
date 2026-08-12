@@ -633,6 +633,13 @@ a done-type keyword such as DELEG drops out too."
                                 (push (cons (car occ) end) (aref busy idx)))
                               (push (list :kind (if todo 'task 'meeting)
                                           :title title :marker marker
+                                          ;; Where the stamp itself is, which
+                                          ;; is what the agenda's own time
+                                          ;; commands edit -- see
+                                          ;; `org-agenda-date-later'.
+                                          :stamp (copy-marker
+                                                  (org-element-property
+                                                   :begin el))
                                           :attention attention
                                           :effort (/ (float-time
                                                       (time-subtract end (car occ)))
@@ -886,6 +893,7 @@ any total taken over them is guaranteed to add up to the day."
                         :start s :end n
                         :title (plist-get e :title)
                         :marker (plist-get e :marker)
+                        :stamp (plist-get e :stamp)
                         :attention (or (plist-get e :attention) 'blocking)
                         :category (plist-get e :category)
                         :place (plist-get e :place))

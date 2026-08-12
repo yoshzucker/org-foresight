@@ -135,9 +135,10 @@ then occasionally:
 #+begin_example
 Capacity  what today can still take
 Work 8:30 · OVER by 3:45 · will not fit
-Work  8:30 = █booked 2:45 + █travel 2:00 + █promised 7:30 + █surge 1:00
+↳ any one of Rewrite the annual re… 6:00 · Project review 1:30
+Work  8:30 = █ booked 2:45 + █ travel 2:00 + █ promised 7:30 + █ surge 1:00
 ████████████████████████████████████████┃██████████████████
-Off   7:00 = █private 1:30 + █unclaimed 5:30
+Off   7:00 = █ private 1:30 + █ unclaimed 5:30
 ██████████████████████████████
 
 Today  where the hours go
@@ -190,6 +191,37 @@ still fits afterwards, and =+2= counts what was left unsaid. Without it a gap
 is a hole to be reasoned about; with it the day suggests its own next move.
 =org-foresight-grid-suggest= sets how many are named, or =nil= for none.
 
+** What has to come out
+
+The mirror of the same idea sits under the verdict. A bar says how far over
+the day is; it can never say by what. So an overcommitted day names its way
+out:
+
+: Work 8:30 · OVER by 0:45 · will not fit
+: ↳ any one of Quarterly summary 1:00 · Project review 1:30
+
+Ranked by the *smallest that is on its own enough* — the opposite order to
+the gap's, and for the same reason: there you want the most in, here you want
+to give up the least. Where nothing alone is enough, the largest are taken in
+turn until they are (=↳ needs all of=), because the question has stopped
+being which one and become how many. Where even everything movable falls
+short, it says so outright:
+
+: ↳ only 3:00 of it can move: Draft the summary 1:30 · Standup 0:30
+
+which is a different problem with a different answer. A day whose overflow is
+made of other people's meetings cannot be rescheduled out of trouble, and
+knowing that at 09:00 is the difference between declining something and
+working late.
+
+Meetings and dated tasks are candidates alongside promised work — a day is
+rarely saved by moving only the things nobody else knows about. Travel is
+not, because it is not moved: it follows whatever it was getting you to.
+Neither is anything private or =informational=. An overfilled *working* day
+is not answered by moving the family, and a fixture nobody asked you to
+attend was never yours to move. =org-foresight-grid-frees= sets how many are
+named, or =nil= for none.
+
 Deadlines get a column of their own, in days rather than dates — =+3d= can
 wait, =0d= cannot, =-2d= should already have gone. Every row on the board
 invites the same question, and this is the answer to it, lined up so the
@@ -207,6 +239,12 @@ The part-width blocks =▏▎▍▌▋▊▉= are kept for what they are actuall
 last cell of a run, where the duration does not fill a whole one. They share
 the full block's box exactly, and nothing follows them to be pushed out of
 line.
+
+One thing to know about =█=: it is drawn to *overflow* its em box — 1300
+units against a 1175-unit line in PlemolJP — because the glyph exists to tile
+a screen seamlessly. A column of bars therefore reads as one mass rather than
+as separate bars, and stands slightly taller than boxed text on the same
+line. That is the glyph's design, not a rendering fault.
 
 * Not everything wants all of you
 
@@ -231,11 +269,29 @@ Set it per entry, or by category for things that are always so:
 (setq org-foresight-informational-categories '("club"))
 #+end_src
 
-Then work down the board. Every row answers to the agenda's own commands —
-=s= to schedule, =e= to estimate, =t= to change state, =RET= to visit — and
+Then work down the board. Every row answers to the agenda's own commands, and
 each edit moves the figures above it straight away:
 
-- *Over?* Move something off today. The load table says which day can take it.
+| Key                     | What it does                     |
+|-------------------------+----------------------------------|
+| =s=                     | schedule it on another day       |
+| =S-left= / =S-right=    | a day earlier or later           |
+| =C-u S-left/right=      | an hour earlier or later         |
+| =C-u C-u S-left/right=  | by =org-time-stamp-rounding-minutes= |
+| =>=                     | prompt for a date, or a time     |
+| =e=                     | estimate it                      |
+| =t=                     | change its state                 |
+| =RET=                   | visit the entry                  |
+
+The time keys are what clear a =⨯=. They work because a booked row puts
+=org-marker= on its timestamp rather than its heading, which is the agenda's
+own convention — the commands go there and insist on finding a stamp. Set
+=org-time-stamp-rounding-minutes= to =(0 15)= if five-minute steps are finer
+than you think in.
+
+- *Over?* Move something off today — the verdict names what would be enough,
+  and the load table says which day can take it. Or move it *within* today,
+  which is usually cheaper.
 - *Spare?* Pull something in from the signals.
 
 *During the day* — the first line of =C-c a a=. If =spare= is small, the
@@ -251,10 +307,11 @@ neither are not absent — they are private time that happens to be unclaimed.
 
 #+begin_example
 Work 8:30 · 1:15 left to promise · ends 16:45 · surge from 12 days · est ×1.4
-Work  8:30 = █booked 2:45 + █travel 1:00 + █promised 2:30 + █surge 1:00 + █spare 1:15
-             ████████████████████████████████████████
-Off   7:00 = █private 1:30 + █unclaimed 5:30
-             ██████████████████████████████
+Work  8:30 = █ booked 2:45 + █ travel 1:00 + █ promised 2:30 + █ surge 1:00 +
+             █ spare 1:15
+████████████████████████████████████████
+Off   7:00 = █ private 1:30 + █ unclaimed 5:30
+██████████████████████████████
 #+end_example
 
 Two bars, written as the sums they are, so the parts can be checked against
