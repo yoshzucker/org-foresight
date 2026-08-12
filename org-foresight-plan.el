@@ -678,12 +678,7 @@ exactly when a plain `forward-line' lands at the bottom of the buffer."
     (org-foresight--invalidate-signals)
     (org-foresight-plan-board)))
 
-(dolist (cmd '(org-agenda-schedule
-               org-agenda-deadline
-               org-agenda-todo
-               org-agenda-set-effort
-               org-agenda-set-tags
-               org-agenda-priority))
+(dolist (cmd org-foresight-write-commands)
   (advice-add cmd :after #'org-foresight-plan--refresh-board))
 
 ;;;; Filing new work

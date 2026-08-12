@@ -521,6 +521,41 @@ SCHEDULED: <2026-08-10 Mon>
     (let ((org-foresight-grid-suggest nil))
       (should-not (org-foresight-report--grid-fits 135 ledger)))))
 
+(ert-deftest org-foresight-test-frees-names-the-way-out ()
+  "An overcommitted day has to say by what, not only by how much."
+  (let ((ledger '((:kind promised :title "Annual report" :effort 360)
+                  (:kind meeting  :title "Project review" :effort 90
+                         :category "outlook")
+                  (:kind task     :title "Quarterly summary" :effort 60
+                         :category "reporting")
+                  (:kind meeting  :title "Kids' basketball" :effort 120
+                         :category "club" :attention informational)
+                  (:kind meeting  :title "Dinner" :effort 90 :category "family")
+                  (:kind travel   :title "→ office" :effort 60)))
+        (org-foresight-private-categories '("family"))
+        (org-foresight-grid-frees 3))
+    ;; smallest sufficient first: give up the least that still works
+    (let ((line (org-foresight-report--frees 45 ledger)))
+      (should (string-match-p "any one of" line))
+      (should (< (string-match "Quarterly summary" line)
+                 (string-match "Project review" line)))
+      (should (<= (string-width line) 80)))
+    ;; what is not yours to move is not offered as a way out
+    (let ((line (org-foresight-report--frees 500 ledger)))
+      (should (string-match-p "needs all of" line))
+      (should-not (string-match-p "basketball" line))   ; informational
+      (should-not (string-match-p "Dinner" line))       ; private
+      (should-not (string-match-p "office" line)))      ; travel follows
+    ;; an overflow bigger than everything movable says so rather than going
+    ;; quiet on the one day the answer matters most -- 6:00 + 1:30 + 1:00
+    (let ((line (org-foresight-report--frees 9999 ledger)))
+      (should (string-match-p "only 8:30 of it can move" line)))
+    ;; a day that fits has nothing to give up, and neither has an empty one
+    (should-not (org-foresight-report--frees 0 ledger))
+    (should-not (org-foresight-report--frees 45 nil))
+    (let ((org-foresight-grid-frees nil))
+      (should-not (org-foresight-report--frees 45 ledger)))))
+
 (ert-deftest org-foresight-test-grid-hides-empty-private-time ()
   "Rows of nothing push the day off the screen; the grey total already
 says how much unclaimed time there is."
@@ -645,7 +680,7 @@ DEADLINE: <2026-08-10 Mon>
 
 (defun org-foresight-test--bar-cells (bar)
   "Return the number of block cells drawn in BAR, ignoring its indent."
-  (length (seq-filter (lambda (c) (memq c '(?█ ?┃)))
+  (length (seq-filter (lambda (c) (memq c (list org-foresight-block ?┃)))
                       (string-to-list (substring-no-properties bar)))))
 
 (ert-deftest org-foresight-test-bar-fits-a-full-day ()
@@ -768,6 +803,66 @@ commands operate on a foresight row, without them the row is only a report."
       (should (markerp (get-text-property pos 'org-hd-marker s)))
       (should (eq (get-text-property pos 'org-agenda-type s) 'agenda)))))
 
+(ert-deftest org-foresight-test-timed-rows-point-at-their-stamp ()
+  "A booked row must let its time be moved, not only its day.
+
+`org-agenda-date-later' -- \\`S-right', and with prefixes the hour and minute
+variants -- goes to `org-marker' and insists on `org-at-timestamp-p' there.
+Pointing it at the heading is the difference between shifting a meeting half
+an hour from the board and being told there is no time stamp.  The heading
+stays on `org-hd-marker', which is where the commands that want it look."
+  (org-foresight-test--with-day
+      "* Project review
+<2026-08-10 Mon 14:00-15:00>
+* NEXT Write the vendor comparison
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT: 1:00
+:END:
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (s (org-foresight-report-capacity day nil
+                                             (org-foresight-test--ts 6 0 10)))
+           (pos (string-match "Project review" s))
+           (marker (get-text-property pos 'org-marker s))
+           (heading (get-text-property pos 'org-hd-marker s)))
+      (should (markerp marker))
+      (should (org-with-point-at marker (org-at-timestamp-p 'lax)))
+      ;; and the two are genuinely different places in the same entry
+      (should-not (= (marker-position marker) (marker-position heading)))
+      (should (org-with-point-at heading (org-at-heading-p)))
+      ;; work with no time of its own has no stamp to move, so it keeps the
+      ;; heading and the day commands still reach it
+      (let* ((unplaced (string-match "vendor comparison" s))
+             (m (get-text-property unplaced 'org-marker s)))
+        (should (markerp m))
+        (should (org-with-point-at m (org-at-heading-p)))))))
+
+(ert-deftest org-foresight-test-time-can-be-moved-from-the-board ()
+  "Shifting a booked hour must work from the row, not only from the file.
+
+The end of the whole exercise: a clash is cleared by moving something, and
+the cheapest move is usually an hour within the day rather than a day away.
+This drives the real command over a real rendered row."
+  (org-foresight-test--with-day
+      "* Project review
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (s (org-foresight-report-capacity day nil
+                                             (org-foresight-test--ts 6 0 10)))
+           (file (car org-agenda-files)))
+      (with-temp-buffer
+        (setq major-mode 'org-agenda-mode)   ; what the commands gate on
+        (insert s)
+        (goto-char (string-match "Project review" s))
+        (setq-local org-agenda-type (org-get-at-bol 'org-agenda-type))
+        (let ((org-time-stamp-rounding-minutes '(0 30)))
+          (org-agenda-date-later-minutes 1)))
+      (should (string-match-p "14:30-15:30"
+                              (with-current-buffer (find-file-noselect file)
+                                (buffer-string)))))))
+
 (ert-deftest org-foresight-test-derived-rows-are-inert ()
   "A row with no entry behind it must not borrow a neighbour's marker.
 Travel home is generated, not scheduled; acting on it should find nothing
@@ -812,7 +907,10 @@ the font simply lacks: what appears then comes from the fallback, at whatever
 width that font uses.  `✗' U+2717 was one such -- absent from PlemolJP and
 rendered slightly too wide, which is exactly the failure this guards."
   (dolist (s (append (mapcar #'car org-foresight-report--grid-flags)
-                     '("█" "·" "─" "┈" "→" "┃" "▏" "▎" "▍" "▌" "▋" "▊" "▉")))
+                     (list (string org-foresight-block))
+                     (mapcar #'string
+                             (append org-foresight-report--partials nil))
+                     '("·" "─" "┈" "→" "┃" "↳")))
     (should (= (string-width s) 1))))
 
 (ert-deftest org-foresight-test-grid-columns-align ()
