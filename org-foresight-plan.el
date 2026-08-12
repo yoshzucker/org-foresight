@@ -533,8 +533,12 @@ benchmark and always shows in a keystroke."
       (mapconcat
        (lambda (group)
          (concat
-          (propertize (format "%s (%d)" (car group) (length (cdr group)))
-                      'face 'org-agenda-structure)
+          ;; A group heading belongs to the badge above it, so it sits at the
+          ;; margin rather than at the frame edge: only a badge is outdented,
+          ;; or an eye running down the left edge stops finding sections.
+          (org-foresight-report--indent
+           (propertize (format "%s (%d)" (car group) (length (cdr group)))
+                       'face 'org-agenda-structure))
           "\n"
           (mapconcat
            (lambda (f)
