@@ -626,10 +626,20 @@ MATCH is accepted and ignored so that this can be named directly in
 `org-agenda-custom-commands', which calls such a function with the entry's
 match string."
   (interactive)
-  (let ((buf (get-buffer-create org-foresight-plan-buffer)))
+  (let* ((buf (get-buffer-create org-foresight-plan-buffer))
+         (win (get-buffer-window buf))
+         ;; Where the reader was, and what the window was showing.  Acting on
+         ;; a row usually removes it, so the board comes back shorter; without
+         ;; both of these the cursor lands wherever the old line number now
+         ;; happens to fall -- most often the very end -- and the window jumps
+         ;; with it, losing the place in the middle of a task that is not
+         ;; finished.
+         (line (with-current-buffer buf (line-number-at-pos)))
+         (top (and win (eq (window-buffer win) buf)
+                   (with-current-buffer buf
+                     (line-number-at-pos (window-start win))))))
     (with-current-buffer buf
-      (let ((inhibit-read-only t)
-            (line (line-number-at-pos)))
+      (let ((inhibit-read-only t))
         (erase-buffer)
         (unless (derived-mode-p 'org-foresight-plan-mode)
           (org-foresight-plan-mode))
@@ -645,11 +655,22 @@ match string."
         ;; blank line between blocks -- still finds an agenda to act in.
         (put-text-property (point-min) (point-max) 'org-agenda-type 'agenda)
         (setq buffer-read-only t)
-        ;; Refreshing should not throw the reader back to the top of a board
-        ;; they were halfway down.
-        (goto-char (point-min))
-        (forward-line (1- line))))
+        (org-foresight-plan--goto-line line)))
+    (when (and win (eq (window-buffer win) buf) top)
+      (with-selected-window win
+        (save-excursion
+          (org-foresight-plan--goto-line top)
+          (set-window-start win (point) t))))
     (pop-to-buffer buf)))
+
+(defun org-foresight-plan--goto-line (line)
+  "Go to LINE, or the last line when the buffer is now shorter than that.
+Clamped rather than allowed to run off the end: a board that lost a row is
+exactly when a plain `forward-line' lands at the bottom of the buffer."
+  (goto-char (point-min))
+  (forward-line (1- (max 1 line)))
+  (when (and (eobp) (not (bobp)) (bolp))
+    (forward-line -1)))
 
 (defun org-foresight-plan--refresh-board (&rest _)
   "Redraw the plan board after an edit made from it."

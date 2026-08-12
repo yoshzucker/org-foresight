@@ -496,6 +496,31 @@ SCHEDULED: <2026-08-10 Mon>
                         (org-foresight-report--grid-gutter 'meeting 1)))
                1))))
 
+(ert-deftest org-foresight-test-grid-fits-names-what-the-gap-holds ()
+  "A free stretch is only useful if it says what would go in it."
+  (let ((ledger '((:kind promised :title "Write the vendor comparison" :effort 120)
+                  (:kind promised :title "Reply to procurement" :effort 30)
+                  (:kind meeting  :title "All-hands" :effort 60)))
+        (org-foresight-grid-suggest 3))
+    (let ((line (org-foresight-report--grid-fits 135 ledger)))
+      ;; largest first, because anything smaller still fits afterwards
+      (should (string-match-p "Write the vendor" line))
+      (should (< (string-match "Write the vendor" line)
+                 (string-match "Reply to procurement" line)))
+      ;; work already at a time is not a candidate for a gap
+      (should-not (string-match-p "All-hands" line))
+      (should (<= (string-width line) 80)))
+    ;; nothing fits in a gap too small for the smallest piece
+    (should-not (org-foresight-report--grid-fits 15 ledger))
+    ;; and a gap of no length is not a gap
+    (should-not (org-foresight-report--grid-fits 0 ledger))
+    ;; the count is a budget: naming one still reports the rest
+    (let ((org-foresight-grid-suggest 1))
+      (should (string-match-p "+1" (org-foresight-report--grid-fits 135 ledger))))
+    ;; and it can be switched off entirely
+    (let ((org-foresight-grid-suggest nil))
+      (should-not (org-foresight-report--grid-fits 135 ledger)))))
+
 (ert-deftest org-foresight-test-grid-hides-empty-private-time ()
   "Rows of nothing push the day off the screen; the grey total already
 says how much unclaimed time there is."
@@ -573,6 +598,36 @@ wrong, because nothing on the screen looks unusual."
                    (org-foresight-test--ts 6 0 10)))))
       ;; 30 minutes office→client, but only 15 are free before it starts
       (should (string-match-p "13:45-14:15.*0:30 ⨯.*→ client" plain)))))
+
+(ert-deftest org-foresight-test-grid-shows-how-far-off-a-deadline-is ()
+  "Every row invites the same question -- can this move to another day -- and
+a deadline is the answer.  Given in days, because that is the form the
+question takes."
+  (org-foresight-test--with-day
+      (let ((day (lambda (n) (format-time-string
+                              "<%Y-%m-%d %a>"
+                              (time-add (org-foresight--day-start 0)
+                                        (days-to-time n))))))
+        (concat "* NEXT plenty of room\nSCHEDULED: " (funcall day 0)
+                " DEADLINE: " (funcall day 3)
+                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"
+                "* NEXT due today\nSCHEDULED: " (funcall day 0)
+                " DEADLINE: " (funcall day 0)
+                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"
+                "* NEXT already late\nSCHEDULED: " (funcall day 0)
+                " DEADLINE: " (funcall day -2)
+                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"
+                "* NEXT no deadline at all\nSCHEDULED: " (funcall day 0)
+                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"))
+    (let ((plain (substring-no-properties
+                  (org-foresight-report-capacity
+                   (org-foresight--day-start 0) nil
+                   (org-foresight--hhmm-on (org-foresight--day-start 0) "06:00")))))
+      (should (string-match-p "+3d NEXT plenty of room" plain))
+      (should (string-match-p "0d NEXT due today" plain))
+      (should (string-match-p "-2d NEXT already late" plain))
+      ;; and a task with no deadline says nothing rather than something
+      (should (string-match-p "  NEXT no deadline at all" plain)))))
 
 (ert-deftest org-foresight-test-grid-lists-what-is-due ()
   "A deadline occupies no time, so it appears in no band -- which is exactly
@@ -1644,6 +1699,18 @@ SCHEDULED: <2026-08-10 Mon 10:00>
 ;; must fire and a case that must not: a board that cries wolf is worse than no
 ;; board, because it stops being read.
 
+(defun org-foresight-test--stamp (offset &optional from to)
+  "Return an active timestamp OFFSET days from today, optionally FROM-TO.
+
+Signals are always computed about today, so a test that names a date is a
+test that stops meaning what it said the moment the date passes."
+  (concat "<" (format-time-string
+               "%Y-%m-%d %a"
+               (time-add (org-foresight--day-start 0) (days-to-time offset)))
+          (when from (concat " " from))
+          (when (and from to) (concat "-" to))
+          ">"))
+
 (defun org-foresight-test--signal (label)
   "Return the findings filed under LABEL by `org-foresight-signals'.
 Always recomputes: a test that changes a threshold and asks again must see
@@ -1717,16 +1784,13 @@ the new answer, not the one cached moments earlier."
 (ert-deftest org-foresight-test-signal-unplannable ()
   "A near deadline with no estimate cannot be placed, so it must be surfaced."
   (org-foresight-test--with-signals
-      "* NEXT due soon, unestimated
-DEADLINE: <2026-08-12 Wed>
-* NEXT due soon, estimated
-DEADLINE: <2026-08-12 Wed>
-:PROPERTIES:
-:EFFORT:   1:00
-:END:
-* DONE already finished
-DEADLINE: <2026-08-12 Wed>
-"
+      (concat "* NEXT due soon, unestimated\nDEADLINE: "
+              (org-foresight-test--stamp 2) "\n"
+              "* NEXT due soon, estimated\nDEADLINE: "
+              (org-foresight-test--stamp 2)
+              "\n:PROPERTIES:\n:EFFORT:   1:00\n:END:\n"
+              "* DONE already finished\nDEADLINE: "
+              (org-foresight-test--stamp 2) "\n")
     (let ((found (org-foresight-test--signal
                   "Unplannable (deadline, no estimate)")))
       (should (= (length found) 1))
@@ -1888,14 +1952,10 @@ CLOCK: [2026-08-10 Mon 09:00]--[2026-08-10 Mon 10:00] =>  1:00
 (ert-deftest org-foresight-test-signal-impossible ()
   "A journey that overlaps a meeting is a plan that cannot happen."
   (org-foresight-test--with-travel
-      "* At the office
-:PROPERTIES:
-:LOCATION: 会議室A
-:END:
-<2026-08-11 Tue 10:00-11:00>
-* Call from home
-<2026-08-11 Tue 09:30-10:00>
-"
+      (concat "* At the office\n:PROPERTIES:\n:LOCATION: 会議室A\n:END:\n"
+              (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+              "* Call from home\n"
+              (org-foresight-test--stamp 0 "09:30" "10:00") "\n")
     (let ((found (org-foresight-test--signal
                   "Impossible (travel clashes with a meeting)")))
       ;; the 09:00-10:00 journey runs straight through the 09:30 call
@@ -2510,7 +2570,22 @@ SCHEDULED: <2026-08-10 Mon>
       (with-current-buffer (find-file-noselect f)
         (should (derived-mode-p 'org-mode))
         (goto-char (point-min))
-        (should (org-element-parse-buffer))))
+        (should (org-element-parse-buffer))
+        ;; Org's planning line is one line.  Split across two, the second half
+        ;; is body text -- and the PROPERTIES drawer beneath it silently stops
+        ;; being a property drawer, so effort and category quietly vanish.
+        (goto-char (point-min))
+        (should-not (re-search-forward "^SCHEDULED:.*\n *DEADLINE:" nil t))
+        (goto-char (point-min))
+        (should-not (re-search-forward "^DEADLINE:.*\n *SCHEDULED:" nil t))))
+    ;; and every entry that declares an effort is actually read as having one
+    (with-current-buffer (find-file-noselect (cadr org-agenda-files))
+      (org-with-wide-buffer
+       (goto-char (point-min))
+       (while (re-search-forward "^:EFFORT: " nil t)
+         (org-back-to-heading t)
+         (should (org-entry-get (point) "EFFORT"))
+         (org-end-of-subtree t t))))
     ;; today must actually appear, or the corpus is describing another week
     (with-current-buffer (find-file-noselect (cadr org-agenda-files))
       (should (string-match-p (format-time-string "%Y-%m-%d")
