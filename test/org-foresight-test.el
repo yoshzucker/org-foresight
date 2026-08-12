@@ -2241,15 +2241,50 @@ evidence the procrastination signal counts."
   "A weekend offers no capacity, so it must not appear as a place to put work."
   (org-foresight-test--with-window
     (org-foresight-test--with-org "* nothing\n"
-      (let* ((load (org-foresight-load 14 nil (org-foresight-test--ts 6 0 10)))
+      (let* ((s (substring-no-properties
+                 (org-foresight-report-load 14 nil
+                                            (org-foresight-test--ts 6 0 10))))
              (today (org-foresight--day-start 0))
              (weekend 0))
         (dotimes (i 14)
-          (let ((dow (nth 6 (decode-time (time-add today (days-to-time i))))))
+          (let* ((day (time-add today (days-to-time i)))
+                 (dow (nth 6 (decode-time day))))
             (when (memq dow '(0 6))
               (setq weekend (1+ weekend))
-              (should (= (cdr (aref load i)) 0.0)))))
-        (should (> weekend 0))))))
+              (should-not (string-match-p
+                           (regexp-quote (format-time-string "%a %m-%d" day))
+                           s)))))
+        (should (> weekend 0))
+        ;; and it stops at the configured number of rows rather than the horizon
+        (should (<= (length (split-string s "\n")) org-foresight-load-rows))))))
+
+(ert-deftest org-foresight-test-load-speaks-the-capacity-vocabulary ()
+  "The forward view has to be readable against today, or it is a second system.
+
+One number, `:headroom-min', phrased as the verdict phrases it, and the same
+stacked bar at the same scale -- so a day drawn in both blocks is drawn the
+same length in both."
+  (org-foresight-test--with-day
+      (concat "* NEXT big piece of work
+SCHEDULED: " (org-foresight-test--stamp 0) "
+:PROPERTIES:
+:EFFORT: 12:00
+:END:
+")
+    (let* ((now (org-foresight--day-start 0))
+           (s (org-foresight-report-load 14 nil now))
+           (plain (substring-no-properties s)))
+      ;; a day promised past its span says so in the verdict's own words
+      (should (string-match-p "OVER by" plain))
+      (should (string-match-p "to promise" plain))
+      ;; the overflow is shown rather than clipped, exactly as the bar above
+      (should (string-match-p "┃" plain))
+      ;; today is drawn at the same length in both blocks
+      (let* ((cap (org-foresight-capacity (org-foresight--day-start 0) nil now))
+             (bar (org-foresight-report--bar cap))
+             (row (car (split-string plain "\n"))))
+        (should (string-match-p (regexp-quote (substring-no-properties bar))
+                                row))))))
 
 (ert-deftest org-foresight-test-report-load-within-80 ()
   (org-foresight-test--with-window

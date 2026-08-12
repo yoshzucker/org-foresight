@@ -412,7 +412,14 @@ summary without this one having to know about it.")
 (defface org-foresight-report-surge '((t :inherit shadow))
   "The reserve held back for interruptions.")
 (defface org-foresight-report-spare '((t :inherit success))
-  "Time that may still be promised.")
+  "Time that may still be promised, and the gaps it is made of.
+The one quantity on the board worth growing, so it is worth a colour of its
+own rather than another step down a grey ramp.")
+(defface org-foresight-report-private '((t :inherit font-lock-string-face))
+  "Life: commitments that are not work and are not capacity either.
+Distinct from both the claimed hours and the empty ones, because it is
+neither -- and a day where the two are told apart is a day where the
+question \"can this move\" has an obvious answer.")
 (defface org-foresight-report-grey '((t :inherit font-lock-comment-face))
   "Waking hours that are neither work nor a private commitment.")
 
@@ -424,7 +431,8 @@ summary without this one having to know about it.")
 (defvar org-foresight-report--bar-segments
   '((:key :booked-min    :face org-foresight-report-booked   :label "booked")
     (:key :travel-min    :face org-foresight-report-travel   :label "travel")
-    (:key :private-min-in-span :face org-foresight-report-grey :label "private")
+    (:key :private-min-in-span :face org-foresight-report-private
+          :label "private")
     (:key :committed-min :face org-foresight-report-promised :label "promised")
     (:key :surge-min     :face org-foresight-report-surge    :label "surge")
     (:key :spare-min     :face org-foresight-report-spare    :label "spare"))
@@ -438,7 +446,7 @@ uses for the same things, so the two blocks can be read as one account.
 All drawn in full blocks; the colour is what tells them apart.")
 
 (defvar org-foresight-report--off-segments
-  '((:key :private-min  :face org-foresight-report-booked   :label "private")
+  '((:key :private-min  :face org-foresight-report-private  :label "private")
     (:key :borrowed-min :face org-foresight-report-travel   :label "borrowed")
     (:key :unclaimed-min :face org-foresight-report-spare   :label "unclaimed"))
   "Segments of the second bar, dividing the waking day outside the work span.
@@ -695,7 +703,7 @@ the number in the effort column carries anything above it."
     (task      . org-foresight-report-booked)
     (travel    . org-foresight-report-travel)
     (promised  . org-foresight-report-promised)
-    (private   . org-foresight-report-grey)
+    (private   . org-foresight-report-private)
     (context   . org-foresight-report-grey)
     (available . org-foresight-report-spare)
     (grey      . org-foresight-report-grey))

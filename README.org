@@ -412,6 +412,34 @@ tasks, filed either side of the meeting. It marks each meeting it handles, so
 re-running creates nothing, and each generated task points back at its
 meeting, which is what makes the orphan signal possible later.
 
+* When, then
+
+The forward view answers the second half of "I'm busy": /then when?/ It draws
+the coming working days exactly as today is drawn above — same segments, same
+colours, same scale — so the two can be read against each other:
+
+#+begin_example
+Load  when I could take this on
+ Wed 08-12    OVER by 9:49  ████████████████████████████████████████┃███████…
+ Thu 08-13  3:30 to promise  ███████████████████████████████████████
+ Fri 08-14  6:30 to promise  █████████████████████████████████████████
+#+end_example
+
+One number, and it is the same one the verdict states for today: *free time,
+less what is already promised, less the reserve*. Positive is what may still
+be taken on; negative is what would have to come off the day first. There is
+no second definition of "load" living in a table of its own — a figure that
+means something slightly different from the one three lines above it is worse
+than no figure at all.
+
+Today appears as the first row, drawn at the same length as the bar in the
+capacity block. That is the anchor: a day is only "busy" relative to another
+day, and the eye does that comparison for free when the two pictures match.
+
+Capacity is worked out only for the days actually drawn
+(=org-foresight-load-rows=, five by default) rather than for the whole
+horizon.
+
 * Placement
 
 =M-x org-foresight-plan-fill= proposes times for work that has been accepted
