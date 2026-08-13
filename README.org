@@ -70,8 +70,24 @@ records the value and loses the reason.
   (setq org-foresight-task-file (expand-file-name "journal.org" org-directory)
         org-foresight-day-file  (expand-file-name "journal.org" org-directory))
 
+  ;; Which applications count as what, in the names your desktop reports.
+  ;; The shipped default is English and generic on purpose -- window names are
+  ;; localised, and a work machine rarely agrees with a personal one about
+  ;; what counts as work.  A machine whose list you would rather not commit
+  ;; can set this in its `custom-file' instead.
+  (setq org-foresight-app-categories
+        '(("work"        . ("Emacs" "Code" "Terminal"))
+          ("comms"       . ("Mail" "Slack" "Teams"))
+          ("distraction" . ("Safari" "YouTube"))))
+
   (add-hook 'org-agenda-finalize-hook #'org-foresight-report-render))
 #+end_src
+
+That is the whole of it: with the hook in place the agenda gains the verdict,
+the bars, and the derived rows. Everything else is optional. When the verdict
+says work is outstanding, =M-x org-foresight-signals-list= shows it; the
+=plan= report style puts the same list under an agenda for anyone who would
+rather have it there.
 
 =M-x org-foresight-diagnose= then reports what is set, what is having no
 effect, and what to do next. Worth running once after the above and again

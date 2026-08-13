@@ -46,21 +46,29 @@
 ;;;; Classification
 
 (defvar org-foresight-app-categories
-  '(("work" . ("Emacs" "Ghostty" "Terminal" "iTerm2" "Code" "Xcode"
-               "プレビュー" "Preview" "Claude" "Grok" "ActivityWatch"))
-    ("comms" . ("メール" "Mail" "カレンダー" "Calendar" "Slack"
-                "メッセージ" "Messages" "Zoom"))
-    ("distraction" . ("Safari" "Chrome" "Firefox" "YouTube" "X"
-                      "Twitter" "Discord")))
+  '(("work" . ("Emacs" "Terminal" "iTerm2" "Ghostty" "Alacritty" "kitty"
+               "Code" "Xcode" "IntelliJ IDEA" "PyCharm" "Preview"))
+    ("comms" . ("Mail" "Outlook" "Calendar" "Slack" "Teams" "Zoom"
+                "Messages" "Discord"))
+    ("distraction" . ("Safari" "Chrome" "Firefox" "Edge" "YouTube"
+                      "Reddit" "X")))
   "Alist (CATEGORY . (APP-NAME...)) saying which applications count as what.
 
 Matched case-insensitively against the AW window `app\' name; unmatched apps
-fall into `other\'.  The default is a guess and worth replacing: it decides
-two things, and the second matters more than it looks.  The Observed table
-groups by it, and surge learning counts only `work\' and `comms\' leak as
-displaced work -- time lost to `distraction\' is not capacity a plan could
-have reclaimed, so counting it would inflate the reserve with hours no
-reserve can protect.")
+fall into `other\'.
+
+**Replace this.**  It is a short list of widely-known names in English, which
+is to say a starting point rather than anybody\'s actual desktop: window names
+are localised, and the same person\'s work machine and personal machine rarely
+agree about what counts as work.  Set it where machine-specific values belong
+-- your own configuration, or `custom-file\' on a machine whose list you would
+rather not commit.
+
+It decides two things, and the second matters more than it looks.  The
+Observed table groups by it, and surge learning counts only `work\' and
+`comms\' leak as displaced work -- time lost to `distraction\' is not capacity
+a plan could have reclaimed, so counting it would inflate the reserve with
+hours no reserve can protect.")
 
 (defun org-foresight--app-category (app)
   "Return the category of APP, or \"other\" when it matches nothing.

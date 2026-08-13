@@ -5,7 +5,7 @@
 ;; Author: yoshzucker
 ;; URL: https://github.com/yoshzucker/org-foresight
 ;; Version: 0.1.0
-;; Package-Requires: ((emacs "28.1") (org "9.6"))
+;; Package-Requires: ((emacs "29.1") (org "9.6"))
 ;; Keywords: outlines, calendar, convenience
 
 ;; This file is not part of GNU Emacs.

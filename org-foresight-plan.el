@@ -583,11 +583,37 @@ waiting that has not been asked about yet."
 (add-hook 'org-foresight-report-invalidate-functions
           #'org-foresight--invalidate-signals)
 
+;;;###autoload
+(defun org-foresight-signals-list ()
+  "Show the work that exists but has not been planned for.
+
+The same list the `plan\' report style puts under an agenda, on its own for
+anyone who has not built that view.  Every row carries its entry\'s marker, so
+\\[org-agenda-schedule] and the rest of the agenda\'s vocabulary work here as
+they do there."
+  (interactive)
+  (let ((buffer (get-buffer-create "*Org Foresight Signals*")))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (unless (derived-mode-p 'org-agenda-mode) (org-agenda-mode))
+        (setq-local org-agenda-type 'agenda)
+        (insert (org-foresight-report--badge
+                 "Signals" "work that exists but is not planned")
+                "\n\n"
+                (org-foresight-report-signals))
+        (put-text-property (point-min) (point-max) 'org-agenda-type 'agenda)
+        (goto-char (point-min))
+        (setq buffer-read-only t)))
+    (pop-to-buffer buffer)))
+
 (defun org-foresight-plan--verdict-line ()
   "Return a one-line summary of outstanding signals, or nil when there are none.
 
 The daily agenda otherwise gives no hint that anything is outstanding, and a
-signal nobody is prompted to look at is not really being caught.
+signal nobody is prompted to look at is not really being caught -- so the line
+names the way to look, resolved from the keymap rather than written down, and
+falls back to the command name where nothing is bound to it.
 
 Suppressed on the plan view itself, where the signals are listed in full a
 few lines below: pointing at what is already on screen only costs a line."
@@ -595,7 +621,9 @@ few lines below: pointing at what is already on screen only costs a line."
     (let ((n (apply #'+ (mapcar (lambda (g) (length (cdr g)))
                                 (org-foresight-signals)))))
       (when (> n 0)
-        (format "%d signal%s unplanned" n (if (= n 1) "" "s"))))))
+        (format "%d signal%s unplanned · %s" n (if (= n 1) "" "s")
+                (substitute-command-keys
+                 "\\[org-foresight-signals-list]"))))))
 
 (add-to-list 'org-foresight-verdict-extras #'org-foresight-plan--verdict-line)
 
