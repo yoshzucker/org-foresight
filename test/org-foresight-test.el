@@ -649,9 +649,9 @@ SCHEDULED: <2026-08-10 Mon>
 
 A wider one shifts the column behind it, and the usual cause is a character
 the font simply lacks: what appears then comes from the fallback, at whatever
-width that font uses.  `✗' U+2717 was one such -- absent from PlemolJP and
-rendered slightly too wide, which is why the mark for work that will not fit
-is U+2717's replacement rather than U+2717 itself."
+width that font uses.  `⨯' U+2717 was one such -- absent from PlemolJP and
+rendered slightly too wide -- and PlemolJP has none of U+2715, U+2717 or
+U+2718, which is why the mark for what will not fit is U+2A2F."
   (dolist (s (append (list (string org-foresight-block)
                            org-foresight-agenda-wont-fit)
                      (mapcar #'string
@@ -2584,7 +2584,7 @@ meeting it collides with, which is where the collision is."
     (should (= 1500 (get-text-property 1 'time-of-day row)))
     ;; the mark leads the title rather than trailing it, so the tags Org
     ;; aligns at the end of the line stay at the end of the line
-    (should (string-prefix-p org-foresight-agenda-collides plain))
+    (should (string-prefix-p org-foresight-agenda-wont-fit plain))
     ;; a journey that fits says nothing extra and keeps its own start
     (let ((row (car (org-foresight-agenda--travel
                      (list (list :kind 'travel :title "→ office"
@@ -2608,14 +2608,12 @@ Two lines that mean the same kind of thing should be read the same way."
 (ert-deftest org-foresight-test-key-names-only-the-marks-used ()
   "A key describing a clash on a day that has none is explaining a problem
 the reader does not have, which is a slower way of saying nothing."
-  (let ((org-foresight-agenda--marks (list org-foresight-agenda-collides)))
+  (let ((org-foresight-agenda--marks (list org-foresight-agenda-wont-fit)))
     (let ((key (substring-no-properties (org-foresight-agenda-key))))
       (should (string-match-p "⨯" key))
-      (should-not (string-match-p "✗" key))
       (should-not (string-match-p "↳" key))))
-  (let ((org-foresight-agenda--marks (list org-foresight-agenda-wont-fit "↳")))
+  (let ((org-foresight-agenda--marks (list "↳")))
     (let ((key (substring-no-properties (org-foresight-agenda-key))))
-      (should (string-match-p "✗" key))
       (should (string-match-p "↳" key))
       (should-not (string-match-p "⨯" key))))
   ;; a day that needed no marks gets no line at all

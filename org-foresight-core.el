@@ -52,9 +52,15 @@
                 "メッセージ" "Messages" "Zoom"))
     ("distraction" . ("Safari" "Chrome" "Firefox" "YouTube" "X"
                       "Twitter" "Discord")))
-  "Alist (CATEGORY . (APP-NAME...)) for the Observed table's Cat column.
-Matched case-insensitively against the AW window `app' name; unmatched apps
-fall into `other'.  Tune the app lists to taste.")
+  "Alist (CATEGORY . (APP-NAME...)) saying which applications count as what.
+
+Matched case-insensitively against the AW window `app\' name; unmatched apps
+fall into `other\'.  The default is a guess and worth replacing: it decides
+two things, and the second matters more than it looks.  The Observed table
+groups by it, and surge learning counts only `work\' and `comms\' leak as
+displaced work -- time lost to `distraction\' is not capacity a plan could
+have reclaimed, so counting it would inflate the reserve with hours no
+reserve can protect.")
 
 (defun org-foresight--app-category (app)
   "Return the category of APP, or \"other\" when it matches nothing.
@@ -738,7 +744,13 @@ which is why it is never derived from when work actually happened."
   :group 'org-foresight)
 
 (defcustom org-foresight-workday-end "17:30"
-  "Default time the work span closes, as \"HH:MM\"."
+  "Default time the work span closes, as \"HH:MM\".
+
+A declaration, not an observation: this is the hour you intend to leave, and
+the number exists to be defended.  Setting it to the hour you actually tend
+to leave would make every day fit by construction and defeat the point of
+having it at all.  A day that is genuinely different is declared on its own
+heading with \\[org-foresight-shape-day]."
   :type 'string
   :group 'org-foresight)
 

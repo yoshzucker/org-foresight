@@ -133,15 +133,17 @@ duration in \"free 2:15\" as the time of day."
 
 ;;;; The marks
 
-(defconst org-foresight-agenda-wont-fit "✗"
-  "The mark put on work that has no gap today big enough to hold it.")
+(defconst org-foresight-agenda-wont-fit "⨯"
+  "The mark for something the day cannot hold: one glyph, one meaning.
 
-(defconst org-foresight-agenda-collides "⨯"
-  "The mark put on a derived block that cannot have the time it needs.
+A journey that cannot have the hours it needs and a task with no gap big
+enough to take it are the same news -- this does not fit -- and the row says
+which is which without a second character being spent on it.
 
-U+2A2F rather than U+2717: PlemolJP has no glyph for the latter, so it comes
-from whatever font the fallback finds, at whatever width that font uses, and
-the column behind it steps.")
+U+2A2F rather than any of the ballot or multiplication crosses.  PlemolJP has
+no glyph for U+2715, U+2717 or U+2718, so each arrives from whatever font the
+fallback finds at whatever width that font uses, and the column behind it
+steps; U+00D7 is present but full width, which steps by a whole cell.")
 
 (defvar org-foresight-agenda--marks nil
   "The marks the day last drawn actually used.
@@ -151,8 +153,7 @@ than tracked while building them, so it cannot drift from what is on the
 page.  One day\'s worth: the views that show a key show a single day.")
 
 (defconst org-foresight-agenda--mark-meanings
-  `((,org-foresight-agenda-wont-fit . "no gap today holds it")
-    (,org-foresight-agenda-collides . "cannot have the time it needs")
+  `((,org-foresight-agenda-wont-fit . "will not fit")
     ("↳" . "would fit in the gap above"))
   "What each mark means, in the order the key names them.")
 
@@ -187,7 +188,7 @@ longer than it is."
        (let ((trimmed (plist-get b :trimmed)))
          (org-foresight-agenda--item
           (concat (when trimmed
-                    (concat (propertize org-foresight-agenda-collides
+                    (concat (propertize org-foresight-agenda-wont-fit
                                         'face
                                         'org-foresight-report-overcommitted)
                             " "))
