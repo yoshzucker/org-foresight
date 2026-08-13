@@ -166,90 +166,162 @@ cell its face, so one row carries both activity density and clocked status."
         ((equal cat "other") "misc")
         (t (truncate-string-to-width cat 4 0 ?\s))))
 
-(defun org-foresight-report-observed (clock)
-  "Return today's ActivityWatch \"reality & rhythm\" block (lines <=80 cols).
-Header (boundaries/active/afk/switches/clocked/leak) + hourly sparkline
-(colored by clocked-status when CLOCK's coverage data is available) + a table
-partitioning the observed day into active apps (with a category tag and, when
-available, the unclocked/leak portion of that app's time) plus an away(afk)
-row, then an emacs-project detail line.  CLOCK is the plist from
-`org-foresight-clock-scan', passed through to `org-foresight-observe-coverage'."
-  (let ((data (org-foresight-observe-today)))
-    (if (not data)
-        (propertize "(ActivityWatch unavailable)" 'face 'org-table)
-      (let* ((active (plist-get data :active))
-             (afk (plist-get data :afk))
-             (full (max 1.0 (+ active afk)))
-             (cov (org-foresight-observe-coverage clock))
-             (leak-by-app (and cov
-                                (let ((h (make-hash-table :test 'equal)))
-                                  (dolist (kv (plist-get cov :leak-apps))
-                                    (puthash (car kv) (cdr kv) h))
-                                  h)))
-             (apps (plist-get data :active-apps))
-             (top (seq-take apps 8))
-             (rest-sum (apply #'+ (mapcar #'cdr (seq-drop apps 8))))
-             (rows (append
-                    (mapcar (lambda (kv)
-                              (list (org-foresight--app-category (car kv)) (car kv) (cdr kv)
-                                    (and leak-by-app (gethash (car kv) leak-by-app))))
-                            top)
-                    (when (> rest-sum 60)
-                      (list (list "other" "other apps" rest-sum nil)))
-                    (list (list "idle" "away (afk)" (float afk) nil))))
-             (rows (seq-filter (lambda (r) (> (nth 2 r) 0)) rows))
-             (rows (sort rows (lambda (a b) (> (nth 2 a) (nth 2 b)))))
-             (maxrow (if rows (apply #'max (mapcar (lambda (r) (nth 2 r)) rows)) 1))
-             (first (plist-get data :first))
-             (last (plist-get data :last)))
-        (propertize
-         (concat
-          (format "Screen %s–%s · active %s · afk %s · %d switches%s"
-                  (if first (format-time-string "%H:%M" first) "—")
-                  (if last (format-time-string "%H:%M" last) "—")
-                  (org-duration-from-minutes (/ active 60.0))
-                  (org-duration-from-minutes (/ afk 60.0))
-                  (plist-get data :switches)
-                  (if cov
-                      (format " · clocked %s · leak %s"
-                              (org-duration-from-minutes (/ (plist-get cov :clocked-sec) 60.0))
-                              (org-duration-from-minutes (/ (plist-get cov :leak-sec) 60.0)))
-                    ""))
-          "\n" (org-foresight-report--hour-axis)
-          "\n" (if cov
-                   (org-foresight-report--sparkline-colored (plist-get data :binned)
-                                              (plist-get cov :ca) (plist-get cov :cf)
-                                              (plist-get cov :ua) (plist-get cov :uf))
-                 (org-foresight-report--sparkline (plist-get data :binned)))
-          "\n" (format "| %s | %s | %5s | %5s | %6s | %s |"
-                       (truncate-string-to-width "Cat" 4 0 ?\s)
-                       (truncate-string-to-width "Activity" 12 0 ?\s)
-                       "Time" "%" "Leak" (truncate-string-to-width "Share" 14 0 ?\s))
-          "\n|------+--------------+-------+-------+--------+----------------|"
-          (mapconcat
-           (lambda (r)
-             (let ((cat (nth 0 r)) (name (nth 1 r)) (sec (nth 2 r)) (leak (nth 3 r)))
-               (format "\n| %s | %s | %5s | %5.1f | %6s | %s |"
-                       (truncate-string-to-width (org-foresight-report--cat-abbrev cat) 4 0 ?\s)
-                       (truncate-string-to-width
-                        (replace-regexp-in-string "[|\n\r]" " " name) 12 0 ?\s)
-                       (org-duration-from-minutes (/ sec 60.0))
-                       (* 100.0 (/ sec full))
-                       (if (and leak (> leak 0)) (org-duration-from-minutes (/ leak 60.0)) "")
-                       (truncate-string-to-width
-                        (orgtbl-ascii-draw sec 0 (max maxrow 1) 14
-                                           org-foresight-bar-chars)
-                        14 0 ?\s))))
-           rows "")
-          (let ((em (plist-get data :emacs-projects)))
-            (if em
-                (concat "\nemacs: "
-                        (mapconcat
-                         (lambda (kv)
-                           (format "%s %.0f" (or (car kv) "?") (/ (cdr kv) 60.0)))
-                         (seq-take em 5) " · "))
-              "")))
-         'face 'org-table)))))
+(defun org-foresight-report--spark-scaled (counts)
+  "Return a 48-char sparkline of COUNTS, scaled to its own busiest bin.
+
+Unlike the activity line, which is a fraction of a fixed half-hour, a count
+has no natural ceiling -- so the tallest bar means \"the worst it got today\"
+and the row answers when rather than how many."
+  (let ((peak (apply #'max 1 (append counts nil))))
+    (mapconcat (lambda (i)
+                 (char-to-string
+                  (org-foresight-report--spark-char
+                   (/ (float (aref counts i)) peak))))
+               (number-sequence 0 47) "")))
+
+(defconst org-foresight-report--spark-key
+  '((org-foresight-report-clocked-active . "clocked")
+    (org-foresight-report-unclocked-active . "off the clock")
+    (org-foresight-report-clocked-afk . "clock left running"))
+  "Faces the activity line can use, and what each says.")
+
+(defun org-foresight-report--spent-key (cov)
+  "Return the line naming the colours the activity line used, given COV."
+  (when cov
+    (concat
+     (mapconcat (pcase-lambda (`(,face . ,label))
+                  (concat (propertize (string org-foresight-block) 'face face)
+                          " " label))
+                org-foresight-report--spark-key "  ")
+     "  " (propertize "·" 'face 'org-foresight-report-unclocked-afk) " away")))
+
+(defun org-foresight-report--longest-spell (intervals)
+  "Return the longest single stretch in INTERVALS, in minutes."
+  (if (null intervals) 0
+    (/ (apply #'max (mapcar (lambda (iv)
+                              (float-time (time-subtract (cdr iv) (car iv))))
+                            intervals))
+       60.0)))
+
+(defun org-foresight-report--spent-header (clock aw)
+  "Return the one-line summary of what today cost, from CLOCK and AW.
+
+Every figure is named for what it actually is.  `Clocked\\' is the org clock's
+own total -- not time at the machine, which is the number it is measured
+against.  A spell is one unbroken run of it, and the longest is the honest
+answer to whether the day held together.  The comparison is with the last
+week\\'s daily average, which says whether today was ordinary; it is not the
+reserve, and must not be read as one."
+  (let* ((total (plist-get clock :today-total))
+         (segments (plist-get clock :today-segments))
+         (longest (org-foresight-report--longest-spell
+                   (plist-get clock :today-intervals)))
+         (active (and aw (/ (plist-get aw :active) 60.0)))
+         (avg7 (/ (plist-get clock :total) 7.0)))
+    (concat
+     (format "Clocked %s" (org-duration-from-minutes total))
+     (when (and active (> active 0))
+       (format " of %s at the machine%s"
+               (org-duration-from-minutes active)
+               (if (plist-get aw :screen-only)
+                   (propertize " (screen only)" 'face 'shadow) "")))
+     (when (> segments 0)
+       (format " · %d spell%s, longest %s" segments (if (= segments 1) "" "s")
+               (org-duration-from-minutes longest)))
+     (when (> avg7 0)
+       (format " · vs 7d %+.0f%%" (* 100.0 (/ (- total avg7) avg7)))))))
+
+(defun org-foresight-report--spent-row (task)
+  "Return the row for TASK, a plist from `org-foresight-clock-scan\\''s
+:today-tasks.
+
+What was spent, against what was said.  A single notation throughout: the
+percentage of the estimate the work has consumed, where 100% is exactly on
+it.  Mixing that with a multiplier for the ones that ran over would make two
+columns out of one, and the eye would have to decide which it was reading."
+  (let* ((spent (plist-get task :minutes))
+         (effort (plist-get task :effort))
+         (pct (and effort (> effort 0) (* 100.0 (/ spent (float effort)))))
+         (verdict
+          (if (null pct)
+              (propertize "no estimate" 'face 'shadow)
+            (propertize (format "%s planned  %3.0f%%"
+                                (org-duration-from-minutes effort) pct)
+                        'face (if (> pct 100.0)
+                                  'org-foresight-report-overcommitted
+                                'shadow)))))
+    (org-foresight-report--actionable
+     (format "%-8s %5s  %-34s %s"
+             (truncate-string-to-width (or (plist-get task :category) "") 8 0 ?\s)
+             (org-duration-from-minutes spent)
+             (truncate-string-to-width
+              (concat (when-let ((kw (plist-get task :todo)))
+                        (concat (propertize kw 'face (org-get-todo-face kw)) " "))
+                      (replace-regexp-in-string
+                       "[\n\r]" " " (or (plist-get task :title) "?")))
+              34 nil nil "…")
+             verdict)
+     (plist-get task :marker))))
+
+(defun org-foresight-report--spent-apps (lead apps)
+  "Return LEAD followed by APPS, an alist of (NAME . SECONDS), or nil.
+
+The parts add up to the total in LEAD -- that is what makes the line worth
+reading rather than merely suggestive -- so what will not fit on the line is
+counted with `+N\\' rather than quietly dropped."
+  (when apps
+    (when-let ((named (org-foresight-report--name-run
+                       (mapcar (pcase-lambda (`(,name . ,sec))
+                                 (list :title name :effort (/ sec 60.0)))
+                               apps)
+                       99 (org-foresight-report--budget lead))))
+      (propertize (concat lead named) 'face 'shadow))))
+
+(defun org-foresight-report-spent (clock)
+  "Return today looked back on: where the hours went, against where they were
+meant to go.
+
+One block rather than three tables.  What was planned, what was spent and
+what the machine saw are three views of a single question, and answering it
+in three places meant nobody could see the answer.  CLOCK is the plist from
+`org-foresight-clock-scan\\'."
+  (let* ((aw (org-foresight-observe-today))
+         (cov (and aw (org-foresight-observe-coverage clock)))
+         (tasks (plist-get clock :today-tasks)))
+    (string-join
+     (delq nil
+           (list
+            (org-foresight-report--spent-header clock aw)
+            (when aw (org-foresight-report--hour-axis))
+            (when aw
+              (concat (if cov
+                          (org-foresight-report--sparkline-colored
+                           (plist-get aw :binned)
+                           (plist-get cov :ca) (plist-get cov :cf)
+                           (plist-get cov :ua) (plist-get cov :uf))
+                        (org-foresight-report--sparkline (plist-get aw :binned)))
+                      (propertize "  at the machine" 'face 'shadow)))
+            (when-let ((sw (and aw (plist-get aw :switches-binned))))
+              (concat (propertize (org-foresight-report--spark-scaled sw)
+                                  'face 'org-foresight-report-unclocked-active)
+                      (propertize "  switching" 'face 'shadow)))
+            (org-foresight-report--spent-key cov)
+            (when (or tasks cov) "")
+            (when tasks (mapconcat #'org-foresight-report--spent-row tasks "\n"))
+            (and cov (org-foresight-report--spent-apps
+                      (format "↳ leak %s · "
+                              (org-duration-from-minutes
+                               (/ (plist-get cov :leak-sec) 60.0)))
+                      (plist-get cov :leak-apps)))
+            (and cov (org-foresight-report--spent-apps
+                      (format "↳ lost %s · "
+                              (org-duration-from-minutes
+                               (/ (plist-get cov :lost-sec) 60.0)))
+                      (plist-get cov :lost-apps)))
+            (unless (or tasks aw)
+              (propertize "(nothing clocked, and ActivityWatch is not running)"
+                          'face 'shadow))))
+     "\n")))
 
 (defun org-foresight-report--category-table (rows total maxmin col2-label)
   "Return a CATEGORY/Time/%/Share ASCII table (<=80 cols), shared by the
@@ -277,69 +349,6 @@ and MAXMIN scale the % and bar columns; COL2-LABEL names the category column
                     18 0 ?\s))))
        rows "\n"))
      'face 'org-table)))
-
-(defun org-foresight-report-clocked (clock)
-  "Return today's CATEGORY-share table with a focus-budget header (<=80 cols).
-The bar column is scaled to the largest project; the % column carries the
-exact share of today's clocked total (so the % values sum to 100).
-CLOCK is the plist from `org-foresight-clock-scan', called with DAYS large
-enough to also cover the vs-7-day comparison in the header."
-  (let* ((rows (plist-get clock :today-rows))
-         (total (plist-get clock :today-total))
-         (segments (plist-get clock :today-segments))
-         (avg7 (/ (plist-get clock :total) 7.0))
-         (aw (org-foresight-observe-today))
-         (active-min (and aw (/ (plist-get aw :active) 60.0)))
-         (maxmin (if rows (apply #'max (mapcar #'cdr rows)) 1))
-         (budget
-          (concat
-           (format "Focus %s" (org-duration-from-minutes total))
-           (when (and active-min (> active-min 0))
-             (format " · %.0f%% of active" (* 100.0 (/ total active-min))))
-           (when (> segments 0)
-             (format " · avg %.0fm ×%d" (/ (float total) segments) segments))
-           (when (> avg7 0)
-             (format " · vs7d %+.0f%%" (* 100.0 (/ (- total avg7) avg7)))))))
-    (concat budget "\n" (org-foresight-report--category-table rows total maxmin "Project"))))
-
-(defun org-foresight-report-estimate ()
-  "Return today's EFFORT-vs-actual table (each line <=80) for estimated tasks."
-  (let (rows)
-    (dolist (file (org-agenda-files))
-      (let ((entries
-             (nth 2 (with-current-buffer (find-file-noselect file)
-                      (ignore-errors
-                        (org-clock-get-table-data
-                         file '(:block today :properties ("Effort")
-                                       :maxlevel 99)))))))
-        (dolist (e entries)
-          (let ((headline (nth 1 e))
-                (time (nth 4 e))
-                (effort (cdr (assoc "Effort" (nth 5 e)))))
-            (when (and effort (> (or time 0) 0))
-              (push (list headline (org-duration-to-minutes effort) time) rows))))))
-    (propertize
-     (if (null rows)
-         "(no estimated tasks clocked today)"
-       (concat
-        (format "| %-28s | %5s | %5s | %-12s |%5s" "Task" "Plan" "Act" "Progress" "%")
-        "\n|" (make-string 30 ?-) "+" (make-string 7 ?-) "+" (make-string 7 ?-)
-        "+" (make-string 14 ?-) "+" (make-string 5 ?-) "\n"
-        (mapconcat
-         (lambda (r)
-           (let ((plan (nth 1 r)) (act (nth 2 r)))
-             (format "| %s | %5s | %5s | %s |%4.0f%%"
-                     (truncate-string-to-width
-                      (replace-regexp-in-string "[|\n\r]" " " (nth 0 r)) 28 0 ?\s)
-                     (org-duration-from-minutes plan)
-                     (org-duration-from-minutes act)
-                     (truncate-string-to-width
-                      (orgtbl-ascii-draw (min act plan) 0 (max plan 1) 12
-                                         org-foresight-bar-chars)
-                      12 0 ?\s)
-                     (if (> plan 0) (* 100.0 (/ (float act) plan)) 0))))
-         (sort rows (lambda (a b) (> (nth 2 a) (nth 2 b))))
-         "\n"))) 'face 'org-table)))
 
 (defun org-foresight-report-week (clock)
   "Return a week-by-CATEGORY review table with a rhythm header (<=80 cols).
@@ -722,7 +731,11 @@ Applied to the blocks whose lines do not already carry it, rather than to
 the rows, which are built at the margin because that is where a line the
 agenda can act on belongs."
   (when text
-    (mapconcat (lambda (line) (concat org-foresight-report-margin line))
+    (mapconcat (lambda (line)
+                 ;; A blank line stays blank: padding it would leave trailing
+                 ;; whitespace on a line that says nothing.
+                 (if (string-empty-p line) line
+                   (concat org-foresight-report-margin line)))
                (split-string text "\n") "\n")))
 
 (defun org-foresight-report--actionable (string marker &optional stamp)
@@ -790,27 +803,46 @@ answers to \"can this move\"."
 The adjusted estimate where there is one, since that is what capacity spends."
   (or (plist-get e :effort-adj) (plist-get e :effort) 0))
 
+(defun org-foresight-report--budget (lead)
+  "Return the columns a run may use on a line already carrying LEAD.
+
+The margin is taken off as well: every block is indented by
+`org-foresight-report-margin\' after it is built, so a line measured against
+the full width would come out one column over."
+  (- 80 (string-width lead) (string-width org-foresight-report-margin)))
+
 (defun org-foresight-report--name-run (entries limit budget)
   "Return at most LIMIT of ENTRIES named within BUDGET columns, or nil.
 
 Each is its title and what it costs.  What did not fit is counted rather than
 dropped, because the difference between three candidates and thirty is the
 whole answer on some days."
-  (let ((used 0) (shown 0) parts)
-    (dolist (e entries)
-      (let* ((piece (format "%s %s"
-                            (truncate-string-to-width
-                             (plist-get e :title) 22 nil nil "…")
-                            (org-duration-from-minutes
-                             (org-foresight-report--entry-minutes e))))
-             (cost (+ (string-width piece) (if parts 3 0))))
-        (when (and (< shown limit) (<= (+ used cost) budget))
-          (setq used (+ used cost) shown (1+ shown))
-          (push piece parts))))
-    (when parts
-      (concat (string-join (nreverse parts) " · ")
-              (let ((more (- (length entries) shown)))
-                (if (> more 0) (format " +%d" more) ""))))))
+  (let ((pieces (mapcar (lambda (e)
+                          (format "%s %s"
+                                  (truncate-string-to-width
+                                   (plist-get e :title) 22 nil nil "…")
+                                  (org-duration-from-minutes
+                                   (org-foresight-report--entry-minutes e))))
+                        entries))
+        (total (length entries))
+        shown)
+    (setq shown (seq-take pieces (max 0 limit)))
+    ;; Trim from the end until the whole line fits -- including the "+N", which
+    ;; is part of the line and grows as pieces come off it.  Counting the
+    ;; pieces alone and appending the count afterwards is how a run ends up one
+    ;; column over the budget it was measured against.
+    (while (and shown
+                (> (string-width
+                    (org-foresight-report--name-run-join shown total))
+                   budget))
+      (setq shown (butlast shown)))
+    (and shown (org-foresight-report--name-run-join shown total))))
+
+(defun org-foresight-report--name-run-join (shown total)
+  "Join SHOWN, counting how many of TOTAL were left out."
+  (concat (string-join shown " · ")
+          (let ((more (- total (length shown))))
+            (if (> more 0) (format " +%d" more) ""))))
 
 (defun org-foresight-report--frees (over ledger)
   "Return the line naming what LEDGER can give up to win back OVER minutes.
@@ -874,7 +906,7 @@ asked you to attend was never yours to move in the first place."
                        (org-foresight-report--name-run
                         picked
                         (if combined (length picked) org-foresight-grid-frees)
-                        (- 80 (length lead))))))
+                        (org-foresight-report--budget lead)))))
       (when named
         (propertize (concat lead named) 'face 'shadow)))))
 
@@ -920,22 +952,13 @@ bars, and the shape of the day by the agenda itself.  What is left for the
 foot of the buffer is the half no plan can supply -- the clock against the
 estimate, and the machine against the clock.
 
-Scans clock data once and threads the result to every table that needs it,
-rather than each table re-scanning independently."
+Scans the clock once and hands the result on, rather than each part of the
+block scanning again for itself."
   (let ((clock (org-foresight-clock-scan 7)))
     (concat "\n"
-            (org-foresight-report--badge "Clocked" "share of focus today")
+            (org-foresight-report--badge "Spent" "where the hours actually went")
             "\n"
-            (org-foresight-report-clocked clock)
-            "\n\n"
-            (org-foresight-report--badge "Estimate" "planned vs actual")
-            "\n"
-            (org-foresight-report-estimate)
-            "\n\n"
-            (org-foresight-report--badge "Observed"
-                                         "reality & rhythm · ActivityWatch")
-            "\n"
-            (org-foresight-report-observed clock)
+            (org-foresight-report--indent (org-foresight-report-spent clock))
             "\n")))
 
 (defun org-foresight-report--review ()

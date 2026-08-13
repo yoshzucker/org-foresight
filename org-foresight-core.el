@@ -4,7 +4,7 @@
 
 ;; Author: yoshzucker
 ;; URL: https://github.com/yoshzucker/org-foresight
-;; Package-Requires: ((emacs "28.1") (org "9.6"))
+;; Package-Requires: ((emacs "29.1") (org "9.6"))
 
 ;; This file is not part of GNU Emacs.
 
@@ -154,6 +154,30 @@ Returns a fresh, sorted, disjoint list; never mutates IVS."
   (let ((d (decode-time (current-time))))
     (encode-time 0 0 0 (- (nth 3 d) (or day-offset 0)) (nth 4 d) (nth 5 d))))
 
+(defun org-foresight--clock-charge-task (table cat minutes)
+  "Add MINUTES under CAT to TABLE for the entry point is inside.
+
+Keyed on the heading's position, so a drawer holding several CLOCK lines is
+one task rather than several.  The heading's own facts -- what it is called,
+what state it is in, what it was estimated at -- are read once, the first time
+that heading is seen."
+  (let* ((head (save-excursion (org-back-to-heading t) (point)))
+         (key (cons (current-buffer) head))
+         (task (gethash key table)))
+    (if task
+        (plist-put task :minutes (+ minutes (plist-get task :minutes)))
+      (puthash key
+               (save-excursion
+                 (goto-char head)
+                 (list :title (org-get-heading t t t t)
+                       :category cat
+                       :todo (org-get-todo-state)
+                       :effort (when-let ((e (org-entry-get (point) "EFFORT")))
+                                 (org-duration-to-minutes e))
+                       :marker (point-marker)
+                       :minutes minutes))
+               table))))
+
 (defun org-foresight-clock-scan (days)
   "Scan `org-agenda-files' LOGBOOK CLOCK lines over the last DAYS days
 \(today inclusive) in one pass.  A running clock (no end timestamp) is
@@ -168,6 +192,10 @@ the three separate hand-rolled scans this replaces.  Return a plist:
 :today-total    today's total minutes
 :today-segments today's clock-segment count (fragmentation)
 :today-intervals  today's (START . END) time conses
+:today-tasks    plists (:title :category :todo :effort :marker :minutes) for
+                every entry clocked today, desc by minutes.  EFFORT is the
+                estimate in minutes or nil; MARKER points at the heading, so a
+                row built from one of these answers to the agenda's commands
 :intervals-byday  DAYS-length vector of (START . END) lists, index 0 = oldest,
                   normalized; a segment is filed under the day it starts in,
                   matching how :byday attributes minutes.
@@ -184,6 +212,11 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
          (byday (make-vector days 0))
          (intervals-byday (make-vector days nil))
          (total 0) (today-total 0) (today-segments 0)
+         ;; Per-entry totals for today, keyed on the heading itself so several
+         ;; CLOCK lines in one drawer add up.  Gathered here rather than by a
+         ;; second pass: the same LOGBOOK is already open under point, and the
+         ;; heading's own data is one `org-back-to-heading' away.
+         (today-tasks (make-hash-table :test 'equal))
          today-intervals
          (re (concat "^[ \t]*" org-clock-string
                      "[ \t]*\\(\\[[^]\n]+\\]\\)\\(?:--\\(\\[[^]\n]+\\]\\)\\)?")))
@@ -220,18 +253,22 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                                today-segments (1+ today-segments))
                          (puthash cat (+ today-dur (gethash cat today-table 0))
                                   today-table)
-                         (push (cons ts ce) today-intervals))))))))))))
+                         (push (cons ts ce) today-intervals)
+                         (org-foresight--clock-charge-task
+                          today-tasks cat today-dur))))))))))))
     (dotimes (i days)
       (aset intervals-byday i
             (org-foresight--intervals-normalize (aref intervals-byday i))))
-    (let (rows today-rows)
+    (let (rows today-rows tasks)
       (maphash (lambda (k v) (push (cons k v) rows)) table)
       (maphash (lambda (k v) (push (cons k v) today-rows)) today-table)
+      (maphash (lambda (_ v) (push v tasks)) today-tasks)
       (list :rows (seq-sort-by #'cdr #'> rows)
             :total total :byday byday :days days
             :today-rows (seq-sort-by #'cdr #'> today-rows)
             :today-total today-total :today-segments today-segments
             :today-intervals (nreverse today-intervals)
+            :today-tasks (seq-sort-by (lambda (e) (plist-get e :minutes)) #'> tasks)
             :intervals-byday intervals-byday))))
 
 ;;;; Day scan
