@@ -184,7 +184,20 @@ Thursday   13 August 2026
   family  19:00-20:30 Dinner with the family
 ⨯ reporti Scheduled:  6:00 NEXT Rewrite the annual report
 
-Clocked · Estimate · Observed …
+[Spent] where the hours actually went
+ Clocked 3:20 of 8:30 at the machine · 8 spells, longest 0:35 · vs 7d +12%
+ 0           6           12          18        23
+ ·········▂▅▃▆▂▅▂▄▅···▁▃▄▃▆▆·············  at the machine
+ ·········▁▂▇▃▁▂▁▅▂···▁▁▂▁▃▂·············  switching
+ █ clocked  █ off the clock  █ clock left running  · away
+
+ reportin  1:40  NEXT Draft the quarterly summary    1:00 planned  167%
+ procure   0:50  NEXT Write the vendor comparison    2:00 planned   42%
+ admin     0:30  DONE Reply to procurement           0:30 planned  100%
+ engineer  0:20  NEXT Review the migration plan      no estimate
+ ↳ leak 0:52 · Slack 0:20 · Mail 0:18 · Terminal 0:14
+ ↳ lost 0:40 · Safari 0:28 · YouTube 0:12
+
 #+end_example
 
 The rules, the entries, =now=, the categories, the effort column — all of
@@ -374,6 +387,48 @@ PlemolJP the block runs 1300 units against a 1175-unit line, i.e. ~10% proud
 at the bottom. Fonts that normalise tile glyphs to the line box (as a patched
 PlemolJP NF does, at 890/−210) draw the bar flush with everything else.
 That is a property of the font, not of this package.
+
+* Looking back
+
+The foot of =C-c a a= answers the half no plan can supply: what the day cost
+against what it was said to cost.
+
+Every figure is named for what it is. *Clocked* is Org's own clock total —
+not time at the machine, which is the number it is measured against. A
+*spell* is one unbroken run of it, and the longest is the honest answer to
+whether the day held together. *vs 7d* compares with the last week's daily
+average, so it says whether today was ordinary; it is not the reserve.
+
+Two rows share one axis. The first is where the activity was, coloured by
+whether a clock was running. The second is *when the day got chopped up* — a
+count of switches says a day was fragmented, but only the row says at which
+hours, and that is the part anybody can act on.
+
+Each task row gives what it cost against what it was estimated at, as a
+single percentage. 100% is exactly on the estimate. One notation throughout:
+a multiplier for the ones that overran and a percentage for the rest would
+make two columns out of one, and leave the eye to work out which it was
+reading. The rows carry their entries' markers, so =RET= visits the task.
+
+*leak* and *lost* split the time spent at the machine with no clock running,
+by whether the application counts as work:
+
+: ↳ leak 0:52 · Slack 0:20 · Mail 0:18 · Terminal 0:14
+: ↳ lost 0:40 · Safari 0:28 · YouTube 0:12
+
+The parts add up to the total — that is what makes the line worth reading
+rather than merely suggestive — and what will not fit is counted with =+N=
+rather than dropped. The split is drawn by
+=org-foresight-app-categories=, and it is the only place in the package where
+that setting changes a number rather than a label: *leak is exactly what
+=org-foresight-learn-surge= holds a reserve back for*, so the figure on
+screen is the figure that becomes tomorrow's reserve. Time away from the desk
+is neither — the sparkline's gaps already say so.
+
+Without an =aw-watcher-afk= there is no record of when the machine was
+attended, only of when a window was in front. The day is then drawn from
+that instead, and the header says =screen only=: a coarse picture is worth
+more than a blank one, but the two must not look alike.
 
 * Not everything wants all of you
 

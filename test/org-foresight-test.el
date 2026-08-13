@@ -1437,12 +1437,15 @@ SCHEDULED: <2026-08-10 Mon 10:00>
   (seq-every-p (lambda (l) (<= (string-width l) 80))
                (split-string (substring-no-properties s) "\n")))
 
-(ert-deftest org-foresight-test-report-clocked ()
+(ert-deftest org-foresight-test-report-spent ()
+  "The retrospective block leads with what the clock says, in its own words."
   (org-foresight-test--without-aw
-    (let ((s (org-foresight-report-clocked org-foresight-test--clock)))
-      (should (string-match-p "Focus" s))
-      (should (string-match-p "work" s))
-      (should (string-match-p "会議" s))
+    (let ((s (org-foresight-report-spent org-foresight-test--clock)))
+      ;; the clock's own total, named for what it is rather than for time at
+      ;; the machine -- which is the number it gets measured against
+      (should (string-match-p "Clocked" s))
+      (should (string-match-p "spell" s))
+      (should (string-match-p "vs 7d" s))
       (should (org-foresight-test--within-80 s)))))
 
 (ert-deftest org-foresight-test-report-week ()
@@ -1458,16 +1461,20 @@ SCHEDULED: <2026-08-10 Mon 10:00>
     (let ((empty (list :rows nil :total 0 :days 7 :byday (make-vector 7 0)
                        :today-rows nil :today-total 0 :today-segments 0
                        :today-intervals nil)))
-      (should (string-match-p "no clocked time"
-                              (org-foresight-report-clocked empty)))
+      (should (string-match-p "Clocked 0:00" (org-foresight-report-spent empty)))
       (should (string-match-p "no clocked time"
                               (org-foresight-report-week empty))))))
 
-(ert-deftest org-foresight-test-report-observed-degrades ()
-  "With no ActivityWatch the Observed block says so rather than signalling."
+(ert-deftest org-foresight-test-report-spent-degrades ()
+  "With no ActivityWatch the block drops the parts that need it and keeps the
+rest, rather than signalling or blanking out."
   (org-foresight-test--without-aw
-    (let ((s (org-foresight-report-observed org-foresight-test--clock)))
-      (should (string-match-p "unavailable" s)))))
+    (let ((s (org-foresight-report-spent org-foresight-test--clock)))
+      (should (string-match-p "Clocked" s))
+      ;; nothing that only the machine could have said
+      (should-not (string-match-p "at the machine" s))
+      (should-not (string-match-p "switching" s))
+      (should-not (string-match-p "leak" s)))))
 
 (ert-deftest org-foresight-test-category-table-truncates ()
   "An over-long category is cut to the column, not allowed to widen the table."
@@ -1484,7 +1491,7 @@ SCHEDULED: <2026-08-10 Mon 10:00>
       (let ((org-foresight-report-style 'review))
         (should (string-match-p "Week" (org-foresight-report--body))))
       (let ((org-foresight-report-style 'daily))
-        (should (string-match-p "Focus" (org-foresight-report--body))))
+        (should (string-match-p "Clocked" (org-foresight-report--body))))
       (let ((org-foresight-report-style nil))
         (should (null (org-foresight-report--body)))))))
 
@@ -2640,6 +2647,142 @@ single time, and real entries arrive from timestamps parsed long before."
     (should (= 945 (get-text-property
                     0 'time-of-day
                     (org-foresight-agenda--item "2:15 free" "" "09:45-12:00"))))))
+
+(defmacro org-foresight-test--with-clocked (text &rest body)
+  "Run BODY over TEXT, whose CLOCK lines are rewritten to today."
+  (declare (indent 1))
+  `(org-foresight-test--with-org
+       (replace-regexp-in-string
+        "@" (format-time-string "%Y-%m-%d %a") ,text)
+     ,@body))
+
+(ert-deftest org-foresight-test-today-tasks-are-per-entry ()
+  "One drawer is one task however many CLOCK lines it holds, and it carries
+enough of the heading to be acted on."
+  (org-foresight-test--with-clocked
+      "* NEXT Draft the summary
+:PROPERTIES:
+:CATEGORY: reporting
+:EFFORT:   1:00
+:END:
+:LOGBOOK:
+CLOCK: [@ 09:00]--[@ 10:00] =>  1:00
+CLOCK: [@ 13:00]--[@ 13:40] =>  0:40
+:END:
+* NEXT Something unestimated
+:PROPERTIES:
+:CATEGORY: admin
+:END:
+:LOGBOOK:
+CLOCK: [@ 14:00]--[@ 14:20] =>  0:20
+:END:
+"
+    (let* ((tasks (plist-get (org-foresight-clock-scan 7) :today-tasks))
+           (first (car tasks)))
+      (should (= 2 (length tasks)))
+      ;; two CLOCK lines, one task, minutes added up -- and sorted longest first
+      (should (= 100 (plist-get first :minutes)))
+      (should (= 60 (plist-get first :effort)))
+      (should (equal "reporting" (plist-get first :category)))
+      (should (markerp (plist-get first :marker)))
+      ;; work with no estimate still appears; it simply has none
+      (should-not (plist-get (cadr tasks) :effort)))))
+
+(ert-deftest org-foresight-test-spent-row-is-always-a-percentage ()
+  "One notation for the whole column: mixing a multiplier with a percentage
+would make two columns out of one and leave the eye to work out which it is
+reading."
+  (let ((over (org-foresight-report--spent-row
+               (list :title "over" :category "a" :minutes 100 :effort 60)))
+        (under (org-foresight-report--spent-row
+                (list :title "under" :category "a" :minutes 50 :effort 120)))
+        (exact (org-foresight-report--spent-row
+                (list :title "exact" :category "a" :minutes 60 :effort 60)))
+        (none (org-foresight-report--spent-row
+               (list :title "none" :category "a" :minutes 30))))
+    (should (string-match-p "167%" (substring-no-properties over)))
+    (should (string-match-p " 42%" (substring-no-properties under)))
+    (should (string-match-p "100%" (substring-no-properties exact)))
+    (should (string-match-p "no estimate" (substring-no-properties none)))
+    (should-not (string-match-p "×" (substring-no-properties over)))))
+
+(ert-deftest org-foresight-test-leak-and-lost-partition-the-apps ()
+  "The parts add up to the total, which is what makes the line worth reading.
+And the split is the same one surge learns from, so what is on screen is what
+becomes the reserve."
+  (let ((org-foresight-app-categories
+         '(("work" . ("Emacs")) ("distraction" . ("Safari")))))
+    (cl-letf (((symbol-function 'org-foresight-observe--sum-by)
+               (lambda (&rest _) '(("Emacs" . 600.0) ("Safari" . 300.0)
+                                   ("Unknown" . 120.0)))))
+      (pcase-let ((`(,leak . ,lost)
+                   (org-foresight-observe--split-leak nil nil)))
+        ;; anything not called distraction is work a plan could have kept
+        (should (= 720.0 (org-foresight-observe--app-seconds leak)))
+        (should (= 300.0 (org-foresight-observe--app-seconds lost)))
+        (should (equal '("Emacs" "Unknown") (mapcar #'car leak)))
+        (should (equal '("Safari") (mapcar #'car lost)))))))
+
+(ert-deftest org-foresight-test-switches-binned-sums-to-the-count ()
+  "The row and the number must be the same fact seen two ways."
+  (let* ((day (format-time-string "%Y-%m-%dT%H:%M:%S%z"))
+         (at (lambda (h m app)
+               (list (cons 'timestamp
+                           (format-time-string
+                            "%Y-%m-%dT%H:%M:%S%z"
+                            (encode-time 0 m h (nth 3 (decode-time))
+                                         (nth 4 (decode-time))
+                                         (nth 5 (decode-time)))))
+                     (cons 'duration 60)
+                     (cons 'data (list (cons 'app app))))))
+         (events (list (funcall at 9 0 "Emacs") (funcall at 9 10 "Safari")
+                       (funcall at 9 40 "Emacs") (funcall at 10 0 "Emacs")
+                       (funcall at 10 5 "Slack")))
+         (binned (org-foresight-observe--switches-binned events)))
+    (ignore day)
+    (should (= 48 (length binned)))
+    ;; four transitions: Emacs→Safari, Safari→Emacs, Emacs→Slack
+    (should (= 3 (apply #'+ (append binned nil))))
+    ;; and they fall in the half-hours they happened in
+    (should (= 1 (aref binned 18)))   ; 09:00-09:30
+    (should (= 1 (aref binned 19)))   ; 09:30-10:00
+    (should (= 1 (aref binned 20)))))
+
+(ert-deftest org-foresight-test-sparkline-survives-a-missing-afk-watcher ()
+  "A machine with no afk watcher still gets a day drawn.
+
+`aw-watcher-afk' is a separate module and is not always installed; without it
+the activity intervals were empty and the sparkline came out blank, which
+reads as \"you did nothing\" rather than as \"nobody was watching\".  Window
+events are the evidence that remains, and the header says the picture is the
+coarser kind."
+  (let* ((h (nth 2 (decode-time)))
+         (event (lambda (m app)
+                  (list (cons 'timestamp
+                              (format-time-string
+                               "%Y-%m-%dT%H:%M:%S%z"
+                               (encode-time 0 m h (nth 3 (decode-time))
+                                            (nth 4 (decode-time))
+                                            (nth 5 (decode-time)))))
+                        (cons 'duration 600)
+                        (cons 'data (list (cons 'app app))))))
+         (win (list (funcall event 0 "Emacs") (funcall event 20 "Slack")))
+         (org-foresight-observe--cache nil))
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (lambda (path)
+                 (cond ((equal path "/buckets/") '((aw-watcher-window_h . t)))
+                       (t win)))))
+      (let ((data (org-foresight-observe-today)))
+        (should data)
+        (should (plist-get data :screen-only))
+        ;; the day is drawn from what there is, rather than left blank
+        (should (> (apply #'+ (append (plist-get data :binned) nil)) 0))
+        (should (> (plist-get data :active) 0))
+        (should (= 0.0 (plist-get data :afk)))
+        (should-not (string-match-p
+                     "\\`·+\\'"
+                     (org-foresight-report--sparkline
+                      (plist-get data :binned))))))))
 
 (provide 'org-foresight-test)
 

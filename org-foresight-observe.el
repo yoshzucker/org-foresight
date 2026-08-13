@@ -161,19 +161,73 @@ INTERVALS (not-afk), grouped by KEY (\\='app or \\='project) of its data."
 
 ;;;; Today
 
-(defun org-foresight-observe--switch-count (window-events)
-  "Count app transitions across WINDOW-EVENTS (order-independent)."
-  (let ((prev nil) (n 0))
-    (dolist (e window-events n)
+(defun org-foresight-observe--event-intervals (events)
+  "Return EVENTS as normalized (START . END) time conses.
+Used where the afk watcher cannot say when the machine was attended: the
+existence of a window event is then the only evidence there is."
+  (org-foresight--intervals-normalize
+   (mapcar (lambda (e)
+             (let ((s (org-foresight-observe--parse-ts (alist-get 'timestamp e))))
+               (cons s (time-add s (seconds-to-time
+                                    (or (alist-get 'duration e) 0))))))
+           events)))
+
+(defun org-foresight-observe--switches-binned (window-events)
+  "Return a 48-vector of app switches per local half-hour in WINDOW-EVENTS.
+
+A count says the day was chopped up; where the counts fall says *when*, which
+is the part that changes what anybody does about it.  Each switch is charged
+to the half-hour the new window began in, so the events must be walked in
+time order rather than in whatever order they arrived."
+  (let ((v (make-vector 48 0))
+        (prev nil))
+    (dolist (e (sort (copy-sequence window-events)
+                     (lambda (a b)
+                       (time-less-p
+                        (org-foresight-observe--parse-ts (alist-get 'timestamp a))
+                        (org-foresight-observe--parse-ts (alist-get 'timestamp b)))))
+             v)
       (let ((app (alist-get 'app (alist-get 'data e))))
-        (when (and prev (not (equal app prev))) (setq n (1+ n)))
+        (when (and prev (not (equal app prev)))
+          (let* ((dt (decode-time
+                      (org-foresight-observe--parse-ts (alist-get 'timestamp e))))
+                 (bin (+ (* 2 (nth 2 dt)) (if (>= (nth 1 dt) 30) 1 0))))
+            (aset v bin (1+ (aref v bin)))))
         (setq prev app)))))
+
+(defun org-foresight-observe--split-leak (window-events unclocked)
+  "Return (LEAK-APPS . LOST-APPS) for UNCLOCKED time, from WINDOW-EVENTS.
+
+Time at the machine with no clock running is of two kinds, and they call for
+different answers: work that simply went unrecorded, and time that went
+somewhere else entirely.  The first is capacity a plan could have kept -- it
+is what `org-foresight-learn-surge' holds back a reserve for -- and the
+second is not, so counting them together would inflate the reserve with hours
+no reserve can protect.
+
+`org-foresight-app-categories' is what draws the line, and this is the only
+place in the package where that setting changes a number rather than a label."
+  (let ((by-app (org-foresight-observe--sum-by window-events unclocked 'app)))
+    (cons (seq-remove (lambda (kv)
+                        (equal (org-foresight--app-category (car kv))
+                               "distraction"))
+                      by-app)
+          (seq-filter (lambda (kv)
+                        (equal (org-foresight--app-category (car kv))
+                               "distraction"))
+                      by-app))))
+
+(defun org-foresight-observe--app-seconds (apps)
+  "Total seconds in APPS, an alist of (NAME . SECONDS)."
+  (apply #'+ 0.0 (mapcar #'cdr apps)))
 
 (defun org-foresight-observe-today ()
   "Return today's parsed ActivityWatch data as a plist, or nil on failure.
 Keys: :active :afk SECONDS ; :active-apps :emacs-projects ALIST (NAME . SEC)
 of window/emacs time intersected with not-afk ; :binned 48-vector of active
-sec per half-hour ; :first :last not-afk boundary times ; :switches count ;
+sec per half-hour ; :first :last activity boundary times ; :switches count and
+:switches-binned its 48-vector ; :screen-only t when there was no afk watcher
+and the activity intervals came from window events instead ;
 :window-events :afk-events the raw AW events (reused by the coverage view).
 Cached for `org-foresight-observe-cache-ttl' seconds, so the coverage metric
 \(which uses :active) and the Observed table share one fetch."
@@ -193,19 +247,36 @@ Cached for `org-foresight-observe-cache-ttl' seconds, so the coverage metric
                           (afk-ev (and ab (org-foresight-observe--events ab (car rng) (cdr rng))))
                           (em (and eb (org-foresight-observe--events eb (car rng) (cdr rng))))
                           (split (org-foresight-observe--afk-split afk-ev))
-                          (ivs (org-foresight-observe--status-intervals afk-ev "not-afk"))
+                          (attended (org-foresight-observe--status-intervals
+                                     afk-ev "not-afk"))
+                          ;; Without an afk watcher there is no record of when
+                          ;; the machine was attended, only of when a window
+                          ;; was in front.  Take that instead: a day drawn
+                          ;; coarsely is worth more than a blank one, and the
+                          ;; header says which of the two this is.
+                          (screen-only (null attended))
+                          (ivs (or attended
+                                   (org-foresight-observe--event-intervals win)))
                           (day-start (and ivs (car (car ivs))))
-                          (afk-sec (if (and org-foresight-observe-clamp-afk day-start)
-                                       (org-foresight-observe--afk-after afk-ev day-start)
-                                     (cdr split))))
-                     (list :active (car split) :afk afk-sec
+                          (afk-sec (cond (screen-only 0.0)
+                                         ((and org-foresight-observe-clamp-afk
+                                               day-start)
+                                          (org-foresight-observe--afk-after
+                                           afk-ev day-start))
+                                         (t (cdr split))))
+                          (switches (org-foresight-observe--switches-binned win)))
+                     (list :active (if screen-only
+                                       (org-foresight--intervals-seconds ivs)
+                                     (car split))
+                           :afk afk-sec :screen-only screen-only
                            :active-apps (org-foresight-observe--sum-by win ivs 'app)
                            :emacs-projects (and em (org-foresight-observe--sum-by
                                                     em ivs 'project))
                            :binned (org-foresight-observe--binned ivs)
                            :first (and ivs (car (car ivs)))
                            :last (and ivs (cdr (car (last ivs))))
-                           :switches (org-foresight-observe--switch-count win)
+                           :switches (apply #'+ (append switches nil))
+                           :switches-binned switches
                            ;; Raw events retained so the coverage/leak view
                            ;; reuses this single cached fetch (no extra HTTP).
                            :window-events win :afk-events afk-ev))))
@@ -229,10 +300,15 @@ Cached for `org-foresight-observe-cache-ttl' seconds, so the coverage metric
 Reuses `org-foresight-observe-today' (a single cached fetch) and the
 :today-intervals of CLOCK, the plist from `org-foresight-clock-scan'.
 Keys:
-:active-sec :clocked-sec :leak-sec  totals (seconds)
+:active-sec :clocked-sec  totals (seconds)
+:leak-sec :lost-sec  unclocked time at the machine, split by whether the
+   application counts as work: leak is what a plan could have kept and is
+   what surge learns from, lost is what went elsewhere.  Each equals the sum
+   of its own app alist below
 :ca :cf :ua :uf  48-vectors (active sec per half-hour) for
    clocked-active / clocked-afk / unclocked-active / unclocked-afk
-:leak-apps  ALIST (APP . SEC) desc over the unclocked-active window."
+:leak-apps :lost-apps  ALIST (APP . SEC) desc over the unclocked-active
+   window, partitioned the same way."
   (let ((data (org-foresight-observe-today)))
     (when data
       (let ((first (plist-get data :first))
@@ -251,16 +327,24 @@ Keys:
                  (cf (org-foresight--intervals-intersect clocked afk))
                  (ua (org-foresight--intervals-subtract active clocked))
                  (uf (org-foresight--intervals-subtract afk clocked))
-                 (leak-apps (org-foresight-observe--sum-by win ua 'app))
-                 (off-pc (org-foresight--intervals-seconds uf)))
+                 (split (org-foresight-observe--split-leak win ua))
+                 (leak-apps (car split))
+                 (lost-apps (cdr split)))
             (list :active-sec (org-foresight--intervals-seconds active)
                   :clocked-sec (org-foresight--intervals-seconds clocked)
-                  :leak-sec (+ (org-foresight--intervals-seconds ua) off-pc)
+                  ;; Exactly what `org-foresight-observe-day-leak' measures for
+                  ;; a past day, so the number on screen is the number that
+                  ;; becomes the reserve.  Time away from the desk is neither
+                  ;; leak nor lost -- it is absence, and the sparkline's gaps
+                  ;; already say so.
+                  :leak-sec (org-foresight-observe--app-seconds leak-apps)
+                  :lost-sec (org-foresight-observe--app-seconds lost-apps)
                   :ca (org-foresight-observe--binned ca)
                   :cf (org-foresight-observe--binned cf)
                   :ua (org-foresight-observe--binned ua)
                   :uf (org-foresight-observe--binned uf)
-                  :leak-apps leak-apps)))))))
+                  :leak-apps leak-apps
+                  :lost-apps lost-apps)))))))
 
 ;;;; Learning the surge reserve
 ;; Interruptions cannot be scheduled, but their volume can be measured.  Time
@@ -302,13 +386,10 @@ running is not evidence of a quiet day."
              (afk-ev (org-foresight-observe--events ab (car rng) (cdr rng)))
              (active (org-foresight-observe--status-intervals afk-ev "not-afk")))
         (when active
-          (let* ((unclocked (org-foresight--intervals-subtract active clocked))
-                 (by-app (org-foresight-observe--sum-by win unclocked 'app))
-                 (sec 0.0))
-            (dolist (kv by-app)
-              (unless (equal (org-foresight--app-category (car kv)) "distraction")
-                (setq sec (+ sec (cdr kv)))))
-            (/ sec 60.0)))))))
+          (let ((unclocked (org-foresight--intervals-subtract active clocked)))
+            (/ (org-foresight-observe--app-seconds
+                (car (org-foresight-observe--split-leak win unclocked)))
+               60.0)))))))
 
 ;;;###autoload
 (defun org-foresight-learn-surge (&optional days)
