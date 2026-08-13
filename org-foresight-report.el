@@ -756,166 +756,16 @@ row's marker would quietly reschedule the wrong thing."
                                    "C-u C-u S-left/right minutes · "
                                    "> prompt · e effort · t state · RET visit"))))
 
-;;;; The day as a grid
-;; The bands already are a time grid: `org-foresight-day-blocks' hands back the
-;; waking hours cut into contiguous pieces, so putting the clock down the left
-;; and drawing each piece in proportion is not a new view of the data -- it is
-;; the data, finally shown in its own shape.
-;;
-;; The gutter is what a table of durations cannot do: a three-hour gap looks
-;; like a three-hour gap.  Where the day actually went stops being a column of
-;; numbers to add up and becomes something seen at a glance.
-
-(defcustom org-foresight-grid-minutes-per-column 15
-  "Minutes each column of the grid's gutter stands for."
-  :type 'integer
-  :group 'org-foresight)
-
-(defcustom org-foresight-grid-gutter-width 8
-  "Widest the grid's gutter may grow, in columns.
-
-Eight quarter-hours is two hours, and two hours is about where a piece of
-work stops being one piece: past that it wants breaking up rather than
-drawing longer.  So the gutter saturates there instead of running on, and
-the number in the effort column carries anything above it."
-  :type 'integer
-  :group 'org-foresight)
-
-(defvar org-foresight-report--grid-faces
-  '((meeting   . org-foresight-report-booked)
-    (task      . org-foresight-report-booked)
-    (travel    . org-foresight-report-travel)
-    (promised  . org-foresight-report-promised)
-    (private   . org-foresight-report-private)
-    (context   . org-foresight-report-grey)
-    (available . org-foresight-report-spare)
-    (grey      . org-foresight-report-grey))
-  "Alist of band kind to the face its gutter is drawn in.
-One shape throughout, so nothing can step at a seam; the kind is carried by
-colour, which is what colour is for.")
-
-(defvar org-foresight-report--grid-glyphs
-  '((available . ?·))
-  "Kinds drawn with something other than a full block.
-Unclaimed time is the exception worth making: a run of dots reads as absence
-in a way that a coloured block, however pale, does not.")
-
-(defvar org-foresight-report--grid-legend
-  '((meeting . "booked") (travel . "travel") (promised . "promised")
-    (private . "private") (available . "free"))
-  "Kinds named in the grid's key, in the order they are shown.
-The same words the capacity bar uses, for the same things.")
-
-(defvar org-foresight-report--grid-flags
-  '(("?" . "no time yet") ("!" . "due today")
-    ("⨯" . "double-booked") ("╰" . "alongside"))
-  "Marks in the grid's flag column and what each stands for.
-
-Each has to occupy exactly one cell or the column behind it steps.  That
-rules out characters a monospace font is likely to be missing -- a glyph it
-does not have comes from wherever the fallback finds it, at whatever width
-that font happens to use.  `✗' U+2717 is one such: absent from PlemolJP, and
-rendered a little too wide by the substitute.  `⨯' U+2A2F says the same thing
-and is present.")
-
-(defun org-foresight-report--grid-key (&optional flags)
-  "Return the grid's key: what the gutter shapes and the FLAGS mean.
-
-The bar above the grid carries its own key, and without one here the same
-shape would appear in two blocks with nothing saying whether it means the
-same thing.  It does -- and saying so is cheaper than leaving it assumed.
-
-Only the flags actually used are explained.  A key that lists what a clash
-looks like on a day that has none is describing a problem the reader does
-not have, which is a slower way of saying nothing."
-  (org-foresight-report--indent
-   (concat
-    (mapconcat (lambda (c)
-                 (concat (propertize
-                          (char-to-string
-                           (or (cdr (assq (car c) org-foresight-report--grid-glyphs))
-                               org-foresight-block))
-                          'face (cdr (assq (car c)
-                                           org-foresight-report--grid-faces)))
-                         " " (cdr c)))
-               org-foresight-report--grid-legend "  ")
-    (when flags
-      (concat
-       "\n"
-       (propertize
-        (mapconcat (lambda (f) (concat f " "
-                                       (cdr (assoc f
-                                                   org-foresight-report--grid-flags))))
-                   flags "  ")
-        'face 'shadow))))))
-
-(defun org-foresight-report--grid-gutter (kind minutes)
-  "Return the gutter for a band of KIND lasting MINUTES.
-
-Whole cells are full blocks; what is left over draws the part-width block
-nearest to it, so twenty minutes at a quarter-hour to the cell reads as one
-cell and a third rather than being rounded to one or to two.  That is what
-those characters are for, and the only place they are metrically safe to sit
-beside a full block -- at the end of a run, where nothing follows them."
-  (let* ((face (or (cdr (assq kind org-foresight-report--grid-faces)) 'default))
-         (glyph (cdr (assq kind org-foresight-report--grid-glyphs)))
-         (cells (/ minutes (float org-foresight-grid-minutes-per-column)))
-         (full (min org-foresight-grid-gutter-width (floor cells)))
-         (rest (- cells full))
-         (eighths (round (* 8 rest)))
-         (text
-          (cond
-           ;; A kind with a glyph of its own is a texture, not a measure.
-           (glyph (make-string (max 1 (min org-foresight-grid-gutter-width
-                                           (round cells)))
-                               glyph))
-           ((>= full org-foresight-grid-gutter-width)
-            (make-string org-foresight-grid-gutter-width org-foresight-block))
-           ((and (zerop full) (zerop eighths)) "▏")
-           ((zerop eighths) (make-string full org-foresight-block))
-           ((>= eighths 8) (make-string (1+ full) org-foresight-block))
-           (t (concat (make-string full org-foresight-block)
-                      (char-to-string
-                       (aref org-foresight-report--partials (1- eighths))))))))
-    (truncate-string-to-width (propertize text 'face face)
-                              org-foresight-grid-gutter-width 0 ?\s)))
-
-(defun org-foresight-report--grid-row (span flag gutter effort category title
-                                            marker &optional day stamp)
-  "Return one grid row, actionable when MARKER is a marker.
-
-Columns are category, span, effort, flag, gutter, deadline, title -- close to
-the order Org's own agenda puts them in (`org-agenda-prefix-format' reads
-category, time, effort), so a day read here and a day read there scan the
-same way.
-
-SPAN is \"HH:MM-HH:MM\", or \"?\" where the work has no time yet.  The kind
-of block gets no column of its own: the gutter says it in shape and colour,
-and repeating that would cost width the title wants.  The deadline sits in a
-column of its own so every one on the board lines up -- the question \"which
-of these can move\" is asked of the whole day at once, not row by row.  TITLE
-is last and is not truncated: nothing after it needs to line up, so cutting
-it would only lose words to no purpose."
-  (org-foresight-report--actionable
-   (format " %s %-11s %5s %s %s %s %s"
-           (truncate-string-to-width (or category "") 8 0 ?\s)
-           (or span "")
-           (or effort "")
-           (or flag " ")
-           gutter
-           (org-foresight-report--grid-deadline marker day)
-           (replace-regexp-in-string "[\n\r]" " " (or title "")))
-   marker stamp))
-
-(defun org-foresight-report--grid-span (start end)
-  "Return START and END as \"HH:MM-HH:MM\"."
-  (concat (format-time-string "%H:%M" start) "-"
-          (format-time-string "%H:%M" end)))
+;;;; Naming work in a line
+;; The day itself is drawn by Org's agenda, and org-foresight-agenda.el hands
+;; it what it does not know.  What is left here is the vocabulary both blocks
+;; share: how a piece of work is named, how long it is held to be, and how a
+;; run of them is fitted into the width of a line.
 
 (defun org-foresight-report--grid-todo (marker)
   "Return the TODO keyword of MARKER's entry, with a trailing space, or \"\".
-The agenda shows the state beside the heading and it is worth having here for
-the same reason: NEXT and WAIT are different answers to \"can this move\"."
+Worth carrying on a row the agenda did not build: NEXT and WAIT are different
+answers to \"can this move\"."
   (or (and (markerp marker)
            (marker-buffer marker)
            (with-current-buffer (marker-buffer marker)
@@ -924,38 +774,6 @@ the same reason: NEXT and WAIT are different answers to \"can this move\"."
               (when-let ((kw (org-get-todo-state)))
                 (concat (propertize kw 'face (org-get-todo-face kw)) " ")))))
       ""))
-
-(defun org-foresight-report--grid-deadline (marker &optional day)
-  "Return MARKER's deadline relative to DAY, as a short right-aligned field.
-
-Every row on this board invites the same question -- can this be moved to
-another day -- and a deadline is the answer to it.  Given as days rather
-than a date because that is the form the question takes: `+3d' can wait,
-`0d' cannot, `-2d' should already have gone."
-  (let ((day (or day (org-foresight--day-start 0))))
-    (or (and (markerp marker)
-             (marker-buffer marker)
-             (with-current-buffer (marker-buffer marker)
-               (org-with-wide-buffer
-                (goto-char marker)
-                (when-let ((dead (and (not (org-entry-is-done-p))
-                                      (org-get-deadline-time (point)))))
-                  (let ((n (org-foresight--day-of dead day)))
-                    (propertize
-                     (format "%4s" (if (zerop n) "0d" (format "%+dd" n)))
-                     'face (cond ((< n 0) 'org-foresight-report-overcommitted)
-                                 ((<= n 1) 'org-foresight-report-promised)
-                                 (t 'shadow))))))))
-        "    ")))
-
-(defun org-foresight-report--grid-category (b)
-  "Return the category column for band or ledger entry B.
-Falls back to naming the kind for a derived block, which has no category of
-its own but is not nothing either."
-  (or (plist-get b :category)
-      (pcase (plist-get b :kind)
-        ('travel "travel")
-        (_ ""))))
 
 (defcustom org-foresight-grid-suggest 3
   "How many candidates a free stretch names, or nil to name none."
@@ -993,31 +811,6 @@ whole answer on some days."
       (concat (string-join (nreverse parts) " · ")
               (let ((more (- (length entries) shown)))
                 (if (> more 0) (format " +%d" more) ""))))))
-
-(defun org-foresight-report--grid-fits (mins ledger)
-  "Return the line naming LEDGER's unplaced work that fits in MINS, or nil.
-
-The one thing a text grid can do that a picture of the day cannot: hold a
-gap and a list of candidates in the same glance.  Sized by what the work
-actually takes, so nothing is offered that would not really go in."
-  (when (and org-foresight-grid-suggest (> mins 0))
-    (let* ((fits (seq-filter
-                  (lambda (e)
-                    (and (eq (plist-get e :kind) 'promised)
-                         (<= (org-foresight-report--entry-minutes e) mins)))
-                  ledger))
-           ;; Largest first: the biggest thing that will go in is the one worth
-           ;; knowing about, since anything smaller will still fit afterwards.
-           (ranked (seq-sort-by #'org-foresight-report--entry-minutes #'> fits))
-           ;; Hung under the span column, not the gutter: the arrow points out
-           ;; of the time slot, and the shallower indent is what makes room for
-           ;; more than one candidate on the line.
-           (indent (make-string 10 ?\s))
-           (named (org-foresight-report--name-run
-                   ranked org-foresight-grid-suggest
-                   (- 80 (length indent) (length "↳ fits ")))))
-      (when named
-        (propertize (concat indent "↳ fits " named) 'face 'shadow)))))
 
 (defun org-foresight-report--frees (over ledger)
   "Return the line naming what LEDGER can give up to win back OVER minutes.
@@ -1085,288 +878,6 @@ asked you to attend was never yours to move in the first place."
       (when named
         (propertize (concat lead named) 'face 'shadow)))))
 
-(defun org-foresight-report--grid-band (b &optional day)
-  "Return the grid row for band B, or nil when it is not worth a line."
-  (let* ((kind (plist-get b :kind))
-         (mins (/ (float-time (time-subtract (plist-get b :end)
-                                             (plist-get b :start)))
-                  60.0)))
-    ;; Empty private time is not news -- the grey total under the bar already
-    ;; says how much of it there is, and a row per stretch of nothing pushes
-    ;; the day itself off the screen.
-    (unless (eq kind 'grey)
-      (let* ((trimmed (plist-get b :trimmed))
-             ;; What it actually needs, not what was left for it.
-             (wanted (if trimmed
-                         (/ (float-time (time-subtract (plist-get b :end)
-                                                       (plist-get b :full-start)))
-                            60.0)
-                       mins)))
-        (org-foresight-report--grid-row
-         (org-foresight-report--grid-span (if trimmed
-                                              (plist-get b :full-start)
-                                            (plist-get b :start))
-                                          (plist-get b :end))
-         (when trimmed
-           (propertize "⨯" 'face 'org-foresight-report-overcommitted))
-         (org-foresight-report--grid-gutter kind wanted)
-         (org-duration-from-minutes wanted)
-         (if (eq kind 'available) "" (org-foresight-report--grid-category b))
-         (if (eq kind 'available)
-             "free"
-           (concat (org-foresight-report--grid-todo (plist-get b :marker))
-                   (or (plist-get b :title) "?")))
-         (plist-get b :marker)
-         day
-         (plist-get b :stamp))))))
-
-(defun org-foresight-report--grid-alongside (e &optional day)
-  "Return the row for ledger entry E, shown beneath whatever it shares with."
-  (org-foresight-report--grid-row
-   (org-foresight-report--grid-span (plist-get e :start) (plist-get e :end))
-   (propertize "╰" 'face 'org-foresight-report-promised)
-   (org-foresight-report--grid-gutter 'promised (plist-get e :effort))
-   (org-duration-from-minutes (plist-get e :effort))
-   (org-foresight-report--grid-category e)
-   (or (plist-get e :title) "?")
-   (plist-get e :marker)
-   day
-   (plist-get e :stamp)))
-
-(defun org-foresight-report--grid-boundary (time label)
-  "Return the rule drawn where the working day opens or closes.
-Drawn the full width of the gutter, so it reads as a line across the day
-rather than as another block in it."
-  (org-foresight-report--grid-row
-   (format-time-string "%H:%M" time)
-   nil
-   (propertize (make-string org-foresight-grid-gutter-width ?─)
-               'face 'org-agenda-structure)
-   "" "" label nil))
-
-(defun org-foresight-report--grid-eclipsed (ledger bands &optional day)
-  "Return rows for LEDGER entries that BANDS had no room to show.
-
-The bands partition the day, so where two things are booked over the same
-minutes only one of them survives.  The one that lost is the more important
-of the pair to see: a day with two things in one slot cannot be worked, and
-tidying it into a day that can is how the clash goes unnoticed until it
-happens."
-  ;; Matched on title and end rather than on the marker: a journey borrows the
-  ;; marker of the meeting it serves, so by marker alone a trimmed-away trip
-  ;; looks like the meeting that is still on screen.  A trimmed band keeps its
-  ;; end; one that lost entirely has no band at all.
-  (let ((shown (mapcar (lambda (b)
-                         (cons (plist-get b :title) (plist-get b :end)))
-                       bands)))
-    (seq-keep
-     (lambda (e)
-       ;; Something that will share its hour is not competing for it; it is
-       ;; reported under the band it shares, not as a clash.
-       (when (and (plist-get e :start)
-                  (memq (or (plist-get e :attention) 'blocking) '(blocking))
-                  (not (member (cons (plist-get e :title) (plist-get e :end))
-                               shown)))
-         (org-foresight-report--grid-row
-          (org-foresight-report--grid-span (plist-get e :start)
-                                           (plist-get e :end))
-          (propertize "⨯" 'face 'org-foresight-report-overcommitted)
-          (org-foresight-report--grid-gutter
-           (plist-get e :kind) (plist-get e :effort))
-          (org-duration-from-minutes (plist-get e :effort))
-          (org-foresight-report--grid-category e)
-          (or (plist-get e :title) "?")
-          (plist-get e :marker)
-          day
-          (plist-get e :stamp))))
-     ledger)))
-
-(defun org-foresight-report--grid-context (ledger &optional day)
-  "Return rows for LEDGER entries that belong to somebody else.
-
-They take none of the day, so they are not part of it -- but a child's
-fixture is exactly the sort of thing that decides when the house is empty,
-and a plan made without knowing it is a plan made blind."
-  (seq-keep
-   (lambda (e)
-     (when (and (plist-get e :start)
-                (eq (plist-get e :attention) 'informational))
-       (org-foresight-report--grid-row
-        (org-foresight-report--grid-span (plist-get e :start) (plist-get e :end))
-        nil
-        (org-foresight-report--grid-gutter 'context (plist-get e :effort))
-        (org-duration-from-minutes (plist-get e :effort))
-        (org-foresight-report--grid-category e)
-        (or (plist-get e :title) "?")
-        (plist-get e :marker)
-        day
-        (plist-get e :stamp))))
-   ledger))
-
-(defun org-foresight-report--grid-unplaced (ledger &optional day)
-  "Return rows for LEDGER entries that have been promised but given no time."
-  (seq-keep
-   (lambda (e)
-     (when (eq (plist-get e :kind) 'promised)
-       (let ((est (plist-get e :effort))
-             (adj (plist-get e :effort-adj)))
-         ;; The question mark stands where the clock would be, because that is
-         ;; precisely what is missing.  It still has a length, so it still
-         ;; gets a gutter: how much of a day it wants is the reason to place
-         ;; it at all.
-         (org-foresight-report--grid-row
-          (propertize "?" 'face 'org-foresight-report-promised)
-          nil
-          (org-foresight-report--grid-gutter 'promised (or adj est))
-          (org-duration-from-minutes (or adj est))
-          (org-foresight-report--grid-category e)
-          (concat (org-foresight-report--grid-todo (plist-get e :marker))
-                  (or (plist-get e :title) "?")
-                  (when (and adj (> (abs (- adj est)) 1))
-                    (format " (est %s)" (org-duration-from-minutes est))))
-          (plist-get e :marker)
-          day))))
-   ledger))
-
-(defun org-foresight-report--grid-due (day ledger)
-  "Return rows for work due on DAY that occupies none of it.
-
-A deadline takes no time and so appears nowhere in the bands, which is
-exactly how a day gets planned without it.  Anything already on the board
-is skipped: its own row now carries the deadline, and listing it twice
-would say nothing the second time."
-  (let ((shown (seq-keep (lambda (e) (plist-get e :title)) ledger))
-        out)
-    (dolist (file (org-agenda-files))
-      (when (file-exists-p file)
-        (with-current-buffer (find-file-noselect file)
-          (org-with-wide-buffer
-           (org-map-entries
-            (lambda ()
-              (let ((dead (org-get-deadline-time (point)))
-                    (title (org-get-heading t t t t)))
-                (when (and dead
-                           (not (org-entry-is-done-p))
-                           (not (member title shown))
-                           (= (org-foresight--day-of dead day) 0))
-                  (push (org-foresight-report--grid-row
-                         (propertize "?" 'face
-                                     'org-foresight-report-overcommitted)
-                         (propertize "!" 'face
-                                     'org-foresight-report-overcommitted)
-                         (make-string org-foresight-grid-gutter-width ?\s)
-                         ""
-                         (or (org-entry-get (point) "CATEGORY" t) "")
-                         (concat (when-let ((kw (org-get-todo-state)))
-                                   (concat (propertize kw 'face
-                                                       (org-get-todo-face kw))
-                                           " "))
-                                 title)
-                         (point-marker)
-                         day)
-                        out))))
-            nil nil)))))
-    (nreverse out)))
-
-(defun org-foresight-report-capacity (&optional day scan now)
-  "Return DAY drawn as a grid: when its hours go, and what is left over.
-
-The verdict above states a number; this shows what the number is made of, and
-every row leads back to the entry behind it.  A capacity figure nobody can
-take apart is one nobody can act on -- the answer to \"why is there no time
-today\" has to be a list of things, in the order they happen."
-  (let* ((day (or day (org-foresight--day-start 0)))
-         (scan (or scan (org-foresight-scan 1 day)))
-         (cap (org-foresight-capacity day scan now))
-         (work (plist-get cap :window))
-         (idx (org-foresight--day-of day (plist-get scan :from)))
-         (ledger (and (>= idx 0) (< idx (plist-get scan :days))
-                      (aref (plist-get scan :ledger) idx)))
-         (bands (org-foresight-day-blocks day scan))
-         rows)
-    (if (null work)
-        (propertize "(not a working day)" 'face 'org-table)
-      (let ((opened nil) (closed nil))
-        (dolist (b bands)
-          ;; The span's edges are drawn where they fall, so anything above or
-          ;; below the rules is visibly work that escaped the working day.
-          (unless (or opened (time-less-p (plist-get b :start) (car work)))
-            (setq opened t)
-            (push (org-foresight-report--grid-boundary (car work) "work starts")
-                  rows))
-          (unless (or closed (time-less-p (plist-get b :start) (cdr work)))
-            (setq closed t opened t)
-            (push (org-foresight-report--grid-boundary (cdr work) "work ends")
-                  rows))
-          (when-let ((row (org-foresight-report--grid-band b day)))
-            (push row rows)
-            ;; A gap says what would go in it, right where the gap is: the
-            ;; whole difficulty of rearranging a day in a list is holding one
-            ;; row in mind while reading another.
-            (when (eq (plist-get b :kind) 'available)
-              (when-let ((fits (org-foresight-report--grid-fits
-                                (/ (float-time
-                                    (time-subtract (plist-get b :end)
-                                                   (plist-get b :start)))
-                                   60.0)
-                                ledger)))
-                (push fits rows)))
-            ;; Anything that was happening at the same time and did not need
-            ;; all of you hangs below the band, so the clock still reads as
-            ;; one line down the page.
-            (dolist (a (org-foresight-report--grid-sharers ledger b day))
-              (push a rows))))
-        (unless opened
-          (push (org-foresight-report--grid-boundary (car work) "work starts")
-                rows))
-        (unless closed
-          (push (org-foresight-report--grid-boundary (cdr work) "work ends")
-                rows)))
-      (let* ((eclipsed (org-foresight-report--grid-eclipsed ledger bands day))
-             (unplaced (org-foresight-report--grid-unplaced ledger day))
-             (due (org-foresight-report--grid-due day ledger))
-             (extra (append eclipsed unplaced due))
-             (context (org-foresight-report--grid-context ledger day)))
-        (mapconcat
-         #'identity
-         (append (list (org-foresight-report--grid-key
-                        (delq nil
-                              (list (and (or eclipsed
-                                             (seq-find
-                                              (lambda (r)
-                                                (string-match-p "⨯" r))
-                                              rows))
-                                         "⨯")
-                                    (and unplaced "?")
-                                    (and due "!")
-                                    (and (seq-find
-                                          (lambda (r)
-                                            (string-match-p "╰" r)) rows)
-                                         "╰"))))
-                       "")
-                 (nreverse rows)
-                 (and extra '(""))
-                 extra
-                 (and context
-                      (list "" (org-foresight-report--badge
-                                "Alongside" "happening, but not yours")))
-                 context)
-         "\n")))))
-
-(defun org-foresight-report--grid-sharers (ledger band &optional day)
-  "Return rows for LEDGER entries sharing BAND's time without needing all of it."
-  (let ((s (plist-get band :start))
-        (n (plist-get band :end)))
-    (seq-keep
-     (lambda (e)
-       (when (and (eq (plist-get e :attention) 'background)
-                  (plist-get e :start)
-                  (not (equal (plist-get e :title) (plist-get band :title)))
-                  (time-less-p (plist-get e :start) n)
-                  (time-less-p s (plist-get e :end)))
-         (org-foresight-report--grid-alongside e day)))
-     ledger)))
-
 ;;;; Agenda integration
 
 (defvar org-foresight-report-renderers
@@ -1401,17 +912,18 @@ renders nothing."
     (funcall fn)))
 
 (defun org-foresight-report--daily ()
-  "Return the daily report: capacity windows, then what has been spent.
+  "Return the day looked back on: where the hours went, against where they were
+meant to go.
+
+What is still possible is answered above the agenda by the verdict and its
+bars, and the shape of the day by the agenda itself.  What is left for the
+foot of the buffer is the half no plan can supply -- the clock against the
+estimate, and the machine against the clock.
+
 Scans clock data once and threads the result to every table that needs it,
 rather than each table re-scanning independently."
   (let ((clock (org-foresight-clock-scan 7)))
     (concat "\n"
-            ;; Forward-looking first: what is still possible matters before
-            ;; what has already been spent.
-            (org-foresight-report--badge "Capacity" "when the day is still open")
-            "\n"
-            (org-foresight-report-capacity)
-            "\n\n"
             (org-foresight-report--badge "Clocked" "share of focus today")
             "\n"
             (org-foresight-report-clocked clock)

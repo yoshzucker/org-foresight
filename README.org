@@ -81,6 +81,12 @@ whenever a figure looks wrong.
 
 A file like this exercises the whole model. Add it to =org-agenda-files=:
 
+Note the =:LOCATION:= lines. Journeys are derived from where the day happens,
+so an entry that names no place implies no travel — a calendar imported
+without locations produces a day that looks shorter than it is.
+=M-x org-foresight-diagnose= counts how many of today's timed entries name a
+place, which is usually the first thing to check when travel is missing.
+
 #+begin_src org
 ,* Project review
 :PROPERTIES:
@@ -130,54 +136,127 @@ then occasionally:
 
 ** The daily loop
 
-*Morning* — =M-x org-foresight-plan-board=. The day, drawn:
+*During the day* — =C-c a a=. Org draws the day; org-foresight hands it what
+no file contains:
 
 #+begin_example
-Capacity  what today can still take
- Work 8:30 · OVER by 3:45 · will not fit
+ Work 8:30 · OVER by 3:45 · will not fit · est ×1.1
  ↳ any one of Rewrite the annual re… 6:00 · Project review 1:30
             █ booked 2:45  █ travel 2:00  █ promised 7:30  ▭ surge 1:00
  Work  8:30 ████████████████████████████████████████┃██████████████████
  Off   7:00 ███████··························
             █ private 1:30  · unclaimed 5:30
 
-Today  where the hours go
- █ booked  █ travel  █ promised  █ private  · free
- ⨯ double-booked  ? no time yet  ╰ alongside
+Thursday   13 August 2026
+          08:00...... ----------------
+          09:00...... work starts ────────────
+          09:00-09:30 0:30 free · 0:26 usable
+  outlook 09:30-09:45 Morning standup
+          09:45-12:00 2:15 free · 1:59 usable
+  procure 09:45...... ↳ NEXT Write the vendor comparison 2:00
+          10:00...... ----------------
+          12:00...... ----------------
+  travel  12:00-13:00 → office
+  outlook 13:00-14:00 All-hands
+          14:00...... ----------------
+  outlook 14:00-15:30 Project review
+  travel  15:00-15:45 ⨯ → client
+          15:29...... ← now ──────────────────────────
+  outlook 15:45-16:30 Client review
+  travel  16:15-17:30 ⨯ → home
+          17:30...... work ends ──────────────
+  family  19:00-20:30 Dinner with the family
+✗ reporti Scheduled:  6:00 NEXT Rewrite the annual report
 
-          09:00               ────────      work starts
-          09:00-09:30  0:30   ··            free
-          ↳ fits Reply to the procurem… 0:30
- outlook  09:30-09:45  0:15   █             Morning standup
-          09:45-12:00  2:15   ········      free
-          ↳ fits Write the vendor comp… 2:00 · Review the migration … 1:30 +1
- travel   12:00-13:00  1:00   ████          → office
- reportin 13:00-14:00  1:00   ████      +3d NEXT Draft the quarterly summary
- outlook  13:00-14:00  1:00 ╰ ████          All-hands
- outlook  14:00-15:30  1:30   ██████        Project review
- travel   15:00-15:45  0:45 ⨯ ███           → client
- outlook  15:45-16:30  0:45   ███           Client review
- travel   17:00-17:30  0:30   ██            → home
-          17:30               ────────      work ends
- family   19:00-20:30  1:30   ██████        Dinner with the family
-
- procurem ?            2:00   ████████  +1d NEXT Write the vendor comparison
- reportin ?            6:00   ████████      NEXT Rewrite the annual report
- reportin ? !                              NEXT Prepare the board pack
-
-Alongside  happening, but not yours
- club     18:00-20:00  2:00   ████████      Kids' basketball
+Clocked · Estimate · Observed …
 #+end_example
 
-Columns run category, span, effort, flag, gutter, heading — the order Org's
-own agenda puts them in, so a day read here and a day read there scan the
-same way. A row with nothing in its category column (a free stretch, the
-rules that open and close the day) simply leaves it blank rather than
-shifting left, so every column holds whatever the row is.
+The rules, the entries, =now=, the categories, the effort column — all of
+that is Org. Four things are not:
+
+| Row                | What it is                                        |
+|--------------------+---------------------------------------------------|
+| =→ office=         | a journey derived from where the day happens      |
+| =0:30 free=        | a stretch nothing has claimed, and what survives the reserve |
+| =↳ NEXT …=         | promised work that would fit in the gap above it  |
+| =work starts ────= | the edge of the working day                       |
+
+Three marks, explained by a key under the bars — and only the ones the day
+actually used, because a key describing a clash on a day that has none is
+explaining a problem the reader does not have:
+
+| Mark | On                    | Meaning                                |
+|------+-----------------------+----------------------------------------|
+| =✗=  | undated work          | no gap today is big enough to hold it  |
+| =⨯=  | a journey             | it cannot have the time it needs       |
+| =↳=  | a candidate           | it would fit in the gap above          |
+
+None of them is written to a file, and none of them is placed for you.
+
+*** Why Org draws it
+
+The agenda already is the day: the time grid interleaves its rules with every
+timed entry, in order, with =now= in its place. Drawing a second column beside
+it would mean drawing the day twice — and the copy would lose the log lines,
+the habit graphs, the tags, the dimming of blocked tasks, and every command
+that already works on a real agenda line.
+
+So the derived rows are handed to Org rather than drawn: each is built by
+`org-agenda-format-item' with a time and no entry behind it — exactly how Org
+builds its own grid rules — and added before `org-agenda-finalize-entries'
+sorts. Org puts each one where its clock says it goes. Nothing here reproduces
+Org's ordering, and nothing breaks when a sorting option changes.
+
+*Every added row must carry a time.* That is the whole contract, and it is
+worth stating because the failure is quiet: `org-cmp-time' reads the
+=time-of-day= property and treats a row without one as later than everything,
+and since the sort is stable such rows come out in the order they were added
+— in a heap at the foot of the buffer, outside the day they describe. A test
+holds every row to it.
+
+A journey that has been squeezed is drawn at the length it *needs* rather than
+at what was left for it, marked =⨯=. Fifteen minutes shown for a forty-five
+minute drive is the day claiming to work when it does not; drawn honestly it
+overlaps the meeting it collides with, which is where the collision is.
+
+A candidate row carries the marker of the entry it names, so =s=, =S-right=,
+=>=, =e=, =t= and =RET= work on it. That is the point of showing candidates at
+the hour a gap opens: the answer to "where does this go" is given by putting
+the cursor on the line and pressing the key you would have pressed anyway.
+
+Set =org-foresight-agenda-inject= to nil to see the agenda exactly as Org
+builds it.
+
+*** The gap, net of the reserve
+
+A gap is offered at what survives interruption rather than at what the clock
+says: =free 3:15 · 2:53 after the reserve=.
+
+Interruptions do not happen at a fixed hour, so putting the reserve down as a
+block somewhere would be a claim about the day that is not true. What *is*
+true is that they scale with time worked — so every gap is offered at the
+fraction of itself that history says survives, and the reserve stops being an
+abstraction subtracted somewhere out of sight.
+
+Nothing is placed either way. The gap is only being reported honestly, and
+what goes in it stays entirely yours to decide. =org-foresight-gap-net= nil
+offers you the clock instead.
+
+*** What will not fit at all
+
+=✗= marks work with no gap today big enough to hold it.
+
+That is a fact about the work and the day rather than about any arrangement of
+them: if an estimate is longer than the largest gap there is, no ordering will
+find it a home. Being decidable without placing anything is what keeps the
+choice of where things go with you. The day-level version of the same question
+— everything fits individually but not together — is the verdict's =OVER by=,
+and the line under it.
 
 *** The left edge
 
-One rule, three levels:
+One rule, three levels, for the blocks org-foresight adds above and below the
+listing:
 
 | Column | What sits there                                              |
 |--------+--------------------------------------------------------------|
@@ -188,32 +267,12 @@ One rule, three levels:
 A badge is read by *scanning* rather than by reading, so it gets the frame
 edge to itself: an eye running down the left of the buffer hits section
 headings and nothing else. Everything a section contains starts one column
-in, which is also where Org's agenda puts its lines — and a foresight row is
-meant to be indistinguishable from an agenda line to the commands that act on
-it. Depth past that means one thing only: this line belongs to the one above
-it.
+in, which is also where Org's agenda puts its lines. Depth past that means
+one thing only: this line belongs to the one above it.
 
 That is why the bars are not flush left. A bar is not a label; it is the
 picture of the numbers beside it, and it belongs at the same margin as the
 words it illustrates.
-
-The gutter is drawn to scale, in the colours the bar above uses for the same
-things. A journey appears where it falls, usually answering "where did the
-afternoon go" — and lands as late as it can without running over anything, so
-a workable day is not reported as an impossible one. The gutter saturates at
-two hours, roughly where a piece of work stops being one piece; past that the
-number carries it.
-
-Work with no time yet has =?= where the span would be, and still draws a
-gutter: how much of a day it wants is the reason to place it at all. The key
-names only the marks the day actually contains.
-
-A gap says what it would hold. Under each free stretch, =↳ fits= names the
-promised work that is short enough to go there, largest first — the biggest
-piece that will go in is the one worth knowing about, since anything smaller
-still fits afterwards, and =+2= counts what was left unsaid. Without it a gap
-is a hole to be reasoned about; with it the day suggests its own next move.
-=org-foresight-grid-suggest= sets how many are named, or =nil= for none.
 
 ** What has to come out
 
@@ -246,10 +305,9 @@ is not answered by moving the family, and a fixture nobody asked you to
 attend was never yours to move. =org-foresight-grid-frees= sets how many are
 named, or =nil= for none.
 
-Deadlines get a column of their own, in days rather than dates — =+3d= can
-wait, =0d= cannot, =-2d= should already have gone. Every row on the board
-invites the same question, and this is the answer to it, lined up so the
-whole day can be asked at once.
+Deadlines are Org's own — =org-agenda-deadline-leaders= writes =In 3 d.:= in
+front of the entry, which asks the same question in the same column as
+everything else.
 
 ** A note on the block characters
 
@@ -288,11 +346,11 @@ line.
 
 One thing to check in your own font: =█= is normally drawn to *overflow* its
 em box, because the glyph exists to tile a screen without seams. Where it
-does, a gutter of bars stands visibly taller than boxed text on the same line
-and consecutive rows fuse into one mass. Measure it — in an unpatched
+does, a bar stands visibly taller than boxed text on the same line, and two
+bars set one under the other fuse into one mass. Measure it — in an unpatched
 PlemolJP the block runs 1300 units against a 1175-unit line, i.e. ~10% proud
 at the bottom. Fonts that normalise tile glyphs to the line box (as a patched
-PlemolJP NF does, at 890/−210) draw the gutter flush with everything else.
+PlemolJP NF does, at 890/−210) draw the bar flush with everything else.
 That is a property of the font, not of this package.
 
 * Not everything wants all of you
@@ -308,9 +366,10 @@ them as one makes a full day look impossible.
 
 A =background= entry keeps its hour but hangs beneath whatever else is
 happening then, so listening on the commute stops being reported as a day
-that cannot happen. An =informational= one takes nothing at all and appears
-under /Alongside/ — a child's practice is not work, but it is exactly what
-decides when the house is empty.
+that cannot happen. An =informational= one takes nothing at all: it stays in
+the agenda where it belongs, but claims none of the day and displaces no work
+— a child's practice is not work, though it is exactly what decides when the
+house is empty.
 
 Set it per entry, or by category for things that are always so:
 
@@ -537,7 +596,8 @@ every report and every learned average, with no undo.
 |----------------------------+---------------------------------------------|
 | =org-foresight-core.el=    | the model — intervals, clock, capacity      |
 | =org-foresight-observe.el= | ActivityWatch client (optional at runtime)  |
-| =org-foresight-report.el=  | rendering into agenda buffers               |
+| =org-foresight-report.el=  | the verdict, the bars, the badges           |
+| =org-foresight-agenda.el=  | derived rows inside Org's own agenda        |
 | =org-foresight-plan.el=    | signals and placement (the only writer)     |
 | =org-foresight-demo.el=    | generated data to develop against           |
 

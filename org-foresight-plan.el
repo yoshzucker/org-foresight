@@ -559,17 +559,14 @@ benchmark and always shows in a keystroke."
        signals "\n\n"))))
 
 (defun org-foresight-plan-report ()
-  "Return the plan board's body: today, where else work could go, and what
-has not been planned for at all.
+  "Return the plan board's tail: where else work could go, and what nothing
+has been decided about at all.
 
-The order follows how the day is actually adjusted.  Read the verdict; if it
-is over, look at today and move something out; check the load to see which
-day can take it; then work down the signals for anything with no date at
-all.  Nothing between those steps that is not part of them."
-  (concat (org-foresight-report--badge "Today" "where the hours go")
-          "\n"
-          (org-foresight-report-capacity)
-          "\n\n"
+The day itself is the agenda above -- that is what gets rearranged, and it is
+Org's to draw.  What this adds is the two questions the day cannot answer
+from inside itself: if it will not fit here, when will it, and what is
+waiting that has not been asked about yet."
+  (concat "\n"
           (org-foresight-report--badge "Load" "when I could take this on")
           "\n"
           (org-foresight-report-load)
@@ -581,7 +578,7 @@ all.  Nothing between those steps that is not part of them."
           "\n"))
 
 (add-to-list 'org-foresight-report-renderers
-             '(plan :body org-foresight-plan-report :place top))
+             '(plan :body org-foresight-plan-report :place bottom))
 
 (add-hook 'org-foresight-report-invalidate-functions
           #'org-foresight--invalidate-signals)
@@ -589,106 +586,18 @@ all.  Nothing between those steps that is not part of them."
 (defun org-foresight-plan--verdict-line ()
   "Return a one-line summary of outstanding signals, or nil when there are none.
 
-The daily agenda otherwise gives no hint that the board has anything on it,
-and a signal nobody is prompted to look at is not really being caught.  The
-key is resolved rather than written down, so it stays right whatever the
-command has been bound to.
+The daily agenda otherwise gives no hint that anything is outstanding, and a
+signal nobody is prompted to look at is not really being caught.
 
-Suppressed on the board itself, where the signals are listed in full a few
-lines below: pointing at what is already on screen only costs a line."
+Suppressed on the plan view itself, where the signals are listed in full a
+few lines below: pointing at what is already on screen only costs a line."
   (unless (eq org-foresight-report-style 'plan)
     (let ((n (apply #'+ (mapcar (lambda (g) (length (cdr g)))
                                 (org-foresight-signals)))))
       (when (> n 0)
-        (format "%d signal%s unplanned · %s"
-                n (if (= n 1) "" "s")
-                (substitute-command-keys "\\[org-foresight-plan-board]"))))))
+        (format "%d signal%s unplanned" n (if (= n 1) "" "s"))))))
 
 (add-to-list 'org-foresight-verdict-extras #'org-foresight-plan--verdict-line)
-
-(defconst org-foresight-plan-buffer "*Org Foresight Plan*"
-  "Name of the plan board's buffer.")
-
-(define-derived-mode org-foresight-plan-mode org-agenda-mode "Foresight"
-  "Major mode for the plan board.
-
-Derived from `org-agenda-mode' rather than merely resembling it, so that
-every command the agenda already provides -- \\`s' to schedule, \\`e' to
-estimate, \\`t' to change state, \\`RET' to visit -- works on these rows
-without being reimplemented.  What the board adds is the arrangement: the
-day drawn as a grid, where else work could go, and what has no date at all,
-in the order those questions are actually asked."
-  (setq-local org-agenda-type 'agenda)
-  (setq-local org-foresight-report-style 'plan)
-  (setq-local org-agenda-redo-command '(org-foresight-plan-board))
-  (setq-local truncate-lines t))
-
-;;;###autoload
-(defun org-foresight-plan-board (&optional _match)
-  "Open the plan board: what today holds, where else work could go, and what
-has not been planned for.
-
-The morning counterpart to a review -- it looks at what is arriving rather
-than at what has been done.
-
-MATCH is accepted and ignored so that this can be named directly in
-`org-agenda-custom-commands', which calls such a function with the entry's
-match string."
-  (interactive)
-  (let* ((buf (get-buffer-create org-foresight-plan-buffer))
-         (win (get-buffer-window buf))
-         ;; Where the reader was, and what the window was showing.  Acting on
-         ;; a row usually removes it, so the board comes back shorter; without
-         ;; both of these the cursor lands wherever the old line number now
-         ;; happens to fall -- most often the very end -- and the window jumps
-         ;; with it, losing the place in the middle of a task that is not
-         ;; finished.
-         (line (with-current-buffer buf (line-number-at-pos)))
-         (top (and win (eq (window-buffer win) buf)
-                   (with-current-buffer buf
-                     (line-number-at-pos (window-start win))))))
-    (with-current-buffer buf
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (unless (derived-mode-p 'org-foresight-plan-mode)
-          (org-foresight-plan-mode))
-        (insert (org-foresight-report--badge
-                 "Capacity" "what today can still take")
-                "\n"
-                (or (org-foresight-report--guarded
-                     #'org-foresight-report-capacity-line)
-                    "(not a working day)")
-                "\n\n"
-                (org-foresight-report--guarded #'org-foresight-plan-report))
-        ;; Whole-buffer property so a command run anywhere -- including on a
-        ;; blank line between blocks -- still finds an agenda to act in.
-        (put-text-property (point-min) (point-max) 'org-agenda-type 'agenda)
-        (setq buffer-read-only t)
-        (org-foresight-plan--goto-line line)))
-    (when (and win (eq (window-buffer win) buf) top)
-      (with-selected-window win
-        (save-excursion
-          (org-foresight-plan--goto-line top)
-          (set-window-start win (point) t))))
-    (pop-to-buffer buf)))
-
-(defun org-foresight-plan--goto-line (line)
-  "Go to LINE, or the last line when the buffer is now shorter than that.
-Clamped rather than allowed to run off the end: a board that lost a row is
-exactly when a plain `forward-line' lands at the bottom of the buffer."
-  (goto-char (point-min))
-  (forward-line (1- (max 1 line)))
-  (when (and (eobp) (not (bobp)) (bolp))
-    (forward-line -1)))
-
-(defun org-foresight-plan--refresh-board (&rest _)
-  "Redraw the plan board after an edit made from it."
-  (when (derived-mode-p 'org-foresight-plan-mode)
-    (org-foresight--invalidate-signals)
-    (org-foresight-plan-board)))
-
-(dolist (cmd org-foresight-write-commands)
-  (advice-add cmd :after #'org-foresight-plan--refresh-board))
 
 ;;;; Filing new work
 ;; The only writes org-foresight makes.  They go through one function so there
