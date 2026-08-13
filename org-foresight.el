@@ -41,6 +41,7 @@
 ;;   org-foresight-core.el     the model -- intervals, clock, capacity
 ;;   org-foresight-observe.el  ActivityWatch (optional at runtime)
 ;;   org-foresight-report.el   rendering into agenda buffers
+;;   org-foresight-agenda.el   derived rows inside Org's own agenda
 ;;   org-foresight-plan.el     signals and placement (the only writer)
 ;;
 ;; This file is the aggregator: requiring `org-foresight' gets the whole
@@ -51,6 +52,7 @@
 (require 'org-foresight-core)
 (require 'org-foresight-observe)
 (require 'org-foresight-report)
+(require 'org-foresight-agenda)
 (require 'org-foresight-plan)
 
 ;;;; Entry points

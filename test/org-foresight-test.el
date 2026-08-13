@@ -19,6 +19,7 @@
 (require 'cl-lib)
 (require 'org-foresight-core)
 (require 'org-foresight-report)
+(require 'org-foresight-agenda)
 (require 'org-foresight-plan)
 (require 'org-foresight-demo)
 
@@ -446,81 +447,6 @@ SCHEDULED: <2026-08-10 Mon>
         (should (org-foresight-test--within-80 s))
         (should (string-match-p "booked" s))))))
 
-(ert-deftest org-foresight-test-grid-shows-the-day-in-order ()
-  "The grid runs down the day: what happens, and the gaps between.
-It must not repeat the verdict -- each number is stated once."
-  (org-foresight-test--with-day
-      "* team meeting
-<2026-08-10 Mon 10:00-11:00>
-* NEXT reply to procurement
-SCHEDULED: <2026-08-10 Mon>
-:PROPERTIES:
-:EFFORT:   0:30
-:END:
-"
-    (let* ((day (org-foresight-test--ts 0 0 10))
-           (s (org-foresight-report-capacity
-               day nil (org-foresight-test--ts 6 0 10)))
-           (plain (substring-no-properties s)))
-      ;; the verdict's own figures are stated above, not repeated here
-      (should-not (string-match-p "spare\\|OVER" plain))
-      (should (org-foresight-test--within-80 s))
-      ;; the day is read top to bottom, so the rows are in clock order
-      (should (< (string-search "09:00-10:00" plain)
-                 (string-search "10:00-11:00" plain)))
-      (should (< (string-search "10:00-11:00" plain)
-                 (string-search "11:00-17:30" plain)))
-      ;; a gap says how long it is, in the same column as everything else
-      (should (string-match-p "1:00 .*free" plain))
-      ;; what is placed, and what is merely promised, both appear
-      (should (string-match-p "team meeting" plain))
-      (should (string-match-p "reply to procurement" plain))
-      ;; the working day's close is drawn where it falls
-      (should (string-match-p "work ends" plain)))))
-
-(ert-deftest org-foresight-test-grid-gutter-is-proportional ()
-  "A longer band draws a longer gutter -- that is the point of the gutter."
-  (let ((org-foresight-grid-minutes-per-column 15)
-        (org-foresight-grid-gutter-width 14))
-    (let ((short (org-foresight-report--grid-gutter 'meeting 15))
-          (long (org-foresight-report--grid-gutter 'meeting 120)))
-      (should (= (string-width short) 14))    ; padded to a fixed column
-      (should (= (string-width long) 14))
-      (should (< (length (string-trim short)) (length (string-trim long)))))
-    ;; and a very long stretch is capped rather than pushing titles off-screen
-    (should (<= (length (string-trim
-                         (org-foresight-report--grid-gutter 'grey 1440)))
-                14))
-    ;; even a token band gets one cell, so its row is not blank
-    (should (= (length (string-trim
-                        (org-foresight-report--grid-gutter 'meeting 1)))
-               1))))
-
-(ert-deftest org-foresight-test-grid-fits-names-what-the-gap-holds ()
-  "A free stretch is only useful if it says what would go in it."
-  (let ((ledger '((:kind promised :title "Write the vendor comparison" :effort 120)
-                  (:kind promised :title "Reply to procurement" :effort 30)
-                  (:kind meeting  :title "All-hands" :effort 60)))
-        (org-foresight-grid-suggest 3))
-    (let ((line (org-foresight-report--grid-fits 135 ledger)))
-      ;; largest first, because anything smaller still fits afterwards
-      (should (string-match-p "Write the vendor" line))
-      (should (< (string-match "Write the vendor" line)
-                 (string-match "Reply to procurement" line)))
-      ;; work already at a time is not a candidate for a gap
-      (should-not (string-match-p "All-hands" line))
-      (should (<= (string-width line) 80)))
-    ;; nothing fits in a gap too small for the smallest piece
-    (should-not (org-foresight-report--grid-fits 15 ledger))
-    ;; and a gap of no length is not a gap
-    (should-not (org-foresight-report--grid-fits 0 ledger))
-    ;; the count is a budget: naming one still reports the rest
-    (let ((org-foresight-grid-suggest 1))
-      (should (string-match-p "+1" (org-foresight-report--grid-fits 135 ledger))))
-    ;; and it can be switched off entirely
-    (let ((org-foresight-grid-suggest nil))
-      (should-not (org-foresight-report--grid-fits 135 ledger)))))
-
 (ert-deftest org-foresight-test-frees-names-the-way-out ()
   "An overcommitted day has to say by what, not only by how much."
   (let ((ledger '((:kind promised :title "Annual report" :effort 360)
@@ -555,128 +481,6 @@ SCHEDULED: <2026-08-10 Mon>
     (should-not (org-foresight-report--frees 45 nil))
     (let ((org-foresight-grid-frees nil))
       (should-not (org-foresight-report--frees 45 ledger)))))
-
-(ert-deftest org-foresight-test-grid-hides-empty-private-time ()
-  "Rows of nothing push the day off the screen; the grey total already
-says how much unclaimed time there is."
-  (org-foresight-test--with-day
-      "* team meeting
-<2026-08-10 Mon 10:00-11:00>
-"
-    (let ((plain (substring-no-properties
-                  (org-foresight-report-capacity
-                   (org-foresight-test--ts 0 0 10) nil
-                   (org-foresight-test--ts 6 0 10)))))
-      ;; the day is awake from 07:00 but the grid starts when work does
-      (should-not (string-match-p "^ 07:00" plain))
-      (should (string-match-p "09:00" plain)))))
-
-(ert-deftest org-foresight-test-grid-shows-what-was-squeezed-out ()
-  "Two things booked over the same minutes: the bands can only draw one, so
-the grid must recover the other.  Tidying the clash away would turn a day
-that cannot be worked into one that looks like it can."
-  ;; The trip needs an hour before 14:00 and the whole span before it is
-  ;; taken, so there is nowhere left for it to move to.
-  (org-foresight-test--with-travel
-      "* At the office
-:PROPERTIES:
-:LOCATION: 会議室A
-:END:
-<2026-08-10 Mon 14:00-15:00>
-* Solid all morning
-<2026-08-10 Mon 09:00-14:00>
-"
-    (let ((plain (substring-no-properties
-                  (org-foresight-report-capacity
-                   (org-foresight-test--ts 0 0 10) nil
-                   (org-foresight-test--ts 6 0 10)))))
-      ;; the journey lost its slot outright, and is recovered below the day
-      ;; under a flag rather than losing its title to an explanatory suffix
-      (should (string-match-p "⨯.*→ office" plain))))
-  ;; a day with no clash says nothing about one
-  (org-foresight-test--with-travel
-      "* At the office
-:PROPERTIES:
-:LOCATION: 会議室A
-:END:
-<2026-08-10 Mon 14:00-15:00>
-"
-    (let ((plain (substring-no-properties
-                  (org-foresight-report-capacity
-                   (org-foresight-test--ts 0 0 10) nil
-                   (org-foresight-test--ts 6 0 10)))))
-      (should-not (string-match-p "⨯" plain))
-      ;; and the key does not explain a mark that never appears
-      (should-not (string-match-p "double-booked" plain)))))
-
-(ert-deftest org-foresight-test-grid-shows-a-squeezed-band-at-full-length ()
-  "A band cut short to keep the day a partition must still say what it needs.
-
-An hour's journey drawn as the fifteen minutes left for it turns a day that
-cannot be worked into one that reads as though it can -- the worst kind of
-wrong, because nothing on the screen looks unusual."
-  (org-foresight-test--with-travel
-      "* At the office
-:PROPERTIES:
-:LOCATION: 会議室A
-:END:
-<2026-08-10 Mon 10:00-14:00>
-* At the client
-:PROPERTIES:
-:LOCATION: 顧客様先
-:END:
-<2026-08-10 Mon 14:15-15:00>
-"
-    (let ((plain (substring-no-properties
-                  (org-foresight-report-capacity
-                   (org-foresight-test--ts 0 0 10) nil
-                   (org-foresight-test--ts 6 0 10)))))
-      ;; 30 minutes office→client, but only 15 are free before it starts
-      (should (string-match-p "13:45-14:15.*0:30 ⨯.*→ client" plain)))))
-
-(ert-deftest org-foresight-test-grid-shows-how-far-off-a-deadline-is ()
-  "Every row invites the same question -- can this move to another day -- and
-a deadline is the answer.  Given in days, because that is the form the
-question takes."
-  (org-foresight-test--with-day
-      (let ((day (lambda (n) (format-time-string
-                              "<%Y-%m-%d %a>"
-                              (time-add (org-foresight--day-start 0)
-                                        (days-to-time n))))))
-        (concat "* NEXT plenty of room\nSCHEDULED: " (funcall day 0)
-                " DEADLINE: " (funcall day 3)
-                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"
-                "* NEXT due today\nSCHEDULED: " (funcall day 0)
-                " DEADLINE: " (funcall day 0)
-                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"
-                "* NEXT already late\nSCHEDULED: " (funcall day 0)
-                " DEADLINE: " (funcall day -2)
-                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"
-                "* NEXT no deadline at all\nSCHEDULED: " (funcall day 0)
-                "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"))
-    (let ((plain (substring-no-properties
-                  (org-foresight-report-capacity
-                   (org-foresight--day-start 0) nil
-                   (org-foresight--hhmm-on (org-foresight--day-start 0) "06:00")))))
-      (should (string-match-p "+3d NEXT plenty of room" plain))
-      (should (string-match-p "0d NEXT due today" plain))
-      (should (string-match-p "-2d NEXT already late" plain))
-      ;; and a task with no deadline says nothing rather than something
-      (should (string-match-p "  NEXT no deadline at all" plain)))))
-
-(ert-deftest org-foresight-test-grid-lists-what-is-due ()
-  "A deadline occupies no time, so it appears in no band -- which is exactly
-how a day gets planned without it."
-  (org-foresight-test--with-day
-      "* NEXT ship the report
-DEADLINE: <2026-08-10 Mon>
-"
-    (let ((plain (substring-no-properties
-                  (org-foresight-report-capacity
-                   (org-foresight-test--ts 0 0 10) nil
-                   (org-foresight-test--ts 6 0 10)))))
-      (should (string-match-p "ship the report" plain))
-      (should (string-match-p "due today" plain)))))
 
 (defun org-foresight-test--bar-cells (bar)
   "Return how many columns BAR draws, whatever glyph each one uses.
@@ -810,120 +614,6 @@ SCHEDULED: <2026-08-10 Mon>
                     (plist-get cap :spare-min))
                  (plist-get cap :span-min))))))
 
-(ert-deftest org-foresight-test-ledger-rows-are-actionable ()
-  "Every row that came from an entry must be able to lead back to it.
-
-The three properties are the whole contract: with them the agenda's own
-commands operate on a foresight row, without them the row is only a report."
-  (org-foresight-test--with-day
-      "* Project review
-<2026-08-10 Mon 14:00-15:00>
-"
-    (let* ((day (org-foresight-test--ts 0 0 10))
-           (s (org-foresight-report-capacity day nil
-                                             (org-foresight-test--ts 6 0 10)))
-           (pos (string-match "Project review" s)))
-      (should pos)
-      (should (markerp (get-text-property pos 'org-marker s)))
-      (should (markerp (get-text-property pos 'org-hd-marker s)))
-      (should (eq (get-text-property pos 'org-agenda-type s) 'agenda)))))
-
-(ert-deftest org-foresight-test-timed-rows-point-at-their-stamp ()
-  "A booked row must let its time be moved, not only its day.
-
-`org-agenda-date-later' -- \\`S-right', and with prefixes the hour and minute
-variants -- goes to `org-marker' and insists on `org-at-timestamp-p' there.
-Pointing it at the heading is the difference between shifting a meeting half
-an hour from the board and being told there is no time stamp.  The heading
-stays on `org-hd-marker', which is where the commands that want it look."
-  (org-foresight-test--with-day
-      "* Project review
-<2026-08-10 Mon 14:00-15:00>
-* NEXT Write the vendor comparison
-SCHEDULED: <2026-08-10 Mon>
-:PROPERTIES:
-:EFFORT: 1:00
-:END:
-"
-    (let* ((day (org-foresight-test--ts 0 0 10))
-           (s (org-foresight-report-capacity day nil
-                                             (org-foresight-test--ts 6 0 10)))
-           (pos (string-match "Project review" s))
-           (marker (get-text-property pos 'org-marker s))
-           (heading (get-text-property pos 'org-hd-marker s)))
-      (should (markerp marker))
-      (should (org-with-point-at marker (org-at-timestamp-p 'lax)))
-      ;; and the two are genuinely different places in the same entry
-      (should-not (= (marker-position marker) (marker-position heading)))
-      (should (org-with-point-at heading (org-at-heading-p)))
-      ;; work with no time of its own has no stamp to move, so it keeps the
-      ;; heading and the day commands still reach it
-      (let* ((unplaced (string-match "vendor comparison" s))
-             (m (get-text-property unplaced 'org-marker s)))
-        (should (markerp m))
-        (should (org-with-point-at m (org-at-heading-p)))))))
-
-(ert-deftest org-foresight-test-time-can-be-moved-from-the-board ()
-  "Shifting a booked hour must work from the row, not only from the file.
-
-The end of the whole exercise: a clash is cleared by moving something, and
-the cheapest move is usually an hour within the day rather than a day away.
-This drives the real command over a real rendered row."
-  (org-foresight-test--with-day
-      "* Project review
-<2026-08-10 Mon 14:00-15:00>
-"
-    (let* ((day (org-foresight-test--ts 0 0 10))
-           (s (org-foresight-report-capacity day nil
-                                             (org-foresight-test--ts 6 0 10)))
-           (file (car org-agenda-files)))
-      (with-temp-buffer
-        (setq major-mode 'org-agenda-mode)   ; what the commands gate on
-        (insert s)
-        (goto-char (string-match "Project review" s))
-        (setq-local org-agenda-type (org-get-at-bol 'org-agenda-type))
-        (let ((org-time-stamp-rounding-minutes '(0 30)))
-          (org-agenda-date-later-minutes 1)))
-      (should (string-match-p "14:30-15:30"
-                              (with-current-buffer (find-file-noselect file)
-                                (buffer-string)))))))
-
-(ert-deftest org-foresight-test-derived-rows-are-inert ()
-  "A row with no entry behind it must not borrow a neighbour's marker.
-Travel home is generated, not scheduled; acting on it should find nothing
-rather than quietly rescheduling whatever produced it."
-  (org-foresight-test--with-travel
-      "* At the office
-:PROPERTIES:
-:LOCATION: 会議室A
-:END:
-<2026-08-10 Mon 14:00-15:00>
-"
-    (let* ((day (org-foresight-test--ts 0 0 10))
-           (s (org-foresight-report-capacity day nil
-                                             (org-foresight-test--ts 6 0 10)))
-           (pos (string-match "→ home" s)))
-      (should pos)
-      (should (null (get-text-property pos 'org-marker s))))))
-
-(ert-deftest org-foresight-test-ledger-marks-work-outside-the-span ()
-  "Work in the evening is flagged as grey so the borrowing is visible."
-  (org-foresight-test--with-day
-      "* NEXT evening call
-<2026-08-10 Mon 19:00-20:00>
-* NEXT afternoon work
-<2026-08-10 Mon 14:00-15:00>
-"
-    (let* ((s (substring-no-properties
-               (org-foresight-report-capacity (org-foresight-test--ts 0 0 10) nil
-                                              (org-foresight-test--ts 6 0 10))))
-           (close (string-search "work ends" s)))
-      ;; the working day's close is drawn where it falls, so the evening call
-      ;; is visibly below it and the afternoon's work visibly above
-      (should close)
-      (should (> (string-search "evening call" s) close))
-      (should (< (string-search "afternoon work" s) close)))))
-
 (ert-deftest org-foresight-test-only-badges-touch-the-frame-edge ()
   "Column zero belongs to badges alone.
 
@@ -945,9 +635,7 @@ SCHEDULED: <2026-08-10 Mon>
     (let ((day (org-foresight-test--ts 0 0 10))
           (now (org-foresight-test--ts 6 0 10)))
       (dolist (block (list (org-foresight-report-capacity-line day nil now)
-                           (org-foresight-report-capacity day nil now)
                            (org-foresight-report-load 14 nil now)
-                           (org-foresight-report--grid-key '("⨯"))
                            (org-foresight-report-signals
                             '(("Something (1)"
                                . ((:title "a thing" :note "a note"
@@ -957,49 +645,19 @@ SCHEDULED: <2026-08-10 Mon>
             (should (string-prefix-p org-foresight-report-margin line))))))))
 
 (ert-deftest org-foresight-test-glyphs-are-single-cell ()
-  "Every mark the grid draws must occupy exactly one cell.
+  "Every mark drawn into an agenda line must occupy exactly one cell.
 
 A wider one shifts the column behind it, and the usual cause is a character
 the font simply lacks: what appears then comes from the fallback, at whatever
 width that font uses.  `✗' U+2717 was one such -- absent from PlemolJP and
-rendered slightly too wide, which is exactly the failure this guards."
-  (dolist (s (append (mapcar #'car org-foresight-report--grid-flags)
-                     (list (string org-foresight-block))
+rendered slightly too wide, which is why the mark for work that will not fit
+is U+2717's replacement rather than U+2717 itself."
+  (dolist (s (append (list (string org-foresight-block)
+                           org-foresight-agenda-wont-fit)
                      (mapcar #'string
                              (append org-foresight-report--partials nil))
-                     '("·" "─" "┈" "→" "┃" "↳")))
+                     '("·" "─" "┈" "→" "┃" "↳" "⨯")))
     (should (= (string-width s) 1))))
-
-(ert-deftest org-foresight-test-grid-columns-align ()
-  "Every column up to the title starts at the same place, whatever is in it.
-
-The title itself is not held to a width: it is the last thing on the line,
-so nothing after it needs to line up, and cutting it would only lose words
-that were the point of the row.  A long multibyte title is the case that
-would drag the columns out of true if any of them were sized from content."
-  (org-foresight-test--with-day
-      "* NEXT 非常に長い日本語のタスク名で桁あふれを起こしかねないもの、さらに続く
-<2026-08-10 Mon 14:00-15:00>
-* NEXT x
-<2026-08-10 Mon 10:00-10:15>
-"
-    (let* ((plain (substring-no-properties
-                   (org-foresight-report-capacity
-                    (org-foresight-test--ts 0 0 10) nil
-                    (org-foresight-test--ts 6 0 10))))
-           ;; rows drawn from a band carry a span; the boundary rules carry a
-           ;; single time and no duration, by design
-           (rows (seq-filter (lambda (l)
-                               (string-match-p "[0-9][0-9]:[0-9][0-9]-" l))
-                             (split-string plain "\n")))
-           ;; the span column starts at the same offset on every one of them
-           (offsets (seq-uniq
-                     (mapcar (lambda (l) (string-match "[0-9][0-9]:[0-9][0-9]-" l))
-                             rows))))
-      (should (> (length rows) 2))
-      (should (= (length offsets) 1))
-      ;; and the long title survived to the end of its line
-      (should (string-match-p "さらに続く" plain)))))
 
 (ert-deftest org-foresight-test-off-bar ()
   "Unclaimed private time is reported, and borrowing from it is called out."
@@ -1023,17 +681,6 @@ would drag the columns out of true if any of them were sized from content."
            (line (substring-no-properties
                   (org-foresight-report--bars cap))))
       (should-not (string-match-p "borrowed" line)))))
-
-(ert-deftest org-foresight-test-report-capacity-non-workday ()
-  "A non-working day yields no top line at all, and says so in the block."
-  (org-foresight-test--with-window
-    (org-foresight-test--with-org "* nothing\n"
-      (let ((day (org-foresight-test--ts 0 0 9))
-            (now (org-foresight-test--ts 6 0 9)))
-        (should (null (org-foresight-report-capacity-line day nil now)))
-        (should (string-match-p
-                 "not a working day"
-                 (org-foresight-report-capacity day nil now)))))))
 
 (ert-deftest org-foresight-test-verdict-extras ()
   "The daily line must announce outstanding signals, and stay silent without.
@@ -1119,15 +766,15 @@ last; moving point here strands the cursor -- and the window -- at the end."
                          before)))))))
 
 (ert-deftest org-foresight-test-render-places-by-style ()
-  "A board is worked through, so it goes above the listing; a daily report is
-consulted while working, so it goes below."
+  "Both styles lead with the verdict and follow the listing with their tail:
+the day is the agenda, and everything else is commentary on it."
   (org-foresight-test--with-day "* NEXT something\nSCHEDULED: <2026-08-10 Mon>\n"
     (org-foresight-test--in-agenda
       (let ((org-foresight-report-style 'plan))
         (org-foresight-report-render)
         (let ((text (substring-no-properties (buffer-string))))
-          (should (< (string-search "Signals" text)
-                     (string-search "Day-agenda" text))))))
+          (should (< (string-search "Day-agenda" text)
+                     (string-search "Signals" text))))))
     (org-foresight-test--in-agenda
       (let ((org-foresight-report-style 'daily))
         (org-foresight-report-render)
@@ -1662,12 +1309,11 @@ meeting it serves, however far back it had to go."
       ;; and it claims no band, so it cannot displace work
       (should-not (seq-find (lambda (b) (equal (plist-get b :title) "子供の部活"))
                             (org-foresight-day-blocks day scan)))
-      ;; but it is still reported, because it is why the house is empty
-      (should (string-match-p
-               "子供の部活"
-               (substring-no-properties
-                (org-foresight-report-capacity day scan
-                                               (org-foresight-test--ts 6 0 10))))))))
+      ;; but it is still in the ledger, because it is why the house is empty
+      (should (seq-find
+               (lambda (e) (and (equal (plist-get e :title) "子供の部活")
+                                (eq (plist-get e :attention) 'informational)))
+               (aref (plist-get scan :ledger) 0))))))
 
 (ert-deftest org-foresight-test-background-costs-the-hour-but-shares-it ()
   "A call you only have to hear still takes the hour -- it just takes it
@@ -1697,21 +1343,14 @@ alongside whatever else is happening, rather than instead of it."
 :PROPERTIES:
 :ATTENTION: background
 :END:
-<2026-08-10 Mon 13:00-14:00>
+<2026-08-10 Mon 14:00-15:00>
 "
-    (let ((plain (substring-no-properties
-                  (org-foresight-report-capacity
-                   (org-foresight-test--ts 0 0 10) nil
-                   (org-foresight-test--ts 6 0 10)))))
-      ;; both are shown, and the call is not treated as a clash
-      (should (string-match-p "→ office" plain))
-      (should (string-match-p "全社定例" plain))
-      (should-not (string-match-p "⨯" plain)))
-    ;; and the signal agrees
-    (let ((org-foresight-background-categories nil)
-          (org-foresight-informational-categories nil))
-      (should-not (org-foresight-test--signal
-                   "Impossible (travel clashes with a meeting)")))))
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      ;; the band is the meeting that needs the hour; the one that will share
+      ;; it does not displace anything and so gets no band of its own
+      (should (= 1 (length (seq-filter
+                            (lambda (b) (string-match-p "14:00-15:00" b))
+                            bands)))))))
 
 (ert-deftest org-foresight-test-informational-is-not-overtime ()
   "Somebody else's evening fixture must not be reported as your late night."
@@ -2351,47 +1990,14 @@ SCHEDULED: " (org-foresight-test--stamp 0) "
 
 (ert-deftest org-foresight-test-plan-style-is-registered ()
   "org-foresight-plan.el must register itself with the report dispatcher.
-The board goes above the agenda listing: it is worked through rather than
-consulted, so what needs deciding must not be split around the day's entries."
+The day being rearranged is the agenda itself, so what this style adds --
+where else the work could go, and what has not been asked about -- follows
+the listing rather than splitting it from the verdict above."
   (let ((entry (cdr (assq 'plan org-foresight-report-renderers))))
     (should (eq (plist-get entry :body) 'org-foresight-plan-report))
-    (should (eq (plist-get entry :place) 'top))
-    (should (eq (org-foresight-report--place 'plan) 'top))
+    (should (eq (plist-get entry :place) 'bottom))
+    (should (eq (org-foresight-report--place 'plan) 'bottom))
     (should (eq (org-foresight-report--place 'daily) 'bottom))))
-
-(ert-deftest org-foresight-test-plan-board-is-an-agenda ()
-  "The board draws its own buffer, and must still be one the agenda's own
-commands will act in: derived mode, and the type property they gate on."
-  (org-foresight-test--with-signals
-      "* WAIT reply from vendor
-SCHEDULED: <2020-01-01 Wed>
-"
-    (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
-      (org-foresight-plan-board))
-    (unwind-protect
-        (with-current-buffer org-foresight-plan-buffer
-          (should (derived-mode-p 'org-agenda-mode))
-          (should (eq org-agenda-type 'agenda))
-          (should buffer-read-only)
-          ;; every position answers `org-agenda-check-type', including the
-          ;; blank lines between blocks
-          (should (eq (get-text-property (point-min) 'org-agenda-type) 'agenda))
-          (should (eq (get-text-property (1- (point-max)) 'org-agenda-type)
-                      'agenda))
-          ;; and a signal row still carries what the write commands read
-          (goto-char (point-min))
-          (should (re-search-forward "reply from vendor" nil t))
-          (beginning-of-line)
-          (should (markerp (org-get-at-bol 'org-marker))))
-      (kill-buffer org-foresight-plan-buffer))))
-
-(ert-deftest org-foresight-test-plan-board-is-callable-from-the-dispatcher ()
-  "Named in `org-agenda-custom-commands', it is called with a match string."
-  (org-foresight-test--with-signals "* NEXT something\n"
-    (cl-letf (((symbol-function 'pop-to-buffer) #'ignore))
-      ;; must not signal wrong-number-of-arguments
-      (should (progn (org-foresight-plan-board "") t)))
-    (kill-buffer org-foresight-plan-buffer)))
 
 (ert-deftest org-foresight-test-signal-rows-are-actionable ()
   "A signal must be fixable from where it is reported.
@@ -2844,6 +2450,198 @@ or the capacity and clock blocks would render empty and prove nothing."
                      (with-temp-buffer
                        (insert-file-contents (cadr org-agenda-files))
                        (buffer-string)))))))
+
+;;;; Derived rows inside Org's agenda
+
+(defun org-foresight-test--time-of-day (item)
+  "Return the time Org will sort ITEM by."
+  (and item (get-text-property 0 'time-of-day item)))
+
+(ert-deftest org-foresight-test-item-takes-its-time-from-the-clock ()
+  "A derived row's time must come from its time, not from its words.
+
+`org-agenda-format-item' concatenates DOTIME with the text before looking for
+a time, so that a heading reading \"call Bob at 10\" is understood.  Here that
+is exactly wrong: a row saying a gap is 2:15 long would be filed at 02:15.
+The search is bound off, and this is the guard on it."
+  (should (= 945 (org-foresight-test--time-of-day
+                  (org-foresight-agenda--item "free 2:15 · 1:59 usable"
+                                              "" "09:45"))))
+  (should (= 1200 (org-foresight-test--time-of-day
+                   (org-foresight-agenda--item "→ office" "travel"
+                                               "12:00-13:00"))))
+  ;; and a row with nothing to say makes no line at all
+  (should-not (org-foresight-agenda--item "" "" "09:00")))
+
+(ert-deftest org-foresight-test-derived-rows-land-in-the-day ()
+  "Journeys, gaps and the edges of the span are handed to Org with times on
+them, and Org is what puts them in order."
+  (org-foresight-test--with-travel
+      "* At the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 14:00-15:00>
+"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (rows (org-foresight-agenda--augment nil day))
+           (plain (mapcar #'substring-no-properties rows)))
+      ;; Every row carries a time, at position 1 as well as at 0.  This is
+      ;; the whole contract with Org.  `org-cmp-time' reads position 1 and
+      ;; treats a row without a time as later than everything; because the
+      ;; sort is stable, such rows then come out in the order they were added
+      ;; -- in a heap at the foot of the buffer, outside the day they
+      ;; describe.  A row that cannot say when it happens has no business
+      ;; being in an agenda at all.
+      (should (seq-every-p #'org-foresight-test--time-of-day rows))
+      (should (seq-every-p (lambda (r) (get-text-property 1 'time-of-day r))
+                           rows))
+      (should (seq-find (lambda (r) (string-match-p "→" r)) plain))
+      (should (seq-find (lambda (r) (string-match-p "work starts" r)) plain))
+      (should (seq-find (lambda (r) (string-match-p "work ends" r)) plain))
+      ;; a journey answers to the agenda's commands through the meeting it
+      ;; serves; an edge has no entry behind it and stays inert
+      (should (markerp
+               (get-text-property
+                0 'org-marker
+                (seq-find (lambda (r)
+                            (string-match-p "→ office"
+                                            (substring-no-properties r)))
+                          rows))))
+      (should-not (get-text-property
+                   0 'org-marker
+                   (seq-find (lambda (r)
+                               (string-match-p "work starts"
+                                               (substring-no-properties r)))
+                             rows))))))
+
+(ert-deftest org-foresight-test-gap-is-offered-net-of-the-reserve ()
+  "A gap is offered at what survives interruption, not at what the clock says.
+
+Nothing is placed either way -- the gap is only being reported honestly -- so
+the choice of what goes in it stays entirely with the reader."
+  (let ((cap '(:span-min 500.0 :surge-min 50.0)))
+    (should (= 0.9 (org-foresight-agenda--keep cap)))
+    (let ((org-foresight-gap-net nil))
+      (should (= 1.0 (org-foresight-agenda--keep cap))))
+    ;; a day with no span cannot have a ratio taken out of it
+    (should (= 1.0 (org-foresight-agenda--keep '(:span-min 0.0 :surge-min 60.0))))
+    ;; nor can more be reserved than there is
+    (should (= 0.0 (org-foresight-agenda--keep
+                    '(:span-min 60.0 :surge-min 600.0))))))
+
+(ert-deftest org-foresight-test-what-will-not-fit-is-marked ()
+  "Whether work fits is a fact about the work and the day, not about any
+arrangement of them -- so it can be said without placing anything."
+  (let* ((cap '(:span-min 510.0 :surge-min 0.0))
+         (buf (get-buffer-create "*foresight-fit*"))
+         ;; two distinct positions: a marker is identified by buffer and
+         ;; offset, so an empty buffer would make every entry the same one
+         (m (with-current-buffer buf
+              (insert "* big\n* small\n") (copy-marker (point-min))))
+         (other-m (with-current-buffer buf (copy-marker (point-max))))
+         (ledger (list (list :kind 'promised :title "big" :effort 300
+                             :marker m)))
+         (item (propertize " reporting Scheduled: big" 'org-hd-marker m))
+         (other (propertize " admin     Scheduled: small"
+                            'org-hd-marker other-m))
+         (small (list (list :kind 'available
+                            :start (org-foresight-test--ts 9 0 10)
+                            :end (org-foresight-test--ts 11 0 10))))
+         (roomy (list (list :kind 'available
+                            :start (org-foresight-test--ts 9 0 10)
+                            :end (org-foresight-test--ts 18 0 10)))))
+    (unwind-protect
+        (let ((out (org-foresight-agenda--mark-wont-fit
+                    (list item other) small cap ledger)))
+          ;; 5:00 of work against a 2:00 gap: no ordering finds it a home
+          (should (string-prefix-p org-foresight-agenda-wont-fit (car out)))
+          ;; the mark replaces the prefix's blank column rather than being
+          ;; appended, which would put it past the tags and defeat their
+          ;; alignment
+          (should (= (length item) (length (car out))))
+          (should (equal other (cadr out)))
+          ;; a day with a big enough gap marks nothing
+          (should (equal (list item other)
+                         (org-foresight-agenda--mark-wont-fit
+                          (list item other) roomy cap ledger))))
+      (kill-buffer buf))))
+
+(ert-deftest org-foresight-test-squeezed-travel-keeps-its-length ()
+  "A journey that was squeezed is drawn at the length it needs.
+
+Fifteen minutes shown for a forty-five minute drive is the day claiming to
+work when it does not.  Org files it by that start, so it lands against the
+meeting it collides with, which is where the collision is."
+  (let* ((bands (list (list :kind 'travel :title "→ client"
+                            :start (org-foresight-test--ts 15 30 10)
+                            :end (org-foresight-test--ts 15 45 10)
+                            :trimmed t
+                            :full-start (org-foresight-test--ts 15 0 10))))
+         (row (car (org-foresight-agenda--travel bands)))
+         (plain (substring-no-properties row)))
+    ;; filed at the hour it must leave, not at what was left for it
+    (should (= 1500 (get-text-property 1 'time-of-day row)))
+    ;; the mark leads the title rather than trailing it, so the tags Org
+    ;; aligns at the end of the line stay at the end of the line
+    (should (string-prefix-p org-foresight-agenda-collides plain))
+    ;; a journey that fits says nothing extra and keeps its own start
+    (let ((row (car (org-foresight-agenda--travel
+                     (list (list :kind 'travel :title "→ office"
+                                 :start (org-foresight-test--ts 12 0 10)
+                                 :end (org-foresight-test--ts 13 0 10)))))))
+      (should (= 1200 (get-text-property 1 'time-of-day row)))
+      (should-not (string-match-p "⨯" (substring-no-properties row))))))
+
+(ert-deftest org-foresight-test-edges-read-like-the-now-line ()
+  "The edges of the day are labelled then ruled, as Org rules `← now'.
+Two lines that mean the same kind of thing should be read the same way."
+  (let* ((rows (org-foresight-agenda--edges
+                (list :window (cons (org-foresight-test--ts 9 0 10)
+                                    (org-foresight-test--ts 17 30 10)))))
+         (plain (mapcar #'substring-no-properties rows)))
+    (should (seq-find (lambda (r) (string-match-p "work starts ─+$" r)) plain))
+    (should (seq-find (lambda (r) (string-match-p "work ends ─+$" r)) plain))
+    ;; and a day with no working window has no edges to draw
+    (should-not (org-foresight-agenda--edges '(:window nil)))))
+
+(ert-deftest org-foresight-test-key-names-only-the-marks-used ()
+  "A key describing a clash on a day that has none is explaining a problem
+the reader does not have, which is a slower way of saying nothing."
+  (let ((org-foresight-agenda--marks (list org-foresight-agenda-collides)))
+    (let ((key (substring-no-properties (org-foresight-agenda-key))))
+      (should (string-match-p "⨯" key))
+      (should-not (string-match-p "✗" key))
+      (should-not (string-match-p "↳" key))))
+  (let ((org-foresight-agenda--marks (list org-foresight-agenda-wont-fit "↳")))
+    (let ((key (substring-no-properties (org-foresight-agenda-key))))
+      (should (string-match-p "✗" key))
+      (should (string-match-p "↳" key))
+      (should-not (string-match-p "⨯" key))))
+  ;; a day that needed no marks gets no line at all
+  (let ((org-foresight-agenda--marks nil))
+    (should-not (org-foresight-agenda-key))))
+
+(ert-deftest org-foresight-test-time-survives-a-word-dash ()
+  "A derived row must find its time whatever the buffer calls a word.
+
+`org-get-time-of-day' matches with `word-start' and `word-end', so a range
+like \"12:00-13:00\" stops parsing wherever `-' has been made a word
+constituent -- a common enough tweak, and one that costs the row its time and
+therefore its place in the day.  Org never meets this: its grid lines carry a
+single time, and real entries arrive from timestamps parsed long before."
+  (with-temp-buffer
+    (modify-syntax-entry ?- "w")
+    ;; the hazard is real: org's own reading of the range fails here
+    (should-not (org-get-time-of-day "12:00-13:00"))
+    ;; and a row made under it still knows when it happens
+    (should (= 1200 (get-text-property
+                     0 'time-of-day
+                     (org-foresight-agenda--item "→ office" "travel"
+                                                 "12:00-13:00"))))
+    (should (= 945 (get-text-property
+                    0 'time-of-day
+                    (org-foresight-agenda--item "2:15 free" "" "09:45-12:00"))))))
 
 (provide 'org-foresight-test)
 
