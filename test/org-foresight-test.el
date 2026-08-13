@@ -2549,9 +2549,8 @@ arrangement of them -- so it can be said without placing anything."
          (other-m (with-current-buffer buf (copy-marker (point-max))))
          (ledger (list (list :kind 'promised :title "big" :effort 300
                              :marker m)))
-         (item (propertize " reporting Scheduled: big" 'org-hd-marker m))
-         (other (propertize " admin     Scheduled: small"
-                            'org-hd-marker other-m))
+         (item (org-foresight-test--row " reporting Scheduled: big" m))
+         (other (org-foresight-test--row " admin     Scheduled: small" other-m))
          (small (list (list :kind 'available
                             :start (org-foresight-test--ts 9 0 10)
                             :end (org-foresight-test--ts 11 0 10))))
@@ -2559,20 +2558,93 @@ arrangement of them -- so it can be said without placing anything."
                             :start (org-foresight-test--ts 9 0 10)
                             :end (org-foresight-test--ts 18 0 10)))))
     (unwind-protect
-        (let ((out (org-foresight-agenda--mark-wont-fit
+        (let ((out (org-foresight-agenda--mark-rows
                     (list item other) small cap ledger)))
           ;; 5:00 of work against a 2:00 gap: no ordering finds it a home
-          (should (string-prefix-p org-foresight-agenda-wont-fit (car out)))
-          ;; the mark replaces the prefix's blank column rather than being
-          ;; appended, which would put it past the tags and defeat their
-          ;; alignment
-          (should (= (length item) (length (car out))))
-          (should (equal other (cadr out)))
+          (should (equal org-foresight-agenda-wont-fit
+                         (get-text-property 0 'org-foresight-mark (car out))))
+          (should-not (get-text-property 0 'org-foresight-mark (cadr out)))
+          ;; drawn, the mark goes into the row rather than after it: appended
+          ;; it would land past the tags and defeat their alignment
+          (let ((drawn (car (org-foresight-agenda--place-marks out))))
+            (should (string-match-p org-foresight-agenda-wont-fit drawn)))
           ;; a day with a big enough gap marks nothing
           (should (equal (list item other)
-                         (org-foresight-agenda--mark-wont-fit
+                         (org-foresight-agenda--mark-rows
                           (list item other) roomy cap ledger))))
       (kill-buffer buf))))
+
+(defun org-foresight-test--timed (text heading)
+  "Return TEXT as an agenda row whose heading starts at HEADING, with a time."
+  (let ((row (copy-sequence text)))
+    (put-text-property 0 (length row) 'time-of-day 1500 row)
+    (put-text-property heading (length row) 'org-heading t row)
+    row))
+
+(defun org-foresight-test--row (text marker)
+  "Return TEXT as an agenda row for MARKER, with Org's own heading property."
+  (let ((row (propertize text 'org-hd-marker marker)))
+    (put-text-property (string-match "[^ ]+\\'" text) (length text)
+                       'org-heading t row)
+    row))
+
+(ert-deftest org-foresight-test-marks-share-one-column ()
+  "Every mark in the grid goes in the same column, whatever the row.
+
+A reader who has learnt where to look has learnt it once.  The column is the
+one the earliest timed heading starts at, which is where the time field ends
+-- so a mark does not wander right by however long a `Scheduled:' that row
+happened to need, and stays beside the clock and the title it qualifies.
+
+Only rows that carry a time are asked for the column.  A conditional time
+field is dropped from an undated row rather than padded, so its heading
+begins where a timed row is still in the middle of its clock; such a row
+takes its own heading instead of being given a mark inside its title.
+
+The mark is inserted rather than written over a blank -- the one blank going
+spare is the space the time field pads out with -- and only into rows that
+have one, because what has to line up is the marks and not the titles."
+  ;; the prefix as `  %-8.8c%?-12t% s%?-5e' lays it out: two columns, then
+  ;; eight of category, then twelve of clock -- so a heading starts at 22,
+  ;; and a leader starts there and pushes its own heading further right
+  (let* ((short (org-foresight-test--timed
+                 (concat "  travel  " "15:00-15:45 " "→ client") 22))
+         (leader (org-foresight-test--timed
+                  (concat "  reportin" "13:00 ┄┄┄┄┄ "
+                          "Scheduled:  1:00 " "NEXT Draft")
+                  39))
+         (quiet (org-foresight-test--timed
+                 (concat "  day     " "18:00-20:00 " "Basketball") 22))
+         ;; no clock at all: the time field is dropped, not padded
+         (undated (concat "  admin   " "2:00 " "NEXT Reply"))
+         (marked (lambda (row glyph)
+                   (let ((r (copy-sequence row)))
+                     (put-text-property 0 (length r) 'org-foresight-mark
+                                        glyph r)
+                     r))))
+    (put-text-property 15 (length undated) 'org-heading t undated)
+    (let* ((rows (list (funcall marked short org-foresight-agenda-wont-fit)
+                       (funcall marked leader org-foresight-agenda-alongside)
+                       quiet
+                       (funcall marked undated org-foresight-agenda-wont-fit)))
+           (out (org-foresight-agenda--place-marks rows))
+           (flat (mapcar #'substring-no-properties out)))
+      (should (= 22 (org-foresight-agenda--mark-column rows)))
+      ;; one column for the grid, and it is left of the leader rather than
+      ;; lost behind it
+      (should (equal '(22 22) (list (string-match "⨯" (nth 0 flat))
+                                    (string-match "╰" (nth 1 flat)))))
+      (should (string-match-p "╰ Scheduled:" (nth 1 flat)))
+      ;; a row with no clock in its prefix takes its own heading
+      (should (equal "  admin   2:00 ⨯ NEXT Reply" (nth 3 flat)))
+      ;; an unmarked row is left exactly as it was
+      (should (equal quiet (nth 2 out)))
+      ;; the mark and the space after it are inserted, not written over
+      (should (equal '(2 2 0 2)
+                     (seq-mapn (lambda (a b) (- (length b) (length a)))
+                               rows out)))
+      ;; the cell belongs to the prefix, not to the heading Org looks for
+      (should-not (get-text-property 22 'org-heading (nth 1 out))))))
 
 (ert-deftest org-foresight-test-squeezed-travel-keeps-its-length ()
   "A journey that was squeezed is drawn at the length it needs.
@@ -2589,9 +2661,11 @@ meeting it collides with, which is where the collision is."
          (plain (substring-no-properties row)))
     ;; filed at the hour it must leave, not at what was left for it
     (should (= 1500 (get-text-property 1 'time-of-day row)))
-    ;; the mark leads the title rather than trailing it, so the tags Org
-    ;; aligns at the end of the line stay at the end of the line
-    (should (string-prefix-p org-foresight-agenda-wont-fit plain))
+    ;; the mark is recorded rather than written into the title, so that where
+    ;; every mark on the page goes is decided in one place
+    (should (equal org-foresight-agenda-wont-fit
+                   (get-text-property 0 'org-foresight-mark row)))
+    (should-not (string-match-p org-foresight-agenda-wont-fit plain))
     ;; a journey that fits says nothing extra and keeps its own start
     (let ((row (car (org-foresight-agenda--travel
                      (list (list :kind 'travel :title "→ office"
@@ -2783,6 +2857,54 @@ coarser kind."
                      "\\`·+\\'"
                      (org-foresight-report--sparkline
                       (plist-get data :binned))))))))
+
+(ert-deftest org-foresight-test-marks-carry-their-own-face ()
+  "A mark looks the same wherever it appears, and they are not all one colour.
+
+The key and the rows read their face from one table, so they cannot drift
+apart -- and the three are not the same kind of news: what will not fit takes
+the overrun's colour, what would fit takes the colour of room, and what
+merely shares the hour is quiet."
+  (pcase-dolist (`(,glyph ,_ ,face) org-foresight-agenda--mark-meanings)
+    (should (eq face (get-text-property 0 'face
+                                        (org-foresight-agenda--mark glyph)))))
+  ;; distinct: a single colour for all three would be no key at all
+  (should (= 3 (length (delete-dups
+                        (mapcar (lambda (m) (nth 2 m))
+                                org-foresight-agenda--mark-meanings)))))
+  ;; and the key paints them the same way the rows do
+  (let* ((org-foresight-agenda--marks
+          (mapcar #'car org-foresight-agenda--mark-meanings))
+         (key (org-foresight-agenda-key)))
+    (pcase-dolist (`(,glyph ,_ ,face) org-foresight-agenda--mark-meanings)
+      (should (eq face (get-text-property (string-search glyph key)
+                                          'face key))))))
+
+(ert-deftest org-foresight-test-sharing-an-hour-is-marked-not-clashed ()
+  "Work that will share its hour is marked rather than reported as a clash.
+
+An overlap between a call you only have to hear and something real is not a
+day that cannot happen, so the mark says which it is instead of leaving the
+reader to resolve a clash that was never there."
+  (let* ((buf (get-buffer-create "*foresight-attention*"))
+         (m (with-current-buffer buf
+              (insert "* listen\n* work\n") (copy-marker (point-min))))
+         (ledger (list (list :kind 'meeting :title "listen" :marker m
+                             :attention 'informational)))
+         (item (propertize " club      Kids' basketball" 'org-hd-marker m)))
+    (unwind-protect
+        (let ((out (car (org-foresight-agenda--mark-rows
+                         (list item) nil '(:span-min 480.0 :surge-min 0.0)
+                         ledger))))
+          (should (equal org-foresight-agenda-alongside
+                         (get-text-property 0 'org-foresight-mark out)))
+          ;; blocking work is left alone
+          (should (equal item
+                         (car (org-foresight-agenda--mark-rows
+                               (list item) nil '(:span-min 480.0 :surge-min 0.0)
+                               (list (list :kind 'meeting :title "listen"
+                                           :marker m :attention 'blocking)))))))
+      (kill-buffer buf))))
 
 (provide 'org-foresight-test)
 

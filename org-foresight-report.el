@@ -438,9 +438,6 @@ own rather than another step down a grey ramp.")
 Distinct from both the claimed hours and the empty ones, because it is
 neither -- and a day where the two are told apart is a day where the
 question \"can this move\" has an obvious answer.")
-(defface org-foresight-report-grey '((t :inherit font-lock-comment-face))
-  "Waking hours that are neither work nor a private commitment.")
-
 ;; The reserve's outline, set here rather than in its `defface' for the same
 ;; reason the badges' boxes are: `defface' does not touch a face that already
 ;; exists, so a spec written there is silently ignored on every reload after

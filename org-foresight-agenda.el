@@ -73,12 +73,31 @@ the clock."
   :group 'org-foresight-agenda)
 
 (defface org-foresight-agenda-derived '((t :inherit italic))
-  "Rows nobody wrote down: journeys, gaps, the edges of the working day.
+  "Rows nobody wrote down: journeys and the edges of the working day.
 
 Italic rather than a colour of its own, because the distinction is not what
 kind of time it is -- the category column says that -- but whether it exists
 in a file.  Nothing here can be edited where it appears, and the slant is the
 warning.")
+
+(defface org-foresight-agenda-free
+  '((t :inherit (org-foresight-report-spare italic)))
+  "A stretch of the day nothing has claimed.
+
+Derived like the rest, so it keeps the slant, but in the colour of room --
+the same blue the bar gives spare time and the gaps it is made of.  It is the
+one thing on the page worth growing, and a day is scanned for it.")
+
+(defface org-foresight-agenda-shared '((t :inherit shadow))
+  "The mark for work that shares its hour without competing for it.
+
+Grey, and deliberately not a colour.  The other marks are coloured because
+each carries a decision -- the overrun's colour says this has to move, the
+colour of room says here is somewhere it could go -- and a reader who has
+learnt two colours can afford to learn no more.  This mark exists to say
+there is nothing to decide, so it says it in the one shade that asks nothing
+of the reader's memory.  Bright enough to read, which is the whole of the
+requirement.")
 
 ;;;; Making an item
 
@@ -102,7 +121,7 @@ this file\'s business to make the ground under it firm.  Inherits the standard
 table, so every other character stays as the user has it.")
 
 (defun org-foresight-agenda--item (txt &optional category dotime face marker
-                                       stamp)
+                                       stamp mark)
   "Return TXT as an agenda item at DOTIME, or nil where TXT is empty.
 
 CATEGORY fills the agenda's category column; FACE, when given, is laid over
@@ -120,6 +139,8 @@ duration in \"free 2:15\" as the time of day."
                                            dotime))))
       (when face
         (add-face-text-property 0 (length item) face t item))
+      (when mark
+        (put-text-property 0 (length item) 'org-foresight-mark mark item))
       (org-foresight-report--actionable item marker stamp))))
 
 (defun org-foresight-agenda--hhmm (time)
@@ -145,6 +166,13 @@ no glyph for U+2715, U+2717 or U+2718, so each arrives from whatever font the
 fallback finds at whatever width that font uses, and the column behind it
 steps; U+00D7 is present but full width, which steps by a whole cell.")
 
+(defconst org-foresight-agenda-alongside "╰"
+  "The mark for work that happens at the same time and does not mind.
+
+A call you only have to hear, or somebody else\'s fixture: both sit in the
+day without competing for it, and a clash reported between them and real work
+is a clash nobody has to resolve.")
+
 (defvar org-foresight-agenda--marks nil
   "The marks the day last drawn actually used.
 
@@ -153,9 +181,24 @@ than tracked while building them, so it cannot drift from what is on the
 page.  One day\'s worth: the views that show a key show a single day.")
 
 (defconst org-foresight-agenda--mark-meanings
-  `((,org-foresight-agenda-wont-fit . "will not fit")
-    ("↳" . "would fit in the gap above"))
-  "What each mark means, in the order the key names them.")
+  `((,org-foresight-agenda-wont-fit "will not fit"
+     org-foresight-report-overcommitted)
+    ("↳" "would fit in the gap above" org-foresight-report-spare)
+    (,org-foresight-agenda-alongside "shares its time"
+     org-foresight-agenda-shared))
+  "Each mark: the glyph, what it means, and the face it is drawn in.
+
+The face lives here rather than at each use, so the key and the rows cannot
+disagree about what a mark looks like -- and they are not all one colour,
+because they are not all one kind of news: what will not fit takes the
+overrun\'s colour, what would fit takes the colour of room, and what merely
+shares the hour is quiet.")
+
+(defun org-foresight-agenda--mark (glyph)
+  "Return GLYPH in the face its meaning is drawn in."
+  (if-let ((entry (assoc glyph org-foresight-agenda--mark-meanings)))
+      (propertize glyph 'face (nth 2 entry))
+    glyph))
 
 (defun org-foresight-agenda-key ()
   "Return a line explaining the marks this agenda used, or nil for none.
@@ -166,10 +209,8 @@ way of saying nothing."
   (when-let ((used (seq-filter (lambda (m)
                                  (member (car m) org-foresight-agenda--marks))
                                org-foresight-agenda--mark-meanings)))
-    (mapconcat (pcase-lambda (`(,mark . ,meaning))
-                 (concat (propertize mark 'face
-                                     'org-foresight-report-overcommitted)
-                         " " meaning))
+    (mapconcat (pcase-lambda (`(,glyph ,meaning ,_))
+                 (concat (org-foresight-agenda--mark glyph) " " meaning))
                used "   ")))
 
 (add-to-list 'org-foresight-verdict-extras #'org-foresight-agenda-key t)
@@ -187,12 +228,7 @@ longer than it is."
      (when (eq (plist-get b :kind) 'travel)
        (let ((trimmed (plist-get b :trimmed)))
          (org-foresight-agenda--item
-          (concat (when trimmed
-                    (concat (propertize org-foresight-agenda-wont-fit
-                                        'face
-                                        'org-foresight-report-overcommitted)
-                            " "))
-                  (or (plist-get b :title) "→ ?"))
+          (or (plist-get b :title) "→ ?")
           "travel"
           ;; A journey that was squeezed is drawn at the length it needs, not
           ;; at what was left for it: fifteen minutes shown for a forty-five
@@ -205,7 +241,8 @@ longer than it is."
                                       (plist-get b :end))
           'org-foresight-agenda-derived
           (plist-get b :marker)
-          (plist-get b :stamp)))))
+          (plist-get b :stamp)
+          (and trimmed org-foresight-agenda-wont-fit)))))
    bands))
 
 (defun org-foresight-agenda--keep (cap)
@@ -252,17 +289,17 @@ the key you would have pressed anyway."
                                       (org-duration-from-minutes usable))
                               'face 'shadow)))
         "" (org-foresight-agenda--span start (plist-get b :end))
-        'org-foresight-agenda-derived nil nil)
+        'org-foresight-agenda-free nil nil)
        (seq-keep
         (lambda (e)
           (org-foresight-agenda--item
-           (concat "↳ " (org-foresight-report--grid-todo (plist-get e :marker))
+           (concat (org-foresight-report--grid-todo (plist-get e :marker))
                    (or (plist-get e :title) "?")
                    " "
                    (org-duration-from-minutes
                     (org-foresight-report--entry-minutes e)))
            (or (plist-get e :category) "")
-           at 'shadow (plist-get e :marker) nil))
+           at 'shadow (plist-get e :marker) nil "↳"))
         (if (natnump org-foresight-grid-suggest)
             (seq-take fits org-foresight-grid-suggest)
           fits))))))
@@ -294,18 +331,23 @@ work that escaped the day, which is the whole reason to draw them."
      (list (cons (car window) "work starts")
            (cons (cdr window) "work ends")))))
 
-(defun org-foresight-agenda--mark-wont-fit (list bands cap ledger)
-  "Return LIST with LEDGER's unplaceable work marked, given BANDS and CAP.
+(defun org-foresight-agenda--mark-rows (list bands cap ledger)
+  "Return LIST with LEDGER's entries marked, given BANDS and CAP.
 
-Whether a piece of work fits is a fact about the work and the day, not about
-any arrangement of them: if its estimate is longer than the largest gap there
-is, no ordering will find it a home.  So it can be said without placing
-anything, which is what keeps the choice of where things go entirely with the
-reader.
+Two marks, both facts about an entry that no arrangement of the day changes.
 
-The mark goes in the first column, which the agenda's prefix leaves blank.
-Appending it instead would put it past the tags and defeat
-`org-agenda-align-tags', which looks for them at the end of the line."
+Whether a piece of work fits: if its estimate is longer than the largest gap
+there is, no ordering will find it a home.  Saying so without placing
+anything is what keeps the choice of where things go with the reader.
+
+And whether it competes for its hour at all.  A call you only have to hear,
+or somebody else's fixture, sits in the day beside real work rather than
+against it -- so an overlap there is not a clash, and marking it stops the
+reader resolving one that was never there.
+
+The mark is recorded on the row rather than drawn into it, because where the
+marks go is a decision about the page as a whole and is taken once, by
+`org-foresight-agenda--place-marks', for every row at the same time."
   (let* ((keep (org-foresight-agenda--keep cap))
          (largest (* keep
                      (apply #'max 0.0
@@ -317,31 +359,111 @@ Appending it instead would put it past the tags and defeat
                                                     (plist-get b :start)))
                                     60.0)))
                              bands))))
-         (stuck (seq-keep
-                 (lambda (e)
-                   (and (eq (plist-get e :kind) 'promised)
-                        (markerp (plist-get e :marker))
-                        (> (org-foresight-report--entry-minutes e) largest)
-                        (cons (marker-buffer (plist-get e :marker))
-                              (marker-position (plist-get e :marker)))))
-                 ledger)))
-    (if (null stuck)
+         (marks (make-hash-table :test 'equal)))
+    (dolist (e ledger)
+      (when-let* ((m (plist-get e :marker))
+                  ((markerp m))
+                  (key (cons (marker-buffer m) (marker-position m)))
+                  (glyph
+                   (cond
+                    ((and (eq (plist-get e :kind) 'promised)
+                          (> (org-foresight-report--entry-minutes e) largest))
+                     org-foresight-agenda-wont-fit)
+                    ((memq (plist-get e :attention) '(background informational))
+                     org-foresight-agenda-alongside))))
+        ;; Not fitting is the louder of the two, so it is not overwritten by
+        ;; an entry that also happens to share its hour.
+        (unless (equal (gethash key marks) org-foresight-agenda-wont-fit)
+          (puthash key glyph marks))))
+    (if (zerop (hash-table-count marks))
         list
       (mapcar
        (lambda (item)
-         (let ((m (or (get-text-property 0 'org-hd-marker item)
-                      (get-text-property 0 'org-marker item))))
-           (if (and (markerp m)
-                    (member (cons (marker-buffer m) (marker-position m)) stuck)
-                    (> (length item) 0)
-                    (eq (aref item 0) ?\s))
+         (let* ((m (or (get-text-property 0 'org-hd-marker item)
+                       (get-text-property 0 'org-marker item)))
+                (glyph (and (markerp m)
+                            (gethash (cons (marker-buffer m)
+                                           (marker-position m))
+                                     marks))))
+           (if glyph
                (let ((marked (copy-sequence item)))
-                 (aset marked 0 (string-to-char org-foresight-agenda-wont-fit))
-                 (add-face-text-property
-                  0 1 'org-foresight-report-overcommitted t marked)
+                 (put-text-property 0 (length marked)
+                                    'org-foresight-mark glyph marked)
                  marked)
              item)))
        list))))
+
+(defun org-foresight-agenda--mark-column (list)
+  "Return the column the marks on LIST line up in, or nil if there is none.
+
+One column for every mark, so that a reader who has learnt where to look has
+learnt it for the whole page.  Which column is not a constant: it is read off
+the rows themselves, as the column the earliest heading begins at -- and that
+is where the time field ends, so the mark sits between the clock and the
+title it qualifies, to the left of `Scheduled:' and of the effort, rather
+than wandering right by however long a leader that row happened to need.
+
+`org-heading' is Org's own answer to where the prefix stops: it is laid over
+the heading text and nothing else, so the column it starts at is the one
+thing on a row that does not have to be counted out of a format string --
+which means a reader who rearranges `org-agenda-prefix-format' still gets a
+straight column.
+
+Only rows that carry a time are asked.  A conditional time field like
+`%?-12t' is dropped entirely from a row that has no time rather than padded,
+so an undated task's heading begins where a timed row is still in the middle
+of its clock; taking the earliest of all of them would put the whole page's
+marks inside the hour.  The timed rows are the grid, and the grid is what a
+day is scanned down."
+  (when-let ((heads (seq-keep
+                     (lambda (item)
+                       (and (get-text-property 0 'time-of-day item)
+                            (org-foresight-agenda--heading-column item)))
+                     list)))
+    (apply #'min heads)))
+
+(defun org-foresight-agenda--heading-column (item)
+  "Return the column ITEM's heading text begins at, or nil if it has none."
+  (if (get-text-property 0 'org-heading item)
+      0
+    (next-single-property-change 0 'org-heading item)))
+
+(defun org-foresight-agenda--place-marks (list)
+  "Return LIST with each row's recorded mark drawn into it.
+
+The mark and the space after it are inserted, not written over what is there.
+The only blank going spare at that column is the single space the time field
+pads out with, and spending it leaves the mark jammed against the clock on
+one side or the title on the other.
+
+Only a marked row is touched.  Widening every row to keep their titles in one
+column would buy an alignment the agenda has never had -- a leader, an
+effort, an undated task all move a title already -- and would pay for it with
+two dead columns on every row of every day that has a single mark.  What has
+to line up is the marks, and that is what the shared column is for.
+
+Appending the mark to the end of the row is not an option; it would land past
+the tags and defeat `org-agenda-align-tags', which looks for them there.  The
+face is applied without appending, because appended the row's own face would
+win the conflict and the mark would come out the colour of its row.  The
+inserted cell inherits the prefix's properties rather than the heading's,
+which keeps `org-heading' over the heading text and nothing else."
+  (let ((col (org-foresight-agenda--mark-column list)))
+    (mapcar
+     (lambda (item)
+       (if-let* ((glyph (get-text-property 0 'org-foresight-mark item))
+                 (own (org-foresight-agenda--heading-column item))
+                 (at (if col (min col own) own))
+                 (face (nth 2 (assoc glyph
+                                     org-foresight-agenda--mark-meanings)))
+                 (cell (concat glyph " ")))
+           (progn
+             (set-text-properties 0 2 (text-properties-at (max 0 (1- at)) item)
+                                  cell)
+             (add-face-text-property 0 1 face nil cell)
+             (concat (substring item 0 at) cell (substring item at)))
+         item))
+     list)))
 
 (defun org-foresight-agenda--augment (list day &optional scan)
   "Return LIST marked and extended with what foresight knows about DAY.
@@ -356,10 +478,11 @@ is what puts a gap above the candidates hanging off it."
          (idx (org-foresight--day-of day (plist-get scan :from)))
          (ledger (and (>= idx 0) (< idx (plist-get scan :days))
                       (aref (plist-get scan :ledger) idx)))
-         (all (append (org-foresight-agenda--mark-wont-fit list bands cap ledger)
-                      (org-foresight-agenda--edges cap)
-                      (org-foresight-agenda--travel bands)
-                      (org-foresight-agenda--gaps bands cap ledger))))
+         (all (org-foresight-agenda--place-marks
+               (append (org-foresight-agenda--mark-rows list bands cap ledger)
+                       (org-foresight-agenda--edges cap)
+                       (org-foresight-agenda--travel bands)
+                       (org-foresight-agenda--gaps bands cap ledger)))))
     ;; Read back off the finished rows rather than tracked while building
     ;; them: what the key has to explain is what ended up on the page, and
     ;; this cannot drift from it.  One day's worth -- the views that show a
@@ -411,6 +534,53 @@ so Org places them.  Anything done after the sort would have to reproduce
 
 (advice-add 'org-agenda-finalize-entries :filter-args
             #'org-foresight-agenda--inject)
+
+(defconst org-foresight-agenda-attentions
+  '(("blocking" . "needs all of you")
+    ("background" . "costs the hour but shares it")
+    ("informational" . "takes none of your time")
+    ("" . "whatever its category says"))
+  "The values `org-foresight-attention-property\' takes, and what each means.
+The empty string deletes the property, so the entry goes back to being
+whatever its category makes it.")
+
+;;;###autoload
+(defun org-foresight-set-attention (&optional attention)
+  "Set how much of the hour the entry at point demands.
+
+Occupying time and demanding all of it are different things, and a day that
+treats them alike reports clashes nobody has to resolve: a call you only have
+to hear can be heard on the way to somewhere else, and a child\'s fixture is
+a fact about the household rather than an hour of yours.
+
+Works from an agenda line as well as from the entry itself, and refreshes the
+view, so the day\'s arithmetic changes under the cursor rather than at the
+next redraw.  ATTENTION is one of `org-foresight-agenda-attentions\'; the
+empty string removes the property and lets the category decide again."
+  (interactive)
+  (let ((attention
+         (or attention
+             (completing-read
+              "Attention: "
+              (mapcar (lambda (kv)
+                        (format "%-14s %s" (car kv) (cdr kv)))
+                      org-foresight-agenda-attentions)
+              nil t)))
+        (marker (or (org-get-at-bol 'org-hd-marker)
+                    (org-get-at-bol 'org-marker)
+                    (and (derived-mode-p 'org-mode) (point-marker)))))
+    (setq attention (car (split-string attention)))
+    (unless marker (user-error "No entry here"))
+    (org-with-point-at marker
+      (org-back-to-heading t)
+      (if (or (null attention) (string-empty-p attention))
+          (org-entry-delete (point) org-foresight-attention-property)
+        (org-entry-put (point) org-foresight-attention-property attention)))
+    (org-foresight-report-refresh)
+    (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
+    (message "Attention: %s"
+             (if (string-empty-p (or attention ""))
+                 "by category" attention))))
 
 (provide 'org-foresight-agenda)
 
