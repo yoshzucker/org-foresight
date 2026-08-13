@@ -181,8 +181,8 @@ Thursday   13 August 2026
   outlook 15:45-16:30 Client review
   travel  16:15-17:30 ⨯ → home
           17:30...... work ends ──────────────
-  family  19:00-20:30 Dinner with the family
-⨯ reporti Scheduled:  6:00 NEXT Rewrite the annual report
+  family  19:00-20:30 ╰ Dinner with the family
+  reporti Scheduled:  6:00 ⨯ NEXT Rewrite the annual report
 
 [Spent] where the hours actually went
  Clocked 3:20 of 8:30 at the machine · 8 spells, longest 0:35 · vs 7d +12%
@@ -206,11 +206,11 @@ that is Org. Four things are not:
 | Row                | What it is                                        |
 |--------------------+---------------------------------------------------|
 | =→ office=         | a journey derived from where the day happens      |
-| =0:30 free=        | a stretch nothing has claimed, and what survives the reserve |
+| =0:30 free=        | a stretch nothing has claimed, in the colour of room |
 | =↳ NEXT …=         | promised work that would fit in the gap above it  |
 | =work starts ────= | the edge of the working day                       |
 
-Two marks, explained by a key under the bars — and only when the day used
+Three marks, explained by a key under the bars — and only when the day used
 them, because a key describing a clash on a day that has none is explaining a
 problem the reader does not have:
 
@@ -218,10 +218,26 @@ problem the reader does not have:
 |------+---------------------------------------------------------------|
 | =⨯=  | will not fit — a journey that cannot have the hours it needs, or work with no gap big enough to take it |
 | =↳=  | would fit in the gap above                                    |
+| =╰=  | shares its time — see [[*Not everything wants all of you]]             |
 
-One glyph for both, because they are the same news and the row says which is
-which: a journey carries it beside its arrow, undated work in the margin.
-U+2A2F rather than a ballot or multiplication cross — PlemolJP has no glyph
+Each is drawn in the colour of what it says, in the rows as in the key --
+except the last, which is drawn in no colour at all. The other two each carry
+a decision: the overrun's colour says this has to move, the colour of room
+says here is somewhere it could go. Sharing an hour asks for nothing, so it
+is grey, and a reader who has learnt two colours is not asked to learn a
+third.
+
+Every mark goes in one column: the one the grid's headings begin at, which is
+where the time field ends. That is left of a =Scheduled:= and left of an
+effort, so a mark stays beside the clock and the title it qualifies instead
+of wandering right by however long a particular row's leader happened to be.
+Undated work has no clock in its prefix at all — a conditional time field is
+dropped from such a row rather than padded — so it takes its own heading
+instead. Only marked rows are widened; what has to line up is the marks, not
+the titles, which a leader or an effort moves anyway.
+
+One glyph serves both kinds of not-fitting, because they are the same news
+and the row says which is which. U+2A2F rather than a ballot or multiplication cross — PlemolJP has no glyph
 for U+2715, U+2717 or U+2718, so each arrives from the fallback font at
 whatever width that font uses and the column behind it steps, and U+00D7 is
 present but full width, which steps by a whole cell.
@@ -440,6 +456,11 @@ them as one makes a full day look impossible.
 | (unset)         | yes            | no        | a meeting you run          |
 | =background=    | yes            | yes       | a call you only listen to  |
 | =informational= | no             | yes       | a child's fixture          |
+
+Both are marked =╰= in the agenda, so an overlap between one of them and real
+work reads as what it is rather than as a clash to be resolved.
+=M-x org-foresight-set-attention= sets it from the agenda line — the judgement
+is made while looking at the day, so it is made from there.
 
 A =background= entry keeps its hour but hangs beneath whatever else is
 happening then, so listening on the commute stops being reported as a day
