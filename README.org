@@ -70,15 +70,16 @@ records the value and loses the reason.
   (setq org-foresight-task-file (expand-file-name "journal.org" org-directory)
         org-foresight-day-file  (expand-file-name "journal.org" org-directory))
 
-  ;; Which applications count as what, in the names your desktop reports.
-  ;; The shipped default is English and generic on purpose -- window names are
-  ;; localised, and a work machine rarely agrees with a personal one about
-  ;; what counts as work.  A machine whose list you would rather not commit
-  ;; can set this in its `custom-file' instead.
-  (setq org-foresight-app-categories
-        '(("work"        . ("Emacs" "Code" "Terminal"))
-          ("comms"       . ("Mail" "Slack" "Teams"))
-          ("distraction" . ("Safari" "YouTube"))))
+  ;; Work that arrives rather than is planned carries `SURGE', and the value
+  ;; is when it arrived.  Nothing writes it for you -- add it to whatever
+  ;; captures an interruption, or use `M-x org-foresight-mark-surge'.
+  ;;
+  ;; (add-to-list
+  ;;  'org-capture-templates
+  ;;  `("i" "interrupt" entry (file+datetree my-journal)
+  ;;    ,(concat "* ONGO %?\n:PROPERTIES:\n:SURGE: %U\n:END:\n")
+  ;;    :clock-in t :clock-resume t)
+  ;;  t)
 
   (add-hook 'org-agenda-finalize-hook #'org-foresight-report-render))
 #+end_src
@@ -147,7 +148,8 @@ then occasionally:
 
 | Command                       | When                | What it corrects              |
 |-------------------------------+---------------------+-------------------------------|
-| =org-foresight-learn-surge= | weekly              | how much of a day interruptions take |
+| =org-foresight-learn-surge= | weekly              | how much of a day arriving work takes |
+| =org-foresight-learn-leak=  | weekly              | how much a day loses to the unrecorded |
 | =org-foresight-learn-bias=  | monthly             | how far estimates run over    |
 
 ** The daily loop
@@ -158,7 +160,7 @@ no file contains:
 #+begin_example
  Work 8:30 · OVER by 3:45 · ends 20:39 · est +1:27
  ↳ any one of Rewrite the annual re… 6:00→7:12 · Project review 1:30
-            █ booked 2:45  █ travel 2:00  █ promised 7:30  ▭ surge 1:00
+            █ booked 2:45  █ travel 2:00  █ promised 7:30  ▭ reserve 1:00
  Work  8:30 ████████████████████████████████████████┃██████████████████
  Off   7:00 ███████··························
             █ private 1:30  · unclaimed 5:30
@@ -197,7 +199,7 @@ Thursday   13 August 2026
  admin     0:30  DONE Reply to procurement           0:30 planned  100%
  engineer  0:20  NEXT Review the migration plan      no estimate
  ↳ leak 0:52 · Slack 0:20 · Mail 0:18 · Terminal 0:14
- ↳ lost 0:40 · Safari 0:28 · YouTube 0:12
+ ↳ lost 0:40 · away from the machine
 
 #+end_example
 
@@ -223,7 +225,7 @@ reading =work lands · 4:15 will not fit= — a quantity of work with nowhere
 left to go, counting the evening in, not an hour. The day the projection
 matters most is not the day to go silent on.
 
-Three marks, explained by a key under the bars — and only when the day used
+Four marks, explained by a key under the bars — and only when the day used
 them, because a key describing a clash on a day that has none is explaining a
 problem the reader does not have:
 
@@ -231,6 +233,7 @@ problem the reader does not have:
 |------+---------------------------------------------------------------|
 | =⨯=  | will not fit — a journey that cannot have the hours it needs, or work with no gap big enough to take it |
 | =↳=  | would fit in the gap above                                    |
+| =↯=  | arrived today — it landed on the day rather than was planned into it |
 | =╰=  | shares its time — see [[*Not everything wants all of you]]             |
 
 Each is drawn in the colour of what it says, in the rows as in the key --
@@ -380,7 +383,7 @@ Three shapes, and each says something the colour cannot.
 | Shape        | What it is                 | Segments                          |
 |--------------+----------------------------+-----------------------------------|
 | filled block | claimed                    | booked, travel, promised, private |
-| outline      | held open, holding nothing | surge                             |
+| outline      | held open, holding nothing | reserve                           |
 | dots         | not claimed at all         | spare, unclaimed, free            |
 
 Only the claimed hours need telling apart from each other, so only they spend
@@ -439,20 +442,22 @@ a multiplier for the ones that overran and a percentage for the rest would
 make two columns out of one, and leave the eye to work out which it was
 reading. The rows carry their entries' markers, so =RET= visits the task.
 
-*leak* and *lost* split the time spent at the machine with no clock running,
-by whether the application counts as work:
+*leak* and *lost* divide the time no clock accounts for, by whether you were
+at the keyboard:
 
 : ↳ leak 0:52 · Slack 0:20 · Mail 0:18 · Terminal 0:14
-: ↳ lost 0:40 · Safari 0:28 · YouTube 0:12
+: ↳ lost 0:40 · away from the machine
 
-The parts add up to the total — that is what makes the line worth reading
-rather than merely suggestive — and what will not fit is counted with =+N=
-rather than dropped. The split is drawn by
-=org-foresight-app-categories=, and it is the only place in the package where
-that setting changes a number rather than a label: *leak is exactly what
-=org-foresight-learn-surge= holds a reserve back for*, so the figure on
-screen is the figure that becomes tomorrow's reserve. Time away from the desk
-is neither — the sparkline's gaps already say so.
+=leak= is active and unrecorded: work that happened and went unwritten, or the
+small unnamed handling a day fills up with. =lost= is idle — away, or reading,
+or in a conversation, which input alone cannot tell apart.
+
+Not divided by application. What was on screen says nothing about whether the
+hour was work, and dividing by it only moves the guess somewhere harder to see.
+The applications are still named under =leak=, because what you were typing
+into while not recording it is worth seeing; under =lost= they are not, because
+you were not there. The parts add up to the total, and what will not fit is
+counted with =+N= rather than dropped.
 
 Without an =aw-watcher-afk= there is no record of when the machine was
 attended, only of when a window was in front. The day is then drawn from
@@ -525,8 +530,8 @@ time, some of it is spent getting somewhere, and the hours that belong to
 neither are not absent — they are private time that happens to be unclaimed.
 
 #+begin_example
- Work 8:30 · 1:15 left to promise · ends 16:45 · surge from 12 days · est +0:40
-            █ booked 2:45  █ travel 1:00  █ promised 2:30  ▭ surge 1:00
+ Work 8:30 · 1:15 left to promise · ends 16:45 · reserve 1:00 · est +0:40
+            █ booked 2:45  █ travel 1:00  █ promised 2:30  ▭ reserve 1:00
             · spare 1:15
  Work  8:30 ██████████████████████████████▭▭▭▭▭······
  Off   7:00 ███████··························
@@ -544,7 +549,7 @@ evening it leaves behind.
 | =travel=   | getting to and from them                            |
 | =private=  | life that falls inside working hours                |
 | =promised= | effort accepted without a time yet                  |
-| =surge=    | the reserve, for work that has not arrived          |
+| =reserve=  | held for arriving work, unrecorded time, and time away |
 | =spare=    | the span less all five — what may still be promised |
 
 The =Off= bar accounts for the rest of the waking day: =private= for
@@ -588,10 +593,30 @@ Two corrections are learned from history, because neither can be got by asking
 harder.
 
 *Interruptions* are not controllable, but their volume is stable and
-measurable. Time spent active at the machine with no clock running is work that
-was done but never planned. =M-x org-foresight-learn-surge= takes the median of
-that and subtracts it up front, so an interrupted day still ends on time. This
-needs [[https://activitywatch.net/][ActivityWatch]]; without it the reserve falls back to a configured constant.
+measurable — and they are measurable in Org alone. An entry carrying the
+=SURGE= property arrived rather than was planned, and the property's value is
+when it arrived. =M-x org-foresight-learn-surge= sums the minutes clocked
+against such work on the day it landed, takes the median over days, and holds
+that much back.
+
+Nothing writes the property for you: it comes from whatever captures an
+interruption on your machine, or from =M-x org-foresight-mark-surge= after the
+fact. It is read with inheritance, so a task broken out of an interruption is
+part of it without being marked again.
+
+Dating the mark is what makes it stop. Work that arrived on Monday and is
+still being done on Thursday is only unplanned on Monday: a date of its own on
+any later day means it has been taken in hand, and from then it is ordinary
+promised work. Without that, an interruption absorbed over three days would
+hold a reserve against work already on the calendar, and hold it three times
+over.
+
+*What a day loses* is the other half, and that one does need
+[[https://activitywatch.net/][ActivityWatch]]. =M-x org-foresight-learn-leak= measures the two ways a working
+day turns out shorter than the clock says — time at the keyboard that no clock
+accounted for, and time away from the machine — and holds those back too.
+Without the watcher both are zero, and the day is planned at the length it
+claims to have.
 
 *Estimates* are wrong in a consistent direction, and the evidence is already in
 the file: every finished task that carried an =EFFORT= and was clocked is one
@@ -711,7 +736,7 @@ but never given a place to happen — unscheduled tasks, and tasks scheduled for
 today with no time on them.
 
 #+begin_example
-free 5:45 · surge 1:00 · budget 4:45
+free 5:45 · reserve 1:00 · budget 4:45
 
   09:00–09:30   0:30  Prepare the board pack  [no estimate]
   09:45–11:45   2:00  Draft next quarter's objectives

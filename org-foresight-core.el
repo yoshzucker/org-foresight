@@ -43,41 +43,6 @@
   :group 'org
   :prefix "org-foresight-")
 
-;;;; Classification
-
-(defvar org-foresight-app-categories
-  '(("work" . ("Emacs" "Terminal" "iTerm2" "Ghostty" "Alacritty" "kitty"
-               "Code" "Xcode" "IntelliJ IDEA" "PyCharm" "Preview"))
-    ("comms" . ("Mail" "Outlook" "Calendar" "Slack" "Teams" "Zoom"
-                "Messages" "Discord"))
-    ("distraction" . ("Safari" "Chrome" "Firefox" "Edge" "YouTube"
-                      "Reddit" "X")))
-  "Alist (CATEGORY . (APP-NAME...)) saying which applications count as what.
-
-Matched case-insensitively against the AW window `app\' name; unmatched apps
-fall into `other\'.
-
-**Replace this.**  It is a short list of widely-known names in English, which
-is to say a starting point rather than anybody\'s actual desktop: window names
-are localised, and the same person\'s work machine and personal machine rarely
-agree about what counts as work.  Set it where machine-specific values belong
--- your own configuration, or `custom-file\' on a machine whose list you would
-rather not commit.
-
-It decides two things, and the second matters more than it looks.  The
-Observed table groups by it, and surge learning counts only `work\' and
-`comms\' leak as displaced work -- time lost to `distraction\' is not capacity
-a plan could have reclaimed, so counting it would inflate the reserve with
-hours no reserve can protect.")
-
-(defun org-foresight--app-category (app)
-  "Return the category of APP, or \"other\" when it matches nothing.
-Categories come from `org-foresight-app-categories'."
-  (let ((a (downcase (or app ""))))
-    (or (cl-loop for (cat . apps) in org-foresight-app-categories
-                 when (member a (mapcar #'downcase apps)) return cat)
-        "other")))
-
 ;;;; Interval algebra
 ;; Operations return intervals rather than totals, because callers need the
 ;; resulting spans themselves (to bin, to render, to place tasks into).
@@ -272,6 +237,25 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
             :intervals-byday intervals-byday))))
 
 ;;;; Day scan
+(defcustom org-foresight-surge-property "SURGE"
+  "Property marking work that arrived rather than was planned.
+
+Its value is when the work arrived.  One property carries both facts, and
+they cannot drift apart -- which matters because the second is what decides
+when the first stops applying: work that arrived on Monday and is still being
+done on Thursday is only surge on Monday, if by Thursday it has been given a
+date of its own.
+
+Read with inheritance, so a task broken out of an interruption is still part
+of that interruption without being marked again, and takes the arrival of the
+entry it came from.  The inheritance is asked for explicitly, so it does not
+depend on `org-use-property-inheritance\'.
+
+Nothing writes it for you: it comes from whatever captures an interruption on
+your machine, or from `org-foresight-mark-surge\' after the fact."
+  :type 'string
+  :group 'org-foresight)
+
 ;; What is already claimed.  One pass over the agenda files fills per-day
 ;; vectors, in the same spirit as `org-foresight-clock-scan': scan once, hand
 ;; the result to every consumer, so nobody disagrees about what today holds.
@@ -615,17 +599,26 @@ imported location is unhelpful can be corrected without editing the text."
   (let ((d (decode-time time)))
     (encode-time 0 0 0 (nth 3 d) (nth 4 d) (nth 5 d))))
 
-(defun org-foresight-scan (days &optional from)
+(defun org-foresight-scan (days &optional from now)
   "Survey what is already claimed over DAYS days starting at FROM (today).
+NOW, the current time by default, closes any clock still running; passing it
+makes the whole scan reproducible, which is what lets this be tested.
 Return a plist of DAYS-length vectors, index 0 = FROM:
 
   :busy       per day, the (START . END) stretches that are spoken for
-  :committed  per day, minutes of effort promised but not placed at a time
+  :committed  per day, minutes of effort promised, not placed at a time, and
+              not yet done -- what is left of it rather than what it began as
+  :surged     per day, minutes that work arriving that day has already taken,
+              finished or not: what the day\'s reserve for it has been spent on.
+              A `promised\' row that is part of it carries `:arrived\'
   :allday     per day, titles of all-day events
   :ledger     per day, what produced the above, entry by entry:
-              (:kind :title :marker :effort :start :end), where KIND is
-              `meeting' (no TODO keyword), `task' (placed at a time) or
-              `promised' (accepted but not yet placed)
+              (:kind :title :marker :effort :effort-adj :clocked :remaining
+              :start :end), where KIND is `meeting\' (no TODO keyword),
+              `task\' (placed at a time) or `promised\' (accepted but not yet
+              placed).  A promised row keeps all four figures: what was
+              estimated, what history says that really means, what has gone
+              into it, and what is therefore left
   :days :from as given
 
 The ledger is what lets a total be traced back to its parts.  A capacity
@@ -641,21 +634,48 @@ Entries in a done state are skipped: finished work makes no claim on the
 future.  Because `org-done-keywords' is consulted rather than a fixed list,
 a done-type keyword such as DELEG drops out too."
   (let* ((from (or from (org-foresight--day-start 0)))
+         (now (or now (current-time)))
          (from0 (org-foresight--midnight from))
          (to (time-add from0 (days-to-time days)))
          (busy (make-vector days nil))
          (committed (make-vector days 0.0))
+         (surged (make-vector days 0.0))
          (allday (make-vector days nil))
-         (ledger (make-vector days nil)))
+         (ledger (make-vector days nil))
+         ;; The day index an entry arrived on, when it arrived at all: read
+         ;; once per entry and carried into its ledger row, so a reader can
+         ;; be told which of the day's work landed on it.
+         arrived)
     (dolist (file (org-agenda-files))
       (when (file-exists-p file)
         (with-current-buffer (find-file-noselect file)
           (org-with-wide-buffer
            (org-map-entries
             (lambda ()
+              ;; Arriving work spends its day\'s reserve whether or not it is
+              ;; finished: the reserve is capacity held for it, and once it
+              ;; has landed the capacity is spoken for either way.  Read
+              ;; before the done check, which the rest of the scan makes --
+              ;; an interruption dealt with by lunch is still the reason the
+              ;; afternoon has less in it.
+              (setq arrived
+                    (when-let* ((_ (org-entry-get (point)
+                                                  org-foresight-surge-property t))
+                                (arrival (org-foresight--entry-arrival))
+                                (i (org-foresight--day-of arrival from0))
+                                ((<= 0 i))
+                                ((< i days))
+                                ((org-foresight--entry-surge-p arrival)))
+                      (aset surged i
+                            (+ (aref surged i)
+                               (if (org-entry-is-done-p)
+                                   (org-foresight--entry-clocked-minutes now)
+                                 (org-foresight--entry-remaining-minutes now))))
+                      i))
               (unless (org-entry-is-done-p)
                 (let* ((todo (org-get-todo-state))
                        (effort (org-foresight--entry-effort-minutes))
+                       (clocked (org-foresight--entry-clocked-minutes now))
                        (title (org-get-heading t t t t))
                        (marker (point-marker))
                        (location (org-entry-get (point) "LOCATION"))
@@ -665,6 +685,19 @@ a done-type keyword such as DELEG drops out too."
                        ;; day index -> the kind of claim seen there, so one
                        ;; entry cannot be charged twice for the same day
                        (seen (make-hash-table :test 'eql)))
+                  ;; Work that arrived today is today\'s work, dated or not.
+                  ;; An interruption is captured without a date -- there was
+                  ;; no deciding where to put it -- and it would otherwise
+                  ;; land on no day at all: spending the reserve held for it
+                  ;; while never being counted as the thing that spent it.
+                  ;; Charged to the day it arrived, through the same path an
+                  ;; undated SCHEDULED takes.
+                  (when-let* (((org-foresight--entry-surge-p))
+                              (arrival (org-foresight--entry-arrival))
+                              (idx (org-foresight--day-of arrival from0))
+                              ((<= 0 idx))
+                              ((< idx days)))
+                    (puthash idx 'untimed seen))
                   (dolist (el (org-foresight--entry-timestamps))
                     (dolist (occ (org-foresight--ts-occurrences el from0 to))
                       (let ((idx (org-foresight--day-of (car occ) from0)))
@@ -712,17 +745,22 @@ a done-type keyword such as DELEG drops out too."
                                         :category category)
                                   (aref ledger idx))))))))
                   ;; Charge untimed effort only where nothing timed was found.
-                  ;; The adjusted figure is what capacity spends, but both are
-                  ;; kept: the ledger shows the estimate beside what it is
-                  ;; being treated as, so the correction is never invisible.
+                  ;; What capacity spends is what is *left*: the corrected
+                  ;; estimate less the hours already in it.  All three figures
+                  ;; are kept, because a row that shows only the last of them
+                  ;; can say neither what was estimated nor what it cost.
                   (maphash (lambda (idx kind)
                              (when (eq kind 'untimed)
-                               (let ((adj (* effort (org-foresight-bias-factor
-                                                     category effort))))
-                                 (aset committed idx (+ (aref committed idx) adj))
+                               (let* ((adj (* effort (org-foresight-bias-factor
+                                                      category effort)))
+                                      (left (max 0.0 (- adj clocked))))
+                                 (aset committed idx (+ (aref committed idx) left))
                                  (push (list :kind 'promised :title title
                                              :marker marker :effort effort
                                              :effort-adj adj
+                                             :clocked clocked
+                                             :remaining left
+                                             :arrived (eq idx arrived)
                                              :start nil :end nil
                                              :place place :location location
                                              :category category)
@@ -752,7 +790,8 @@ a done-type keyword such as DELEG drops out too."
                       (cond ((and sa sb) (time-less-p sa sb))
                             (sa t)
                             (t nil)))))))
-    (list :busy busy :committed committed :allday allday :ledger ledger
+    (list :busy busy :committed committed :surged surged
+          :allday allday :ledger ledger
           :days days :from from0)))
 
 ;;;; The day
@@ -1053,10 +1092,18 @@ dentist appointment lives where every other appointment lives."
 ;; that has not arrived yet.  Whatever is left is what may still be promised.
 
 (defcustom org-foresight-surge-default "1:00"
-  "Reserve held back for unplanned work before anything has been learned.
-Also the fallback wherever ActivityWatch history is unavailable, so a machine
-without it still plans with a buffer rather than with none."
+  "Reserve held back for work that has not arrived, before any is learned.
+A day planned to the minute has nowhere to put the first interruption, so a
+machine with no history still plans with a buffer rather than with none."
   :type 'string
+  :group 'org-foresight)
+
+(defcustom org-foresight-surge-window 20
+  "How many days back `org-foresight-learn-surge\' looks.
+Only days that produced a sample contribute one: a day nothing arrived on is
+a day with no evidence either way, and counting it as zero would let a quiet
+fortnight argue that interruptions have stopped."
+  :type 'integer
   :group 'org-foresight)
 
 (defcustom org-foresight-surge-cache-file
@@ -1066,6 +1113,51 @@ Derived, machine-local data: the measurement it comes from is this machine's
 own activity history, and it is cheap to recompute."
   :type 'file
   :group 'org-foresight)
+
+(defcustom org-foresight-leak-cache-file
+  (locate-user-emacs-file "org-foresight-leak.eld")
+  "Where the learned leak and lost budgets are cached.
+Derived, machine-local data: the measurement comes from this machine\'s own
+activity history, and it is cheap to recompute."
+  :type 'file
+  :group 'org-foresight)
+
+(defcustom org-foresight-leak-default "0:00"
+  "Leak assumed per working day before any has been measured.
+
+Zero, because leak is the one term here that no plan can be built without
+evidence for.  A guessed reserve for unrecorded time would shrink every day
+on the strength of nothing, and the honest failure is the day that runs long
+for a reason the tool can then name."
+  :type 'string
+  :group 'org-foresight)
+
+(defcustom org-foresight-lost-default "0:00"
+  "Time away from the machine assumed per working day, before any is measured."
+  :type 'string
+  :group 'org-foresight)
+
+(defun org-foresight--leak-data ()
+  "Return the cached leak and lost budgets as a plist, or nil for none."
+  (ignore-errors
+    (when (file-readable-p org-foresight-leak-cache-file)
+      (with-temp-buffer
+        (insert-file-contents org-foresight-leak-cache-file)
+        (read (current-buffer))))))
+
+(defun org-foresight-leak-minutes ()
+  "Return the leak to expect over a whole working day, in minutes."
+  (or (plist-get (org-foresight--leak-data) :leak)
+      (org-duration-to-minutes org-foresight-leak-default)))
+
+(defun org-foresight-lost-minutes ()
+  "Return the time away from the machine to expect over a working day."
+  (or (plist-get (org-foresight--leak-data) :lost)
+      (org-duration-to-minutes org-foresight-lost-default)))
+
+(defun org-foresight-leak-samples ()
+  "Return how many days the leak budgets were learned from, or nil."
+  (plist-get (org-foresight--leak-data) :samples))
 
 (defun org-foresight--hhmm-on (day hhmm)
   "Return the time on DAY at HHMM, a \"HH:MM\" string."
@@ -1082,16 +1174,80 @@ own hours is honoured everywhere the window is consulted -- capacity, the
 forward load and placement all follow the same answer."
   (plist-get (org-foresight-day-shape day) :work))
 
+(defun org-foresight--surge-data ()
+  "Return the cached surge reserve as a plist, or nil when there is none.
+
+A file written before the reserve meant arriving work is not read.  It held
+the median of time at the machine with no clock running, which is a
+measurement of recording, not of demand -- carrying it forward would keep
+planning around the wrong quantity under the right name."
+  (ignore-errors
+    (when (file-readable-p org-foresight-surge-cache-file)
+      (with-temp-buffer
+        (insert-file-contents org-foresight-surge-cache-file)
+        (let ((data (read (current-buffer))))
+          (and (plist-get data :version) data))))))
+
 (defun org-foresight-surge-minutes ()
-  "Return the reserve to hold back for unplanned work, in minutes.
-Reads what `org-foresight-learn-surge' cached; falls back to
-`org-foresight-surge-default' when nothing has been learned yet."
-  (or (ignore-errors
-        (when (file-readable-p org-foresight-surge-cache-file)
-          (with-temp-buffer
-            (insert-file-contents org-foresight-surge-cache-file)
-            (plist-get (read (current-buffer)) :minutes))))
+  "Return the reserve to hold back for work that has not arrived, in minutes.
+Reads what `org-foresight-learn-surge\' cached; falls back to
+`org-foresight-surge-default\' when nothing has been learned yet."
+  (or (plist-get (org-foresight--surge-data) :minutes)
       (org-duration-to-minutes org-foresight-surge-default)))
+
+;;;###autoload
+(defun org-foresight-learn-surge (&optional days)
+  "Learn how much of a day arriving work takes, and cache it.
+
+Reads only Org.  Every entry marked with `org-foresight-surge-property\'
+carries the day it arrived; the minutes clocked against it on that day are
+what the interruption actually cost.  Summed per day and taken at the median
+over working days, that is the reserve -- and it needs no ActivityWatch, so a
+machine where the watcher is not running still plans with one.
+
+The median rather than the mean: one afternoon that went entirely to somebody
+else should not become the reserve every ordinary day is planned around."
+  (interactive)
+  (let* ((days (or days org-foresight-surge-window))
+         (per-day (make-hash-table :test 'equal))
+         (now (current-time)))
+    (dolist (file (org-agenda-files))
+      (when (file-exists-p file)
+        (with-current-buffer (find-file-noselect file)
+          (org-with-wide-buffer
+           (org-map-entries
+            (lambda ()
+              (when (org-entry-get (point) org-foresight-surge-property t)
+                (when-let* ((arrival (org-foresight--entry-arrival))
+                            (idx (org-foresight--day-of arrival
+                                                        (org-foresight--day-start
+                                                         (1- days))))
+                            ((<= 0 idx))
+                            ((< idx days))
+                            ((org-foresight--entry-surge-p arrival)))
+                  (let ((key (format-time-string "%Y-%m-%d" arrival)))
+                    (puthash key
+                             (+ (gethash key per-day 0.0)
+                                (org-foresight--entry-clocked-minutes now))
+                             per-day)))))
+            nil nil)))))
+    (let (samples)
+      (maphash (lambda (_ mins) (push mins samples)) per-day)
+      (if (null samples)
+          (user-error
+           "No work marked with `%s\' in the last %d days; is the capture wired up?"
+           org-foresight-surge-property days)
+        (let ((median (org-foresight--median samples)))
+          (with-temp-file org-foresight-surge-cache-file
+            (prin1 (list :version 2
+                         :minutes median
+                         :samples (length samples)
+                         :window days
+                         :updated (format-time-string "%Y-%m-%d"))
+                   (current-buffer)))
+          (message "Arriving work takes %s on a day it arrives, from %d day(s)"
+                   (org-duration-from-minutes median) (length samples))
+          median)))))
 
 ;;;; Estimate bias
 ;; Estimates are systematically wrong, and always in the same direction for
@@ -1300,11 +1456,18 @@ cannot leave the entry it came from."
           (buffer-substring-no-properties start end)
         ""))))
 
-(defun org-foresight--entry-clocked-minutes ()
-  "Return the minutes clocked against the entry at point, its own only."
+(defun org-foresight--entry-clocked-minutes (&optional now)
+  "Return the minutes clocked against the entry at point, its own only.
+
+A clock still running has no end stamp; it is closed at NOW (the current time
+by default) so that time spent on the task right now counts as spent.  Left
+out, a task being worked on would keep its full estimate against the day
+until the moment it was clocked out of -- which is exactly the stretch during
+which the day most needs to be right."
   (let ((text (org-foresight--entry-text))
+        (now (or now (current-time)))
         (re (concat "^[ \t]*" org-clock-string
-                    "[ \t]*\\(\\[[^]\n]+\\]\\)--\\(\\[[^]\n]+\\]\\)"))
+                    "[ \t]*\\(\\[[^]\n]+\\]\\)\\(?:--\\(\\[[^]\n]+\\]\\)\\)?"))
         (pos 0)
         (total 0.0))
     (while (string-match re text pos)
@@ -1314,10 +1477,96 @@ cannot leave the entry it came from."
             (e-str (match-string 2 text)))
         (setq pos (match-end 0))
         (let ((s (org-time-string-to-time s-str))
-              (e (org-time-string-to-time e-str)))
+              (e (if e-str (org-time-string-to-time e-str) now)))
           (when (time-less-p s e)
             (setq total (+ total (/ (float-time (time-subtract e s)) 60.0)))))))
     total))
+
+(defun org-foresight--entry-arrival ()
+  "Return when the entry at point arrived, or nil when nothing says.
+
+Three sources, in falling order of directness:
+
+1. the value of `org-foresight-surge-property\', if it parses as a time --
+   written by whatever captured the interruption, so it is the moment itself
+2. the earliest state-change timestamp in the entry\'s log
+3. the start of its earliest clock
+
+The second takes the earliest rather than the first line.  The order inside a
+log drawer is not reliable -- `org-log-states-order-reversed\' governs what is
+written next, not what is already there, and a file that has lived through a
+change of that setting has drawers in both orders.  A timestamp is a fact; a
+position in a drawer is not.
+
+The property is read with inheritance, so a task broken out of an
+interruption is dated by the interruption rather than by itself.  The other
+two are the entry\'s own, which is right for an entry that carries its own
+mark and the best that can be had for one that does not."
+  (or (org-foresight--parse-stamp
+       (org-entry-get (point) org-foresight-surge-property t))
+      (org-foresight--entry-earliest "^[ \t]*- State \"[^\"]*\"[ \t]*from[^[\n]*\\(\\[[^]\n]+\\]\\)")
+      (org-foresight--entry-earliest
+       (concat "^[ \t]*" org-clock-string "[ \t]*\\(\\[[^]\n]+\\]\\)"))))
+
+(defun org-foresight--parse-stamp (text)
+  "Return the time TEXT names, or nil when it names none."
+  (when (and text (string-match "\\[[^]\n]+\\]\\|<[^>\n]+>" text))
+    (ignore-errors (org-time-string-to-time (match-string 0 text)))))
+
+(defun org-foresight--entry-earliest (regexp)
+  "Return the earliest time REGEXP\'s first group finds in the entry at point.
+
+Every match is read before any is compared, because the drawer\'s order says
+nothing about the timestamps\' order."
+  (let ((text (org-foresight--entry-text))
+        (pos 0)
+        best)
+    (while (string-match regexp text pos)
+      (let ((stamp (match-string 1 text)))
+        (setq pos (match-end 0))
+        (when-let ((time (ignore-errors (org-time-string-to-time stamp))))
+          (when (or (null best) (time-less-p time best))
+            (setq best time)))))
+    best))
+
+(defun org-foresight--entry-surge-p (&optional day)
+  "Non-nil when the entry at point is work that arrived rather than was planned.
+
+Marked (or descended from something marked) with
+`org-foresight-surge-property\', and not since given a date of its own.  A
+SCHEDULED on the day it arrived is not a plan -- it is where the capture put
+it -- so it still counts; a SCHEDULED on any other day means the work has
+been taken in hand, and from then it is ordinary promised work.
+
+That is the whole point of dating the mark: an interruption absorbed over
+three days should show as unplanned load on the first day only.  Leaving it
+as surge for all three would hold a reserve against work already on the
+calendar, and hold it three times over.
+
+DAY, when given, asks whether it was surge *on that day* rather than at all."
+  (when (org-entry-get (point) org-foresight-surge-property t)
+    (let ((arrival (org-foresight--entry-arrival))
+          (sched (org-get-scheduled-time (point))))
+      (and arrival
+           (or (null day) (= 0 (org-foresight--day-of day arrival)))
+           (or (null sched)
+               (= 0 (org-foresight--day-of sched arrival)))))))
+
+(defun org-foresight--entry-remaining-minutes (&optional now)
+  "Return what the entry at point still needs, in minutes.
+
+The corrected estimate less what has already gone into it.  A day\'s capacity
+is a question about what is left, and an entry half done that still weighs
+its full estimate is the same error as an estimate that was never corrected --
+it makes the afternoon look impossible on the strength of the morning.
+
+Zero once the clock has passed the estimate.  That the work is not finished
+is then a fact about the estimate rather than about the day, and the estimate
+correction is where it belongs."
+  (let* ((raw (org-foresight--entry-effort-minutes))
+         (adj (* raw (org-foresight-bias-factor
+                      (org-entry-get (point) "CATEGORY" t) raw))))
+    (max 0.0 (- adj (org-foresight--entry-clocked-minutes now)))))
 
 ;;;###autoload
 (defun org-foresight-learn-bias (&optional days)
@@ -1504,11 +1753,7 @@ should not become the reserve every ordinary day is planned around."
 
 (defun org-foresight-surge-samples ()
   "Return how many days the cached surge reserve was learned from, or nil."
-  (ignore-errors
-    (when (file-readable-p org-foresight-surge-cache-file)
-      (with-temp-buffer
-        (insert-file-contents org-foresight-surge-cache-file)
-        (plist-get (read (current-buffer)) :samples)))))
+  (plist-get (org-foresight--surge-data) :samples))
 
 (defun org-foresight--window-remaining (window now)
   "Return the part of WINDOW that has not already elapsed at NOW.
@@ -1573,6 +1818,30 @@ can argue with."
         (setq total (+ total (- (plist-get e :effort-adj)
                                 (or (plist-get e :effort) 0.0))))))))
 
+(defun org-foresight--surge-left (scan idx ahead)
+  "Return the reserve still held for work that has not arrived, in minutes.
+
+Two ceilings, and the lower one wins.
+
+The first is what the day\'s allowance has left in it.  Work that has arrived
+is no longer hypothetical: it is an entry with an estimate, counted in what
+the day owes.  Holding the whole reserve beside it would put the same hours
+in the day twice.
+
+The second is what could still arrive.  AHEAD is the fraction of the working
+window still to come, and an allowance for a whole day cannot land in the
+half hour that is left of one.
+
+Both are ceilings on the same quantity, so neither is subtracted from the
+other -- the answer is simply the smaller.  It is a different question from
+the one leak asks: leak is a rate, and what has already leaked says nothing
+about what the rest of the day will."
+  (let* ((budget (org-foresight-surge-minutes))
+         (spent (if (and (>= idx 0) (< idx (plist-get scan :days)))
+                    (aref (plist-get scan :surged) idx)
+                  0.0)))
+    (max 0.0 (min (- budget spent) (* budget ahead)))))
+
 (defun org-foresight-capacity (day &optional scan now)
   "Return a plist describing how much of DAY may still be promised.
 
@@ -1582,10 +1851,13 @@ Within the work span, these divide it exactly:
   :booked-min meetings and work already placed at a time
   :travel-min getting to and from them
   :private-min-in-span  life that happens to fall in working hours
-  :committed-min  effort promised for DAY but not placed at a time
+  :committed-min  effort still owed on work promised for DAY but not placed
   :bias-min   how much of `:committed-min' is the estimate correction
-  :surge-min  reserve held back for work that has not arrived
-  :spare-min  what survives all five -- negative means overcommitted
+  :surge-min  what is still held for work that has not arrived
+  :leak-min   what is still expected to go unrecorded
+  :lost-min   what is still expected to go away from the machine
+  :reserve-min  the three of them together
+  :spare-min  what survives all of it -- negative means overcommitted
 
 Outside it, these divide the rest of the waking day:
 
@@ -1599,10 +1871,23 @@ And what is left of today, as opposed to what the day was shaped like:
 
   :free       stretches nothing has claimed yet, from NOW onwards
   :free-min   minutes in those stretches
-  :headroom-min   `:free-min' less what is promised and reserved
-  :finish     when the commitment runs out inside the working day, or nil
-  :lands      when it runs out at all, evening included, or nil for not today
+  :needed-min `:committed-min' plus `:reserve-min' -- the wall clock the rest
+              of the day has to find
+  :headroom-min   `:free-min' less `:needed-min'
+  :lands      when the day's work runs out, evening included, or nil when it
+              does not fit in today at all.  A day with nothing owed still
+              lands -- at once -- and it is for the caller to decide that
+              saying so is not worth a line
   :overflow-min   what will not fit in today at all, zero when it all does
+
+These five close over the remaining working day, by construction:
+
+  :free-min = :committed-min + :surge-min + :leak-min + :lost-min
+              + :headroom-min
+
+which is what lets an overrun be read as a list of terms rather than as a
+verdict.  Every one of them is measured from NOW, so they answer what is
+still true rather than what the morning looked like.
 
 The two groups answer different questions and must not be mixed: the first
 describes the day that was planned, the second what can still be promised.
@@ -1610,7 +1895,7 @@ describes the day that was planned, the second what can still be promised.
 NOW defaults to the current time; passing it makes the whole calculation
 reproducible, which is what lets this be tested at all."
   (let* ((now (or now (current-time)))
-         (scan (or scan (org-foresight-scan 1 day)))
+         (scan (or scan (org-foresight-scan 1 day now)))
          (idx (org-foresight--day-of day (plist-get scan :from)))
          (window (org-foresight-workday-window day))
          (span (if window
@@ -1623,7 +1908,22 @@ reproducible, which is what lets this be tested at all."
                         (aref (plist-get scan :committed) idx)
                       0.0))
          (bias (org-foresight--bias-minutes scan idx))
-         (surge (org-foresight-surge-minutes))
+         ;; What is left of the day to be interrupted in.  Every reserve is a
+         ;; claim about the hours still ahead, so each is measured against
+         ;; them rather than against the whole span -- which is what stops a
+         ;; full day's allowance being held against the last half hour of it.
+         (rest (if window
+                   (/ (org-foresight--intervals-seconds
+                       (let ((r (org-foresight--window-remaining window now)))
+                         (and r (list r))))
+                      60.0)
+                 0.0))
+         (ahead (if (> span 0) (min 1.0 (/ rest span)) 0.0))
+         (surge (org-foresight--surge-left scan idx ahead))
+         (leak (* (org-foresight-leak-minutes) ahead))
+         (lost (* (org-foresight-lost-minutes) ahead))
+         (reserve (+ surge leak lost))
+         (needed (+ committed reserve))
          (waking (org-foresight-waking-free-intervals day scan now))
          (bands (org-foresight-day-blocks day scan))
          (awake (plist-get (org-foresight-day-shape day) :awake))
@@ -1663,11 +1963,14 @@ reproducible, which is what lets this be tested at all."
           :committed-min committed
           :bias-min bias
           :surge-min surge
-          :spare-min (- span booked travel private-in committed surge)
-          :headroom-min (- free-min committed surge)
-          :finish (org-foresight--pour free (+ committed surge))
-          :lands (org-foresight--pour waking (+ committed surge))
-          :overflow-min (max 0.0 (- (+ committed surge)
+          :leak-min leak
+          :lost-min lost
+          :reserve-min reserve
+          :needed-min needed
+          :spare-min (- span booked travel private-in committed reserve)
+          :headroom-min (- free-min needed)
+          :lands (org-foresight--pour waking needed)
+          :overflow-min (max 0.0 (- needed
                                     (/ (org-foresight--intervals-seconds waking)
                                        60.0)))
           :off-min (- (/ (float-time (time-subtract (cdr awake) (car awake)))
@@ -1680,13 +1983,15 @@ reproducible, which is what lets this be tested at all."
 
 (defun org-foresight--pour (intervals minutes)
   "Return the time at which MINUTES of work poured into INTERVALS runs out.
-Returns nil when it does not fit, which is the honest answer to \"when am I
-done\" on a day that is already overcommitted."
+
+Nothing to pour runs out immediately -- at the start of the first stretch
+there is, which is when you would already be finished.  Nil is kept for the
+one thing it should mean: that it does not fit at all."
   (let ((left (* 60.0 minutes))
         (result nil))
     (catch 'done
       (when (<= left 0)
-        (throw 'done (car (car intervals))))
+        (throw 'done (setq result (car (car intervals)))))
       (dolist (iv intervals)
         (let ((span (float-time (time-subtract (cdr iv) (car iv)))))
           (if (<= left span)

@@ -44,6 +44,15 @@ taller than the line it sits on -- 1300 units against a 1175-unit line in
 PlemolJP, since the glyph is designed to tile a screen without seams -- so
 a column of these reads as one mass rather than as separate bars.")
 
+(defconst org-foresight-report-dot ?·
+  "The character emptiness is drawn with: U+00B7, the middle dot.
+
+Named once because it appears in two places that must not drift -- the spare
+and unclaimed stretches of the bars, and the half hours the machine saw
+nothing in.  They are the same statement about the same kind of absence, and
+two characters that look alike but are not is the sort of difference nobody
+can name and everybody can see.")
+
 (defconst org-foresight-report--partials [?▏ ?▎ ?▍ ?▌ ?▋ ?▊ ?▉]
   "Blocks filling 1/8 to 7/8 of a cell, for a run's last, partial cell.
 These share `org-foresight-block' box exactly, and nothing follows them in a
@@ -110,9 +119,9 @@ Unlike `org-foresight-bar-chars' (horizontal fill, for table bars), these stack
 from the baseline so per-cell height encodes intensity — a real sparkline.")
 
 (defun org-foresight-report--spark-char (frac)
-  "Return the glyph for FRAC (0.0-1.0), or ?· when FRAC is zero or less.
+  "Return the glyph for FRAC (0.0-1.0), or the dot when FRAC is zero or less.
 Glyphs are taken from `org-foresight-report--spark-chars'."
-  (if (<= frac 0.0) ?·
+  (if (<= frac 0.0) org-foresight-report-dot
     (let ((n (1- (length org-foresight-report--spark-chars))))
       (aref org-foresight-report--spark-chars (max 0 (min n (round (* frac n))))))))
 
@@ -129,14 +138,29 @@ half-hour).  Each cell is normalized by the fixed 30-minute (1800s) bin length."
                    (org-foresight-report--bin-frac binned i))))
     out))
 
+(defface org-foresight-report-empty '((t :inherit shadow))
+  "A stretch the machine saw nothing in, on a bar or in a sparkline.
+
+Named once and used everywhere emptiness is drawn, so the same absence looks
+the same wherever it is met.  Before it existed the sparkline\'s blank bins
+fell through to the face for clocked, active time -- bold and green, for the
+one thing that had not happened -- and the same dot in the capacity bar was
+neither, which is how two identical characters came to look like different
+sizes."
+  :group 'org-foresight)
+
 (defun org-foresight-report--dominant-face (ca cf ua uf i)
   "Face for half-hour bin I: whichever of CA/CF/UA/UF (clocked×active/afk
-48-vectors from `org-foresight-observe-coverage') has the most seconds there."
+48-vectors from `org-foresight-observe-coverage\') has the most seconds there.
+
+A bin with nothing in it takes the face for emptiness rather than the first
+of the four: nothing happened, and saying it in the colour of focused work is
+saying the opposite."
   (let ((best-v (aref ca i)) (best-f 'org-foresight-report-clocked-active))
     (when (> (aref cf i) best-v) (setq best-v (aref cf i) best-f 'org-foresight-report-clocked-afk))
     (when (> (aref ua i) best-v) (setq best-v (aref ua i) best-f 'org-foresight-report-unclocked-active))
-    (when (> (aref uf i) best-v) (setq best-f 'org-foresight-report-unclocked-afk))
-    best-f))
+    (when (> (aref uf i) best-v) (setq best-v (aref uf i) best-f 'org-foresight-report-unclocked-afk))
+    (if (<= best-v 0) 'org-foresight-report-empty best-f)))
 
 (defun org-foresight-report--sparkline-colored (binned ca cf ua uf)
   "Like `org-foresight-report--sparkline', but each cell is also colored.
@@ -314,11 +338,11 @@ in three places meant nobody could see the answer.  CLOCK is the plist from
                               (org-duration-from-minutes
                                (/ (plist-get cov :leak-sec) 60.0)))
                       (plist-get cov :leak-apps)))
-            (and cov (org-foresight-report--spent-apps
-                      (format "↳ lost %s · "
+            (and cov (propertize
+                      (format "↳ lost %s · away from the machine"
                               (org-duration-from-minutes
                                (/ (plist-get cov :lost-sec) 60.0)))
-                      (plist-get cov :lost-apps)))
+                      'face 'shadow))
             (unless (or tasks aw)
               (propertize "(nothing clocked, and ActivityWatch is not running)"
                           'face 'shadow))))
@@ -519,20 +543,22 @@ question \"can this move\" has an obvious answer.")
   :group 'org-foresight)
 
 (defvar org-foresight-report--bar-segments
-  '((:key :booked-min    :face org-foresight-report-booked   :label "booked")
+  `((:key :booked-min    :face org-foresight-report-booked   :label "booked")
     (:key :travel-min    :face org-foresight-report-travel   :label "travel")
     (:key :private-min-in-span :face org-foresight-report-private
           :label "private")
     (:key :committed-min :face org-foresight-report-promised :label "promised")
-    (:key :surge-min     :face org-foresight-report-surge    :label "surge"
+    (:key :reserve-min   :face org-foresight-report-surge    :label "reserve"
           :glyph ?\s)
     (:key :spare-min     :face org-foresight-report-spare    :label "spare"
-          :glyph ?·))
+          :glyph ,org-foresight-report-dot))
   "The bar's segments in order, each a plist of plist-key, face, label and glyph.
 
 They divide the work span exactly: booked and travel are the hours already
-spoken for, promised the effort accepted without a time, surge the reserve,
-and spare whatever survives all four.  The words are the ones the grid below
+spoken for, promised what is still owed on effort accepted without a time,
+reserve what is held for the three ways the rest of the day goes elsewhere
+-- work arriving, time unrecorded, time away from the desk -- and spare
+whatever survives all four.  The words are the ones the grid below
 uses for the same things, so the two blocks can be read as one account.
 
 Claimed time is drawn in full blocks and told apart by colour.  Spare is
@@ -542,10 +568,10 @@ that a coloured block, however pale, does not.  Nothing is lost by it, since
 a horizontal bar carries its quantity in length rather than in ink.")
 
 (defvar org-foresight-report--off-segments
-  '((:key :private-min  :face org-foresight-report-private  :label "private")
+  `((:key :private-min  :face org-foresight-report-private  :label "private")
     (:key :borrowed-min :face org-foresight-report-travel   :label "borrowed")
     (:key :unclaimed-min :face org-foresight-report-spare   :label "unclaimed"
-          :glyph ?·))
+          :glyph ,org-foresight-report-dot))
   "Segments of the second bar, dividing the waking day outside the work span.
 
 `unclaimed' rather than `free': the grid uses `free' for work time nothing
@@ -576,6 +602,19 @@ would otherwise run off the end of it."
   :type 'integer
   :group 'org-foresight)
 
+(defun org-foresight-report--glyph-face (seg)
+  "Return the face SEG\'s glyph is drawn in.
+
+A segment drawn in dots is drawn in the same dots as an empty half hour of
+the sparkline: the weight comes from `org-foresight-report-empty\' and the
+colour from the segment, so identical characters look identical wherever they
+are met while still saying what they mean.  Order matters -- the segment is
+first, so its foreground wins and only the weight is inherited."
+  (let ((face (plist-get seg :face)))
+    (if (eq (plist-get seg :glyph) org-foresight-report-dot)
+        (list face 'org-foresight-report-empty)
+      face)))
+
 (defun org-foresight-report--draw-bar (cap segments per-column &optional limit)
   "Return SEGMENTS of CAP drawn at PER-COLUMN minutes to the column.
 
@@ -594,7 +633,7 @@ figure above says it anyway."
                                (make-string (max 0 n)
                                             (or (plist-get seg :glyph)
                                                 org-foresight-block))
-                               'face (plist-get seg :face))))))
+                               'face (org-foresight-report--glyph-face seg))))))
     (when (and limit (> total limit))
       (let ((mark (round (/ limit per-column))))
         (when (< mark (length bar))
@@ -664,7 +703,8 @@ being what it is -- a list of what the colours mean."
                      (when (> mins 0)
                        (concat (propertize (string (or (plist-get seg :glyph)
                                                        org-foresight-block))
-                                           'face (plist-get seg :face))
+                                           'face (org-foresight-report--glyph-face
+                                                  seg))
                                " " (plist-get seg :label) " "
                                (org-duration-from-minutes mins)))))
                  segments))
@@ -704,8 +744,7 @@ left, what has been promised away, and the hour the day actually ends."
         ;; past six does not stop having an end, and "will not fit" was
         ;; refusing to name one on exactly the days it mattered most.  Nil is
         ;; kept for what it now honestly means -- not today at all.
-        (finish (plist-get cap :lands))
-        (samples (org-foresight-surge-samples)))
+        (finish (plist-get cap :lands)))
     (concat
      (format "Work %s" (org-duration-from-minutes (plist-get cap :span-min)))
      (if (>= headroom 0)
@@ -713,24 +752,32 @@ left, what has been promised away, and the hour the day actually ends."
        (propertize
         (format " · OVER by %s" (org-duration-from-minutes (- headroom)))
         'face 'org-foresight-report-overcommitted))
-     (if finish
-         (let ((late (and (plist-get cap :window)
-                          (time-less-p (cdr (plist-get cap :window)) finish))))
-           (propertize (format " · ends %s" (format-time-string "%H:%M" finish))
-                       'face (if late 'org-foresight-report-overcommitted
-                               'default)))
-       (propertize " · not today" 'face 'org-foresight-report-overcommitted))
-     (when samples (format " · surge from %d day(s)" samples))
-     ;; Shown whenever it is doing anything, so a day that has shrunk reads as
-     ;; "my estimates are optimistic" rather than "the tool is being harsh".
-     ;; In minutes rather than as a multiplier: the correction is a curve now,
-     ;; so there is no single multiple to name, and what the reader can act on
-     ;; is the time it cost -- in the same unit as the headroom beside it.
-     (let ((bias (or (plist-get cap :bias-min) 0.0)))
-       (if (>= (abs bias) org-foresight-bias-visible-minutes)
-           (format " · est %s%s" (if (> bias 0) "+" "−")
-                   (org-duration-from-minutes (abs bias)))
-         "")))))
+     ;; A day with nothing owed has nothing to land; naming an hour for it
+     ;; would be answering a question nobody asked.
+     (cond
+      ((<= (or (plist-get cap :committed-min) 0.0) 0) "")
+      (finish
+       (let ((late (and (plist-get cap :window)
+                        (time-less-p (cdr (plist-get cap :window)) finish))))
+         (propertize (format " · ends %s" (format-time-string "%H:%M" finish))
+                     'face (if late 'org-foresight-report-overcommitted
+                             'default))))
+      (t (propertize " · not today"
+                     'face 'org-foresight-report-overcommitted)))
+     ;; What the day is holding back, and why it is smaller than it looks.
+     ;; Both in minutes, in the same unit as the headroom beside them: a
+     ;; multiplier cannot be compared with an hour, and these are the two
+     ;; terms that decide whether the hour is there.
+     (let ((reserve (or (plist-get cap :reserve-min) 0.0))
+           (bias (or (plist-get cap :bias-min) 0.0)))
+       (concat
+        (when (>= reserve 1.0)
+          (format " · reserve %s" (org-duration-from-minutes reserve)))
+        ;; Shown whenever it is doing anything, so a day that has shrunk reads
+        ;; as "my estimates are optimistic" rather than "the tool is harsh".
+        (when (>= (abs bias) org-foresight-bias-visible-minutes)
+          (format " · est %s%s" (if (> bias 0) "+" "−")
+                  (org-duration-from-minutes (abs bias)))))))))
 
 (defun org-foresight-report--bars (cap)
   "Return CAP's two bars with a legend above the first and below the second.
@@ -767,7 +814,18 @@ not have to go looking for is a number you will not look at."
          (idx (org-foresight--day-of day (plist-get scan :from)))
          (ledger (and (>= idx 0) (< idx (plist-get scan :days))
                       (aref (plist-get scan :ledger) idx))))
-    (when (plist-get cap :window)
+    (cond
+     ;; A day with no working hours has no capacity to divide, but it can
+     ;; still have work dated to it -- and that is exactly the day worth
+     ;; saying so on.  One line, because there is no span to draw and nothing
+     ;; to offer: what is true is that the work exists and the day was not
+     ;; meant for it.  A genuinely free day says nothing at all.
+     ((null (plist-get cap :window))
+      (when (> (plist-get cap :committed-min) 0)
+        (org-foresight-report--indent
+         (concat (org-foresight-report--rest-day cap)
+                 (org-foresight-report--verdict-extras)))))
+     (t
       (org-foresight-report--indent
        (concat (org-foresight-report--verdict cap)
                ;; Directly under the overflow, because the number and the way
@@ -779,7 +837,21 @@ not have to go looking for is a number you will not look at."
                  (concat "\n" frees))
                (when-let ((bars (org-foresight-report--bars cap)))
                  (concat "\n" bars))
-               (org-foresight-report--verdict-extras))))))
+               (org-foresight-report--verdict-extras)))))))
+
+(defun org-foresight-report--rest-day (cap)
+  "Return the one line a day with no working hours has to say, from CAP.
+
+What is owed, and when doing it would finish.  Not what may still be promised
+-- nothing may, and the answer to a day off is not a smaller number but the
+observation that work is dated to it at all."
+  (concat
+   (propertize "Not a working day" 'face 'org-foresight-report-overcommitted)
+   (format " · %s promised"
+           (org-duration-from-minutes (plist-get cap :committed-min)))
+   (if-let ((lands (plist-get cap :lands)))
+       (format " · ends %s" (format-time-string "%H:%M" lands))
+     (propertize " · not today" 'face 'org-foresight-report-overcommitted))))
 
 (defconst org-foresight-report-margin " "
   "The column every line but a badge starts at.
@@ -869,17 +941,23 @@ answers to \"can this move\"."
   :group 'org-foresight)
 
 (defun org-foresight-report--entry-minutes (e)
-  "Return how many minutes ledger entry E costs the day.
-The adjusted estimate where there is one, since that is what capacity spends."
-  (or (plist-get e :effort-adj) (plist-get e :effort) 0))
+  "Return how many minutes ledger entry E still costs the day.
+
+What is left of it, which is what capacity spends: the corrected estimate
+less the hours already in it.  A row that answers with the whole estimate
+after half the work is done is answering a question about this morning."
+  (or (plist-get e :remaining) (plist-get e :effort-adj) (plist-get e :effort) 0))
 
 (defun org-foresight-report--effort-run (e)
   "Return what ledger entry E costs, saying so when that is not what it said.
 
-Written \"2:00→2:48\" where the correction is doing real work, and as the
-plain figure where it is not.  The estimate stays on the left because that is
-the number in the file and the one being questioned; the arrow is the
-learning, and it points at what the day is actually being planned around."
+Written \"2:00→2:48\" where the two differ enough to matter, and as the plain
+figure where they do not.  The estimate stays on the left because that is the
+number in the file; the right is what the day is actually being planned
+around.  Two things move it: the correction history applies to the estimate,
+and the hours already spent on the task.  The row does not separate them --
+it only promises that the left is what was written and the right is what is
+being used."
   (let ((drift (org-foresight-report--effort-drift e)))
     (if drift
         (concat (org-duration-from-minutes (plist-get e :effort)) drift)
@@ -1227,11 +1305,18 @@ a signal and acting on it is not interrupted by the display jumping."
                      "none")))
      (cons "surge"
            (if-let ((n (org-foresight-surge-samples)))
-               (format "%s (learned from %d day(s))"
+               (format "%s/day of arriving work (learned from %d day(s))"
                        (org-duration-from-minutes (org-foresight-surge-minutes))
                        n)
              (format "%s (default, never learned)"
                      (org-duration-from-minutes (org-foresight-surge-minutes)))))
+     (cons "leak"
+           (if-let ((n (org-foresight-leak-samples)))
+               (format "%s unrecorded, %s away, per day (from %d day(s))"
+                       (org-duration-from-minutes (org-foresight-leak-minutes))
+                       (org-duration-from-minutes (org-foresight-lost-minutes))
+                       n)
+             "not measured (no ActivityWatch history)"))
      (cons "estimates"
            (if bias
                (concat (org-foresight-bias-summary bias)
@@ -1268,7 +1353,12 @@ is what lets a whole feature quietly not run."
                     (length unplaced) (length timed))
             out))
     (unless (org-foresight-surge-samples)
-      (push "run `org-foresight-learn-surge' to measure the reserve" out))
+      (push (format
+             "run `org-foresight-learn-surge' to measure arriving work; it reads the `%s' property, which something has to write"
+             org-foresight-surge-property)
+            out))
+    (unless (org-foresight-leak-samples)
+      (push "run `org-foresight-learn-leak' to measure what a day loses" out))
     (let ((bias (org-foresight--bias-data)))
       (cond
        ((null bias)

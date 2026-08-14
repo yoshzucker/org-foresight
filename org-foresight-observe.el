@@ -195,28 +195,6 @@ time order rather than in whatever order they arrived."
             (aset v bin (1+ (aref v bin)))))
         (setq prev app)))))
 
-(defun org-foresight-observe--split-leak (window-events unclocked)
-  "Return (LEAK-APPS . LOST-APPS) for UNCLOCKED time, from WINDOW-EVENTS.
-
-Time at the machine with no clock running is of two kinds, and they call for
-different answers: work that simply went unrecorded, and time that went
-somewhere else entirely.  The first is capacity a plan could have kept -- it
-is what `org-foresight-learn-surge' holds back a reserve for -- and the
-second is not, so counting them together would inflate the reserve with hours
-no reserve can protect.
-
-`org-foresight-app-categories' is what draws the line, and this is the only
-place in the package where that setting changes a number rather than a label."
-  (let ((by-app (org-foresight-observe--sum-by window-events unclocked 'app)))
-    (cons (seq-remove (lambda (kv)
-                        (equal (org-foresight--app-category (car kv))
-                               "distraction"))
-                      by-app)
-          (seq-filter (lambda (kv)
-                        (equal (org-foresight--app-category (car kv))
-                               "distraction"))
-                      by-app))))
-
 (defun org-foresight-observe--app-seconds (apps)
   "Total seconds in APPS, an alist of (NAME . SECONDS)."
   (apply #'+ 0.0 (mapcar #'cdr apps)))
@@ -301,14 +279,14 @@ Reuses `org-foresight-observe-today' (a single cached fetch) and the
 :today-intervals of CLOCK, the plist from `org-foresight-clock-scan'.
 Keys:
 :active-sec :clocked-sec  totals (seconds)
-:leak-sec :lost-sec  unclocked time at the machine, split by whether the
-   application counts as work: leak is what a plan could have kept and is
-   what surge learns from, lost is what went elsewhere.  Each equals the sum
-   of its own app alist below
+:leak-sec :lost-sec  unclocked time, split by whether you were at the
+   keyboard: leak is active and unrecorded, lost is idle -- away, reading, or
+   in a conversation, which input alone cannot tell apart
 :ca :cf :ua :uf  48-vectors (active sec per half-hour) for
    clocked-active / clocked-afk / unclocked-active / unclocked-afk
-:leak-apps :lost-apps  ALIST (APP . SEC) desc over the unclocked-active
-   window, partitioned the same way."
+:leak-apps  ALIST (APP . SEC) desc over the leak.  Named, not classified:
+   what was on screen while you typed is worth seeing, and what was on it
+   while you were away is not."
   (let ((data (org-foresight-observe-today)))
     (when data
       (let ((first (plist-get data :first))
@@ -327,37 +305,23 @@ Keys:
                  (cf (org-foresight--intervals-intersect clocked afk))
                  (ua (org-foresight--intervals-subtract active clocked))
                  (uf (org-foresight--intervals-subtract afk clocked))
-                 (split (org-foresight-observe--split-leak win ua))
-                 (leak-apps (car split))
-                 (lost-apps (cdr split)))
+                 (leak-apps (org-foresight-observe--sum-by win ua 'app)))
             (list :active-sec (org-foresight--intervals-seconds active)
                   :clocked-sec (org-foresight--intervals-seconds clocked)
-                  ;; Exactly what `org-foresight-observe-day-leak' measures for
-                  ;; a past day, so the number on screen is the number that
-                  ;; becomes the reserve.  Time away from the desk is neither
-                  ;; leak nor lost -- it is absence, and the sparkline's gaps
-                  ;; already say so.
-                  :leak-sec (org-foresight-observe--app-seconds leak-apps)
-                  :lost-sec (org-foresight-observe--app-seconds lost-apps)
+                  ;; Exactly what `org-foresight-observe-day-split' measures
+                  ;; for a past day, so the number on screen is the number the
+                  ;; budget is learned from.  The division is by whether you
+                  ;; were at the keyboard, not by what was on it.
+                  :leak-sec (org-foresight--intervals-seconds ua)
+                  :lost-sec (org-foresight--intervals-seconds uf)
                   :ca (org-foresight-observe--binned ca)
                   :cf (org-foresight-observe--binned cf)
                   :ua (org-foresight-observe--binned ua)
                   :uf (org-foresight-observe--binned uf)
                   :leak-apps leak-apps
-                  :lost-apps lost-apps)))))))
+                  )))))))
 
 ;;;; Learning the surge reserve
-;; Interruptions cannot be scheduled, but their volume can be measured.  Time
-;; spent active at the machine with no clock running is work that happened and
-;; was never planned; taking the median of that over recent working days gives
-;; a reserve to hold back, so a day that gets interrupted still ends on time.
-
-(defcustom org-foresight-surge-window 20
-  "How many days back `org-foresight-learn-surge' looks.
-Only working days within the window contribute a sample."
-  :type 'integer
-  :group 'org-foresight)
-
 (defun org-foresight-observe--day-range (offset)
   "Return (START . END) ISO8601 strings covering the day OFFSET days back."
   (let* ((start (org-foresight--day-start offset))
@@ -365,67 +329,79 @@ Only working days within the window contribute a sample."
     (cons (format-time-string "%Y-%m-%dT%H:%M:%S%:z" start)
           (format-time-string "%Y-%m-%dT%H:%M:%S%:z" end))))
 
-(defun org-foresight-observe-day-leak (offset clocked)
-  "Return minutes of unplanned work on the day OFFSET days back, or nil.
+(defun org-foresight-observe-day-split (offset clocked)
+  "Return (LEAK . LOST) minutes for the day OFFSET days back, or nil.
 
-Unplanned work is time ActivityWatch saw as active while CLOCKED (that day's
-org clock intervals) was not running.  Only `work' and `comms' applications
-count: time lost to `distraction' is not capacity a plan could have reclaimed,
-so counting it would inflate the reserve and shrink every future day for no
-reason.
+The day\'s time at the machine that no clock accounts for, divided by whether
+you were at the keyboard:
+
+  leak  active and unclocked -- work that happened and went unrecorded, or
+        the small unnamed handling a day fills up with
+  lost  idle and unclocked -- away from the machine, or reading, or in a
+        conversation.  Which of those it was cannot be told from input alone
+
+Not divided by application.  What was on screen says nothing about whether
+the time was work, and dividing by it only moves the guess somewhere harder
+to see.
 
 Returns nil when ActivityWatch has nothing for that day, which a caller must
 treat as \"no sample\" rather than as zero -- a day the server was simply not
 running is not evidence of a quiet day."
   (let* ((rng (org-foresight-observe--day-range offset))
          (buckets (org-foresight-observe--get-json "/buckets/"))
-         (wb (org-foresight-observe--find-bucket buckets "aw-watcher-window"))
          (ab (org-foresight-observe--find-bucket buckets "aw-watcher-afk")))
-    (when (and wb ab)
-      (let* ((win (org-foresight-observe--events wb (car rng) (cdr rng)))
-             (afk-ev (org-foresight-observe--events ab (car rng) (cdr rng)))
-             (active (org-foresight-observe--status-intervals afk-ev "not-afk")))
-        (when active
-          (let ((unclocked (org-foresight--intervals-subtract active clocked)))
-            (/ (org-foresight-observe--app-seconds
-                (car (org-foresight-observe--split-leak win unclocked)))
-               60.0)))))))
+    (when ab
+      (let* ((afk-ev (org-foresight-observe--events ab (car rng) (cdr rng)))
+             (active (org-foresight-observe--status-intervals afk-ev "not-afk"))
+             (idle (org-foresight-observe--status-intervals afk-ev "afk")))
+        (when (or active idle)
+          (cons (/ (org-foresight--intervals-seconds
+                    (org-foresight--intervals-subtract active clocked))
+                   60.0)
+                (/ (org-foresight--intervals-seconds
+                    (org-foresight--intervals-subtract idle clocked))
+                   60.0)))))))
 
 ;;;###autoload
-(defun org-foresight-learn-surge (&optional days)
-  "Learn the surge reserve from the last DAYS days and cache the result.
+(defun org-foresight-learn-leak (&optional days)
+  "Learn the daily leak and lost budgets from the last DAYS days.
 
 Deliberately a command rather than something the agenda does on its own: it
 makes one HTTP request per day examined, which is far too slow to sit on
-`org-agenda-finalize-hook'.  The agenda only ever reads the cache this writes.
+`org-agenda-finalize-hook\'.  The agenda only ever reads the cache this
+writes.
 
-The reserve conflates genuine interruptions with forgotten clock-ins.  Both
-consume the day, so both belong in a figure meant to answer \"how much can I
-still promise\" -- but it does mean better clocking discipline will shrink the
-reserve over time, which is the correct direction."
+Neither figure is a reserve for work.  They are the two ways a working day
+turns out shorter than the clock says it is, and knowing their size is what
+lets the day be planned at the length it really has."
   (interactive)
   (let* ((days (or days org-foresight-surge-window))
          (clock (org-foresight-clock-scan days))
          (ivs (plist-get clock :intervals-byday))
-         samples)
+         leaks losts)
     (dotimes (i days)
       ;; index 0 of the clock scan is the oldest day in the window
       (let* ((offset (- days 1 i))
              (day (org-foresight--day-start offset)))
         (when (memq (nth 6 (decode-time day)) org-foresight-workdays)
-          (when-let ((leak (org-foresight-observe-day-leak offset (aref ivs i))))
-            (push leak samples)))))
-    (if (null samples)
+          (when-let ((split (org-foresight-observe-day-split offset (aref ivs i))))
+            (push (car split) leaks)
+            (push (cdr split) losts)))))
+    (if (null leaks)
         (user-error "No ActivityWatch history to learn from (is it running?)")
-      (let ((median (org-foresight--median samples)))
-        (with-temp-file org-foresight-surge-cache-file
-          (prin1 (list :minutes median
-                       :samples (length samples)
+      (let ((leak (org-foresight--median leaks))
+            (lost (org-foresight--median losts)))
+        (with-temp-file org-foresight-leak-cache-file
+          (prin1 (list :leak leak :lost lost
+                       :samples (length leaks)
+                       :window days
                        :updated (format-time-string "%Y-%m-%d"))
                  (current-buffer)))
-        (message "Surge reserve: %s from %d working day(s)"
-                 (org-duration-from-minutes median) (length samples))
-        median))))
+        (message "A working day leaks %s and is away %s, from %d day(s)"
+                 (org-duration-from-minutes leak)
+                 (org-duration-from-minutes lost)
+                 (length leaks))
+        (cons leak lost)))))
 
 (provide 'org-foresight-observe)
 
