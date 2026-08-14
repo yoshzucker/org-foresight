@@ -95,9 +95,13 @@ count is a slowing day even when each item looks reasonable."
   :group 'org-foresight)
 
 (defcustom org-foresight-leak-warn 90
-  "Minutes of learned surge above which the reserve itself is a problem.
-Surge is measured from time worked without a clock running; left alone it
-grows, and every future day is planned with that much less in it."
+  "Minutes of daily leak above which the leak itself is the problem.
+
+Leak is time at the keyboard with no clock running: work that happened and
+went unrecorded, or the small unnamed handling a day fills with.  Left alone
+it grows, and every future day is planned with that much less in it -- so
+past a point the answer is not a bigger allowance but a look at where the
+hour goes."
   :type 'integer
   :group 'org-foresight)
 
@@ -398,7 +402,12 @@ harder at it will help.  Worth saying before anything else on the board."
 Measured from NOW, the current time by default: a two-hour job does not fit
 in a day with ninety minutes left of it, whatever the morning looked like."
   (let* ((today (org-foresight--day-start 0))
-         (free (org-foresight-free-intervals today scan now))
+         ;; A day with no working hours has no gap to measure against, so
+         ;; every piece of work would be called out and the list would say
+         ;; nothing.  That the day was not meant for work is one fact about
+         ;; the day, and the verdict states it there.
+         (window (org-foresight-workday-window today))
+         (free (and window (org-foresight-free-intervals today scan now)))
          (longest (if free
                       (/ (apply #'max
                                 (mapcar (lambda (iv)
@@ -408,7 +417,7 @@ in a day with ninety minutes left of it, whatever the morning looked like."
                          60.0)
                     0.0))
          out)
-    (dolist (e (aref (plist-get scan :ledger) 0))
+    (dolist (e (and window (aref (plist-get scan :ledger) 0)))
       (when (and (eq (plist-get e :kind) 'promised)
                  (> (or (plist-get e :effort-adj) (plist-get e :effort)) longest))
         (push (list :file nil :point nil
@@ -437,16 +446,16 @@ in a day with ninety minutes left of it, whatever the morning looked like."
                                 (org-duration-from-minutes total) days))))))
 
 (defun org-foresight--leak-findings ()
-  "Return a finding when the learned reserve has grown past what is tolerable.
+  "Return a finding when the measured leak has grown past what is tolerable.
 
 Reads only the cached figure -- signals are computed while an agenda is being
 drawn, and reaching for the network there would stall the display."
-  (let ((surge (org-foresight-surge-minutes)))
-    (when (and (org-foresight-surge-samples) (> surge org-foresight-leak-warn))
+  (let ((leak (org-foresight-leak-minutes)))
+    (when (and (org-foresight-leak-samples) (> leak org-foresight-leak-warn))
       (list (list :file nil :point nil :marker nil
                   :title "Time worked without a clock"
-                  :note (format "%s/day is being reserved"
-                                (org-duration-from-minutes surge)))))))
+                  :note (format "%s/day goes unrecorded"
+                                (org-duration-from-minutes leak)))))))
 
 ;;;; Forward load
 
@@ -1008,14 +1017,14 @@ one, \\`C-c C-c' writes the rest."
          (scan (org-foresight-scan 1 day))
          (cap (org-foresight-capacity day scan))
          (free (plist-get cap :free))
-         (budget (- (plist-get cap :free-min) (plist-get cap :surge-min))))
+         (budget (- (plist-get cap :free-min) (plist-get cap :reserve-min))))
     (cond
      ((null (plist-get cap :window))
       (message "Not a working day"))
      ((<= budget 0)
       (message "No headroom today: %s free, %s reserved for interruptions"
                (org-duration-from-minutes (plist-get cap :free-min))
-               (org-duration-from-minutes (plist-get cap :surge-min))))
+               (org-duration-from-minutes (plist-get cap :reserve-min))))
      (t
       (pcase-let* ((candidates (org-foresight--candidates day))
                    (`(,placed . ,skipped)

@@ -228,6 +228,16 @@ example of every situation the signals look for."
      ":PROPERTIES:\n:EFFORT:   2:00\n:CATEGORY: engineering\n:END:\n"
      ":LOGBOOK:\n" (org-foresight-demo--clock 0 15 45 16 40) "\n:END:\n"
 
+     ;; --- today: work that arrived rather than was planned ---------------
+     ;; Marked with its arrival, no date of its own, and clocked from the
+     ;; moment it landed: what an interruption captured as one looks like.
+     ;; This is what `org-foresight-learn-surge\' reads, and what spends the
+     ;; day\'s reserve for work that has not arrived.
+     "**** ONGO Unblock the release for the field team\n"
+     ":PROPERTIES:\n:SURGE:    " (org-foresight-demo--inactive 0 11 40) "\n"
+     ":EFFORT:   0:45\n:CATEGORY: engineering\n:END:\n"
+     ":LOGBOOK:\n" (org-foresight-demo--clock 0 11 40 12 0) "\n:END:\n"
+
      ;; --- the signals ----------------------------------------------------
      ;; Kept moving: four reschedules, written the way org-log-reschedule does.
      ;; Deadlines on promised work: which of these can be pushed to another
@@ -385,8 +395,10 @@ filed, meetings prepared, entries rescheduled -- is undone by regenerating."
   "Point the agenda at generated demo data instead of the real files.
 
 Switching on regenerates the data, redirects `org-agenda-files' and the file
-generated tasks are written to, and drops any cached surge reserve so the
-figures come from the demo alone.  Switching off puts all of it back.
+generated tasks are written to, drops any learned figures so they come from
+the demo alone, and makes today a working day whatever day it is -- the data
+describes a full day of work, and on a Saturday that would be a day that
+cannot happen.  Switching off puts all of it back.
 
 The redirection is the point: experimenting against real files would leave
 invented clock entries in the history that every later average is computed
@@ -400,7 +412,9 @@ from, and there is no undo for that."
               (list :agenda-files (bound-and-true-p org-agenda-files)
                     :task-file (bound-and-true-p org-foresight-task-file)
                     :day-file (bound-and-true-p org-foresight-day-file)
+                    :workdays org-foresight-workdays
                     :surge-cache org-foresight-surge-cache-file
+                    :leak-cache org-foresight-leak-cache-file
                     :bias-cache org-foresight-bias-cache-file))
         (org-foresight-demo-regenerate)
         (setq org-agenda-files (org-foresight-demo-files))
@@ -409,10 +423,20 @@ from, and there is no undo for that."
             (setq org-foresight-task-file tasks))
           (when (boundp 'org-foresight-day-file)
             (setq org-foresight-day-file tasks)))
-        ;; Learned figures are redirected too: a reserve or a multiplier taken
-        ;; from real history would describe a different life than the demo's.
+        ;; Every day is a working day while the demo is on.  The data is
+        ;; written relative to today and describes a full day of work, so on a
+        ;; Saturday it would show a day that cannot happen: no window, no
+        ;; capacity, nothing that fits.  What is being demonstrated is the
+        ;; day, not the calendar.  Set after the files are generated, so the
+        ;; dates in them still land on real working days.
+        (setq org-foresight-workdays '(0 1 2 3 4 5 6))
+        ;; Learned figures are redirected too: a reserve, a leak or a
+        ;; multiplier taken from real history would describe a different life
+        ;; than the demo's.
         (setq org-foresight-surge-cache-file
               (expand-file-name "surge.eld" org-foresight-demo-directory)
+              org-foresight-leak-cache-file
+              (expand-file-name "leak.eld" org-foresight-demo-directory)
               org-foresight-bias-cache-file
               (expand-file-name "bias.eld" org-foresight-demo-directory))
         (setq org-foresight--shape-cache nil
@@ -426,8 +450,12 @@ from, and there is no undo for that."
     (when (boundp 'org-foresight-day-file)
       (setq org-foresight-day-file
             (plist-get org-foresight-demo--saved :day-file)))
+    (setq org-foresight-workdays
+          (plist-get org-foresight-demo--saved :workdays))
     (setq org-foresight-surge-cache-file
           (plist-get org-foresight-demo--saved :surge-cache)
+          org-foresight-leak-cache-file
+          (plist-get org-foresight-demo--saved :leak-cache)
           org-foresight-bias-cache-file
           (plist-get org-foresight-demo--saved :bias-cache))
     (setq org-foresight--shape-cache nil

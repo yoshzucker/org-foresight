@@ -88,6 +88,14 @@ Derived like the rest, so it keeps the slant, but in the colour of room --
 the same blue the bar gives spare time and the gaps it is made of.  It is the
 one thing on the page worth growing, and a day is scanned for it.")
 
+(defface org-foresight-agenda-arrival '((t :inherit shadow))
+  "The mark for work that arrived rather than was planned.
+
+Grey, like the mark for shared time and for the same reason: it reports where
+a row came from, not what to do about it.  The shape carries the difference,
+and a reader who has learnt the two coloured marks is not asked to learn a
+third colour for a fact that decides nothing on its own.")
+
 (defface org-foresight-agenda-shared '((t :inherit shadow))
   "The mark for work that shares its hour without competing for it.
 
@@ -166,6 +174,18 @@ no glyph for U+2715, U+2717 or U+2718, so each arrives from whatever font the
 fallback finds at whatever width that font uses, and the column behind it
 steps; U+00D7 is present but full width, which steps by a whole cell.")
 
+(defconst org-foresight-agenda-arrived "↯"
+  "The mark for work that landed on the day rather than was planned into it.
+
+Its own glyph because it answers a question the others do not: not whether
+this fits or clashes, but why it is here at all.  On a day that will not
+close, which of the work was chosen and which arrived is the first thing
+worth knowing -- what arrived is what the reserve was held for, and what
+went unplanned is rarely what should be defended.
+
+U+21AF, an arrow struck downwards: it came down on the day.  One cell wide in
+PlemolJP, which the mark column depends on.")
+
 (defconst org-foresight-agenda-alongside "╰"
   "The mark for work that happens at the same time and does not mind.
 
@@ -184,6 +204,8 @@ page.  One day\'s worth: the views that show a key show a single day.")
   `((,org-foresight-agenda-wont-fit "will not fit"
      org-foresight-report-overcommitted)
     ("↳" "would fit in the gap above" org-foresight-report-spare)
+    (,org-foresight-agenda-arrived "arrived today"
+     org-foresight-agenda-arrival)
     (,org-foresight-agenda-alongside "shares its time"
      org-foresight-agenda-shared))
   "Each mark: the glyph, what it means, and the face it is drawn in.
@@ -246,12 +268,20 @@ longer than it is."
    bands))
 
 (defun org-foresight-agenda--keep (cap)
-  "Return the fraction of a gap that survives the reserve, given CAP."
+  "Return the fraction of a gap that survives the reserve, given CAP.
+
+All three reserves, not just the one for arriving work: an hour of gap is
+worth less than an hour whether the difference goes to an interruption, to
+time at the keyboard nobody clocked, or to being away from the desk.  Spread
+evenly rather than placed, because none of them can be put at an hour -- the
+honest statement is that every gap is a little thinner than it looks."
   (let ((span (or (plist-get cap :span-min) 0.0))
-        (surge (max 0.0 (or (plist-get cap :surge-min) 0.0))))
+        (reserve (max 0.0 (or (plist-get cap :reserve-min)
+                              (plist-get cap :surge-min)
+                              0.0))))
     (if (or (not org-foresight-gap-net) (<= span 0))
         1.0
-      (max 0.0 (min 1.0 (- 1.0 (/ surge span)))))))
+      (max 0.0 (min 1.0 (- 1.0 (/ reserve span)))))))
 
 (defun org-foresight-agenda--gap (b keep ledger)
   "Return the rows for free band B: what it holds, and what would go in it.
@@ -343,7 +373,11 @@ edge of the working day by construction and so could never draw a rule past
 it, which is the one place a rule was worth drawing."
   (when-let ((window (plist-get cap :window)))
     (let* ((ends (cdr window))
-           (lands (plist-get cap :lands))
+           ;; Nothing owed has nothing to land: a rule at the hour you are
+           ;; already free would be drawn on every empty day, which is the
+           ;; surest way to stop it being read on a full one.
+           (lands (and (> (or (plist-get cap :committed-min) 0.0) 0)
+                       (plist-get cap :lands)))
            (over (or (plist-get cap :overflow-min) 0.0))
            (awake (plist-get (org-foresight-day-shape day) :awake))
            (drift (and lands
@@ -398,10 +432,19 @@ or somebody else's fixture, sits in the day beside real work rather than
 against it -- so an overlap there is not a clash, and marking it stops the
 reader resolving one that was never there.
 
+And whether it was chosen at all.  Work that arrived is why the day is
+fuller than it was planned to be, and on a day that will not close, telling
+the two apart is the first thing worth knowing.
+
 The mark is recorded on the row rather than drawn into it, because where the
 marks go is a decision about the page as a whole and is taken once, by
 `org-foresight-agenda--place-marks', for every row at the same time."
   (let* ((keep (org-foresight-agenda--keep cap))
+         ;; On a day with no working hours every gap is nothing, so every
+         ;; piece of work would be marked -- and a mark on every row is a
+         ;; mark that says nothing.  The fact is about the day, not about any
+         ;; one task, and the verdict states it there instead.
+         (fits (and (plist-get cap :window) t))
          (largest (* keep
                      (apply #'max 0.0
                             (seq-keep
@@ -419,13 +462,17 @@ marks go is a decision about the page as a whole and is taken once, by
                   (key (cons (marker-buffer m) (marker-position m)))
                   (glyph
                    (cond
-                    ((and (eq (plist-get e :kind) 'promised)
+                    ((and fits
+                          (eq (plist-get e :kind) 'promised)
                           (> (org-foresight-report--entry-minutes e) largest))
                      org-foresight-agenda-wont-fit)
+                    ((plist-get e :arrived) org-foresight-agenda-arrived)
                     ((memq (plist-get e :attention) '(background informational))
                      org-foresight-agenda-alongside))))
-        ;; Not fitting is the louder of the two, so it is not overwritten by
-        ;; an entry that also happens to share its hour.
+        ;; Not fitting is the loudest, so it is not overwritten by an entry
+        ;; that also arrived or happens to share its hour.  One column holds
+        ;; one glyph, and what has to move is worth more than where it came
+        ;; from.
         (unless (equal (gethash key marks) org-foresight-agenda-wont-fit)
           (puthash key glyph marks))))
     (if (zerop (hash-table-count marks))
@@ -659,7 +706,7 @@ to hear can be heard on the way to somewhere else, and a child\'s fixture is
 a fact about the household rather than an hour of yours.
 
 Works from an agenda line as well as from the entry itself, and refreshes the
-view, so the day\'s arithmetic changes under the cursor rather than at the
+view, so the day's arithmetic changes under the cursor rather than at the
 next redraw.  ATTENTION is one of `org-foresight-agenda-attentions\'; the
 empty string removes the property and lets the category decide again."
   (interactive)
@@ -686,6 +733,42 @@ empty string removes the property and lets the category decide again."
     (message "Attention: %s"
              (if (string-empty-p (or attention ""))
                  "by category" attention))))
+
+;;;###autoload
+(defun org-foresight-mark-surge ()
+  "Mark the entry at point as work that arrived, now.
+
+For the interruption you did not capture as one -- you were already in the
+file when it landed, or you only realised afterwards that it had.  The
+property's value is the moment it arrived, which is what decides the day
+whose reserve it spent and the day after which it stops counting as
+unplanned.
+
+Leaves an existing mark alone.  Re-marking would move that day, and with it
+the one figure the reserve is learned from; a mark that can be reset by a
+second keystroke is not a record of when anything happened.
+
+Works from an agenda line as well as from the entry itself, and refreshes the
+view, so the day's arithmetic changes under the cursor rather than at the
+next redraw.  The mark is inherited, so marking a parent covers everything
+broken out of it."
+  (interactive)
+  (let ((marker (or (org-get-at-bol 'org-hd-marker)
+                    (org-get-at-bol 'org-marker)
+                    (and (derived-mode-p 'org-mode) (point-marker)))))
+    (unless marker (user-error "No entry here"))
+    (let (had)
+      (org-with-point-at marker
+        (org-back-to-heading t)
+        (setq had (org-entry-get (point) org-foresight-surge-property))
+        (unless had
+          (org-entry-put (point) org-foresight-surge-property
+                         (format-time-string (org-time-stamp-format t t)))))
+      (if had
+          (message "Already arrived %s" had)
+        (org-foresight-report-refresh)
+        (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
+        (message "Marked as arrived now")))))
 
 (provide 'org-foresight-agenda)
 
