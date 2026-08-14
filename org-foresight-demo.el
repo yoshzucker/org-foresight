@@ -309,13 +309,29 @@ share table and the vs-7-day comparison all have something to show.
 The estimates are deliberately not the outcomes.  Each segment records what
 was thought beforehand alongside what it actually took, with reporting work
 running consistently over -- which is what gives `org-foresight-learn-bias'
-something real to find."
-  (let ((plan '((-1 ("engineering" 9 15 12 0 1.0) ("admin" 13 30 15 0 1.0))
-                (-2 ("reporting" 10 0 12 30 0.6) ("engineering" 14 0 16 45 0.9))
-                (-3 ("admin" 9 30 10 15 1.0) ("procurement" 11 0 12 0 1.0))
-                (-4 ("engineering" 9 0 11 30 0.9) ("team" 15 0 16 0 1.0))
-                (-5 ("reporting" 10 30 12 0 0.6))
-                (-6 ("engineering" 13 0 17 0 0.9))
+something real to find.
+
+The short segments matter as much as the long ones.  What the correction
+learns is how the miss changes with the size of the estimate, and a week made
+only of half-day blocks has no such shape in it: the five- and ten-minute
+jobs, guessed at a quarter of what they take, are what puts a slope in the
+demo and a curve on the review."
+  ;; Two effects, deliberately kept apart so each can be read on its own: a
+  ;; category's own accuracy (reporting runs long, admin does not), and the
+  ;; size of the estimate (anything under a quarter of an hour is guessed at
+  ;; roughly a third of what it takes).  A short admin job is therefore the
+  ;; product of the two, not evidence against admin -- which is exactly what
+  ;; the shared slope and per-category intercept are there to separate.
+  (let ((plan '((-1 ("engineering" 9 15 12 0 1.0) ("admin" 13 30 15 0 1.0)
+                    ("admin" 15 5 15 17 0.35) ("procurement" 16 0 16 8 0.35))
+                (-2 ("reporting" 10 0 12 30 0.6) ("engineering" 14 0 16 45 0.9)
+                    ("engineering" 9 40 9 52 0.32))
+                (-3 ("admin" 9 30 10 15 1.0) ("procurement" 11 0 12 0 1.0)
+                    ("team" 14 0 14 10 0.35) ("reporting" 16 30 16 45 0.21))
+                (-4 ("engineering" 9 0 11 30 0.9) ("team" 15 0 16 0 1.0)
+                    ("admin" 12 0 12 10 0.35))
+                (-5 ("reporting" 10 30 12 0 0.6) ("procurement" 9 0 9 11 0.35))
+                (-6 ("engineering" 13 0 17 0 0.9) ("team" 9 20 9 32 0.35))
                 (-7 ("admin" 9 0 10 30 1.0) ("reporting" 11 0 13 0 0.6)))))
     (mapcar
      (lambda (day)

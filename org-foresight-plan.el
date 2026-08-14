@@ -415,9 +415,7 @@ in a day with ninety minutes left of it, whatever the morning looked like."
                     :marker (plist-get e :marker)
                     :title (plist-get e :title)
                     :note (format "needs %s, longest gap %s"
-                                  (org-duration-from-minutes
-                                   (or (plist-get e :effort-adj)
-                                       (plist-get e :effort)))
+                                  (org-foresight-report--effort-run e)
                                   (org-duration-from-minutes longest)))
               out)))
     (nreverse out)))
@@ -799,7 +797,7 @@ given a place to happen."
                      (= (org-foresight--day-of sched day) 0)))
         (let* ((raw (org-foresight--entry-effort-minutes))
                (category (org-entry-get (point) "CATEGORY" t))
-               (factor (org-foresight-bias-factor category)))
+               (factor (org-foresight-bias-factor category raw)))
           (list :marker (point-marker)
                 :title (org-get-heading t t t t)
                 ;; The slot is sized by what the work actually takes, not by

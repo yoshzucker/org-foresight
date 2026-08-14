@@ -718,7 +718,7 @@ a done-type keyword such as DELEG drops out too."
                   (maphash (lambda (idx kind)
                              (when (eq kind 'untimed)
                                (let ((adj (* effort (org-foresight-bias-factor
-                                                     category))))
+                                                     category effort))))
                                  (aset committed idx (+ (aref committed idx) adj))
                                  (push (list :kind 'promised :title title
                                              :marker marker :effort effort
@@ -1097,12 +1097,30 @@ Reads what `org-foresight-learn-surge' cached; falls back to
 ;; Estimates are systematically wrong, and always in the same direction for
 ;; the same kind of work.  The evidence is already there: every finished task
 ;; that carried an EFFORT and was clocked is one estimate measured against its
-;; outcome.  Reading those back gives a per-category multiplier, which is a
-;; way of improving the numbers without asking for a single new keystroke.
+;; outcome.  Reading those back is a way of improving the numbers without
+;; asking for a single new keystroke.
+;;
+;; How wrong depends on how big the estimate was, which one multiplier cannot
+;; say.  A ratio of outcome to estimate is a quotient by a small number when
+;; the estimate is small: three minutes over a two-minute guess is x2.5, and
+;; three minutes over a two-hour one is x1.025.  Pooling those and taking a
+;; middle is answering two different questions with one number.
+;;
+;; So the line is fitted in log space -- ln(actual) = a + b*ln(estimate) --
+;; which makes the multiplier a function of the estimate:
+;;
+;;   factor(est) = exp(a) * est^(b-1)
+;;
+;; b = 1 is a constant multiplier, and is what this reduces to when there is
+;; not enough history to fit anything; b < 1 is the common case, where small
+;; estimates are the broken ones.  The slope is shared across categories and
+;; only the intercept is per-category: how far ahead of yourself you run is a
+;; habit of estimating, while which work runs long is a fact about the work,
+;; and the second needs far less evidence to place than the first.
 ;;
 ;; Applied to what is promised and to how long a task is given when placed,
 ;; so a 1:30 estimate that reliably runs to 2:06 is allotted 2:06.  The
-;; multiplier is always shown, because a shrinking day must read as "my
+;; correction is always shown, because a shrinking day must read as "my
 ;; estimates are optimistic", never as "the tool is being pessimistic".
 
 (defcustom org-foresight-bias-enabled t
@@ -1122,9 +1140,64 @@ how an entire category is planned for."
   :type 'integer
   :group 'org-foresight)
 
+(defcustom org-foresight-bias-max-samples 600
+  "How many finished tasks the slope is fitted from at most.
+
+The slope is the median of every pair's slope, so the work grows with the
+square of the sample: past a few hundred tasks the extra pairs buy accuracy
+nobody can see and cost time somebody waits for.  Beyond this the sample is
+thinned evenly across the window, which keeps the whole period represented
+rather than only its most recent end."
+  :type 'integer
+  :group 'org-foresight)
+
+(defcustom org-foresight-bias-abandoned-keywords '("CANCELLED" "CANCELED")
+  "Done-type keywords whose entries say nothing about an estimate.
+
+Org has one idea of finished, and it covers both the work that was carried
+through and the work that was dropped.  Only the first measures an estimate:
+an hour\'s job abandoned after ten minutes is not evidence that hours take
+minutes.  Delegated work belongs here too, on any machine that has a keyword
+for it -- add yours, since the names are yours."
+  :type '(repeat string)
+  :group 'org-foresight)
+
+(defcustom org-foresight-bias-slope-range '(0.3 . 1.3)
+  "The steepest and shallowest slope a fit is allowed to claim.
+
+Outside this the fit is saying something no history really supports -- that
+an hour\'s work takes minutes, or that ten minutes takes half a day -- and
+the day would be planned around it.  Clamping loses a real extreme; not
+clamping loses the day."
+  :type '(cons number number)
+  :group 'org-foresight)
+
+(defcustom org-foresight-bias-factor-range '(0.5 . 4.0)
+  "The smallest and largest multiplier the correction may ever apply.
+
+The last guard, applied after the fit: whatever curve was learnt, no estimate
+is quartered and none is quadrupled.  A correction that large is not a
+correction, it is a different plan.
+
+Set the lower bound to 1.0 for the cautious reading, where a correction may
+only ever grow an estimate.  Being wrong pessimistically costs an afternoon
+that turns out free; being wrong optimistically costs the evening."
+  :type '(cons number number)
+  :group 'org-foresight)
+
+(defcustom org-foresight-bias-visible-minutes 5
+  "How far a corrected estimate must move before the row says both figures.
+
+Below this the correction is inside the rounding of the figures beside it,
+and writing \"0:30→0:32\" spends five columns to report nothing.  Above it
+the row is showing a number that is not the one in the file, and saying so is
+the difference between a tool that corrects and a tool that quietly disagrees."
+  :type 'integer
+  :group 'org-foresight)
+
 (defcustom org-foresight-bias-cache-file
   (locate-user-emacs-file "org-foresight-bias.eld")
-  "Where the learned estimate multipliers are cached."
+  "Where the learned estimate curve is cached."
   :type 'file
   :group 'org-foresight)
 
@@ -1142,25 +1215,72 @@ how an entire category is planned for."
            (equal mtime (car org-foresight--bias-cache)))
       (cdr org-foresight--bias-cache))
      (t
-      (let ((data (ignore-errors
-                    (with-temp-buffer
-                      (insert-file-contents org-foresight-bias-cache-file)
-                      (read (current-buffer))))))
+      (let ((data (org-foresight--bias-modernize
+                   (ignore-errors
+                     (with-temp-buffer
+                       (insert-file-contents org-foresight-bias-cache-file)
+                       (read (current-buffer)))))))
         (setq org-foresight--bias-cache (cons mtime data))
         data)))))
 
-(defun org-foresight-bias-factor (category)
-  "Return the multiplier to apply to an estimate in CATEGORY.
-Falls back to the overall figure for a category with too little history, and
-to 1.0 when nothing has been learned at all -- an unknown bias must never
+(defun org-foresight--bias-modernize (data)
+  "Return DATA as a fitted curve, converting a cache written before there was one.
+
+The older file recorded multipliers directly, which is the same statement
+with the slope pinned at 1 -- so it is read as exactly that rather than
+discarded.  Somebody upgrading keeps the correction they had until the next
+time they learn, instead of silently losing it for a week."
+  (cond
+   ((null data) nil)
+   ((plist-get data :slope) data)
+   ((plist-get data :overall)
+    (list :version 2
+          :slope 1.0
+          :pivot 1.0
+          :intercept (log (plist-get data :overall))
+          :categories (mapcar (lambda (c) (cons (car c) (log (cdr c))))
+                              (plist-get data :categories))
+          :samples (plist-get data :samples)
+          :updated (plist-get data :updated)))
+   (t nil)))
+
+(defun org-foresight-bias-factor (category &optional minutes)
+  "Return the multiplier to apply to a MINUTES estimate in CATEGORY.
+
+The multiplier is a function of the estimate, because how far an estimate
+runs over depends on how big it was.  MINUTES omitted asks for the figure at
+the size most often estimated, which is the one number worth quoting when
+only one will fit.
+
+Falls back to the overall intercept for a category with too little history,
+and to 1.0 when nothing has been learned at all -- an unknown bias must never
 make the numbers worse than not correcting them."
   (if (not org-foresight-bias-enabled)
       1.0
     (let ((data (org-foresight--bias-data)))
-      (or (and data category
-               (cdr (assoc category (plist-get data :categories))))
-          (and data (plist-get data :overall))
-          1.0))))
+      (if (null data)
+          1.0
+        (let* ((a (or (and category
+                           (cdr (assoc category (plist-get data :categories))))
+                      (plist-get data :intercept)
+                      0.0))
+               (m (- (or (plist-get data :slope) 1.0) 1.0))
+               (pivot (or (plist-get data :pivot) 1.0))
+               ;; Held to the sizes actually seen.  A curve fitted on jobs
+               ;; between five minutes and two hours says nothing about a
+               ;; day-long one, and following it out there would shrink an
+               ;; eight-hour estimate on no evidence at all -- an error in
+               ;; the one direction this package exists to prevent.  Past
+               ;; the ends of the evidence the correction goes flat.
+               (size (and minutes (> minutes 0)
+                          (if-let ((range (plist-get data :range)))
+                              (min (cdr range) (max (car range) (float minutes)))
+                            (float minutes))))
+               (factor (if (and size (> pivot 0))
+                           (* (exp a) (expt (/ size pivot) m))
+                         (exp a))))
+          (min (cdr org-foresight-bias-factor-range)
+               (max (car org-foresight-bias-factor-range) factor)))))))
 
 (defun org-foresight--entry-text ()
   "Return the text of the entry at point, excluding its heading and children.
@@ -1201,25 +1321,29 @@ cannot leave the entry it came from."
 
 ;;;###autoload
 (defun org-foresight-learn-bias (&optional days)
-  "Learn how far estimates run over, per category, from finished work.
+  "Learn how far estimates run over, and by how much more when they are small.
 
 Reads only what is already recorded -- an EFFORT and the clock beside it --
-so this costs nothing to start using.  The median is taken rather than the
-mean: one task that went badly wrong should not reshape the plan for every
-task like it."
+so this costs nothing to start using.  Work that was abandoned rather than
+carried through is left out: its clock says nothing about its estimate.
+
+Fits `ln(actual) = a + b*ln(estimate)\' and caches the two numbers.  Both are
+medians rather than means, in keeping with the rest of this file: one task
+that went badly wrong should not reshape the plan for every task like it."
   (interactive)
   (let* ((days (or days org-foresight-bias-window))
          (from (org-foresight--day-start (1- days)))
-         (by-category (make-hash-table :test 'equal))
-         all)
+         samples)
     (dolist (file (org-agenda-files))
       (when (file-exists-p file)
         (with-current-buffer (find-file-noselect file)
           (org-with-wide-buffer
            (org-map-entries
             (lambda ()
-              (when (org-entry-is-done-p)
-                ;; `org-entry-get' would happily return the next heading's
+              (when (and (org-entry-is-done-p)
+                         (not (member (org-get-todo-state)
+                                      org-foresight-bias-abandoned-keywords)))
+                ;; `org-entry-get\' would happily return the next heading\'s
                 ;; text for a CLOSED that is not there; the planning API
                 ;; knows the difference between a timestamp and a property.
                 (let ((closed (org-entry-get (point) "CLOSED" nil t))
@@ -1230,35 +1354,142 @@ task like it."
                         (let ((est (org-duration-to-minutes effort))
                               (act (org-foresight--entry-clocked-minutes)))
                           (when (and (> est 0) (> act 0))
-                            (let ((ratio (/ act est))
-                                  (cat (org-entry-get (point) "CATEGORY" t)))
-                              (push ratio all)
-                              (when cat
-                                (push ratio (gethash cat by-category))))))))))))
+                            (push (list est act
+                                        (org-entry-get (point) "CATEGORY" t))
+                                  samples)))))))))
             nil nil)))))
-    (if (null all)
-        (user-error "No finished, estimated, clocked work in the last %d days" days)
-      (let ((cats nil)
-            (overall (org-foresight--median all)))
-        (maphash (lambda (cat ratios)
-                   (when (>= (length ratios) org-foresight-bias-min-samples)
-                     (push (cons cat (org-foresight--median ratios)) cats)))
-                 by-category)
+    (if (null samples)
+        (user-error "No finished, estimated, clocked work in the last %d days"
+                    days)
+      (let* ((fit (org-foresight--bias-fit samples))
+             (data (append fit
+                           (list :version 2
+                                 :by-effort (org-foresight--bias-by-effort
+                                             samples)
+                                 :samples (length samples)
+                                 :window days
+                                 :updated (format-time-string "%Y-%m-%d")))))
         (with-temp-file org-foresight-bias-cache-file
-          (prin1 (list :overall overall
-                       :categories cats
-                       :samples (length all)
-                       :updated (format-time-string "%Y-%m-%d"))
-                 (current-buffer)))
+          (prin1 data (current-buffer)))
         (setq org-foresight--bias-cache nil)
-        (message "Estimates run ×%.2f overall, from %d task(s)%s"
-                 overall (length all)
-                 (if cats
-                     (concat "; " (mapconcat (lambda (c)
-                                               (format "%s ×%.2f" (car c) (cdr c)))
-                                             (seq-take cats 4) ", "))
-                   ""))
-        overall))))
+        (message "%s" (org-foresight-bias-summary data))
+        data))))
+
+(defun org-foresight--bias-fit (samples)
+  "Return the plist describing how SAMPLES miss, and by how much more when small.
+
+Each sample is (ESTIMATE ACTUAL CATEGORY) in minutes.  What is fitted is the
+overrun against the size of the estimate -- ln(actual/estimate) against
+ln(estimate) -- rather than outcome against estimate, because the overrun is
+the quantity anybody reasons about and it puts the answer in the units the
+rest of this file speaks.  A slope of zero on that line is a constant
+multiplier; a negative one is small estimates being missed by more.
+
+The slope is Theil-Sen: the median of the slope between every pair of points.
+That is the median used everywhere else here, lifted into two dimensions, and
+it takes as many wrong tasks to move as it takes wrong days to move a median,
+which is half of them.
+
+The line is centred on the size actually estimated most -- the median
+estimate -- so the intercept is the multiplier at a size that exists.
+Centred at zero it would be the multiplier for a one-minute task, which is an
+extrapolation past every sample and a nonsense to quote as a headline.
+
+One slope serves every category and only the intercept is taken per category.
+Running ahead of yourself is a habit of estimating and needs the whole corpus
+to see; which work runs long is a fact about the work and shows in a handful
+of tasks.  Fitting a slope per category would ask the smaller question of the
+larger evidence.
+
+Falls back to a flat line -- a plain constant multiplier, which is what this
+did before it drew any line at all -- when there is too little to fit, or
+when every estimate was the same size and there is no slope to see."
+  (let* ((keep (org-foresight--bias-thin samples))
+         (pivot (or (org-foresight--median
+                     (mapcar (lambda (s) (float (nth 0 s))) keep))
+                    1.0))
+         (p (log pivot))
+         (pts (mapcar (lambda (s)
+                        (let ((x (log (float (nth 0 s)))))
+                          (cons x (- (log (float (nth 1 s))) x))))
+                      keep))
+         (slopes nil))
+    (dolist (a pts)
+      (dolist (b pts)
+        (when (< (car a) (car b))
+          (push (/ (- (cdr b) (cdr a)) (- (car b) (car a))) slopes))))
+    (let* ((raw (or (org-foresight--median slopes) 0.0))
+           (m (if (< (length keep) org-foresight-bias-min-samples)
+                  0.0
+                (min (1- (cdr org-foresight-bias-slope-range))
+                     (max (1- (car org-foresight-bias-slope-range)) raw))))
+           (residual (lambda (s)
+                       (let ((x (log (float (nth 0 s)))))
+                         (- (log (float (nth 1 s))) x (* m (- x p))))))
+           (by-category (make-hash-table :test 'equal))
+           cats)
+      (dolist (s samples)
+        (when (nth 2 s)
+          (push (funcall residual s) (gethash (nth 2 s) by-category))))
+      (maphash (lambda (cat rs)
+                 (when (>= (length rs) org-foresight-bias-min-samples)
+                   (push (cons cat (org-foresight--median rs)) cats)))
+               by-category)
+      (list :slope (+ 1.0 m)
+            :pivot pivot
+            :range (cons (apply #'min (mapcar (lambda (s) (float (nth 0 s)))
+                                              keep))
+                         (apply #'max (mapcar (lambda (s) (float (nth 0 s)))
+                                              keep)))
+            :intercept (org-foresight--median (mapcar residual samples))
+            :categories cats))))
+
+(defun org-foresight--bias-thin (samples)
+  "Return at most `org-foresight-bias-max-samples\' of SAMPLES, evenly spread.
+
+Taken at a stride rather than from one end, so a year of history is still a
+year of history after thinning: dropping the older half would fit the line to
+the last few weeks and call it a habit."
+  (let ((n (length samples)))
+    (if (<= n org-foresight-bias-max-samples)
+        samples
+      (let ((stride (/ (float n) org-foresight-bias-max-samples))
+            (i 0.0)
+            out)
+        (while (< (floor i) n)
+          (push (nth (floor i) samples) out)
+          (setq i (+ i stride)))
+        (nreverse out)))))
+
+(defun org-foresight--bias-by-effort (samples)
+  "Return what SAMPLES actually did, grouped by the estimate they carried.
+
+Each group is (MINUTES COUNT MEDIAN-RATIO).  Kept beside the fitted line
+rather than derived from it, because a line is a claim and this is the
+evidence: seeing both is what tells you whether to believe the first."
+  (let ((by (make-hash-table :test 'eql))
+        out)
+    (dolist (s samples)
+      (push (/ (float (nth 1 s)) (nth 0 s)) (gethash (nth 0 s) by)))
+    (maphash (lambda (est ratios)
+               (push (list est (length ratios)
+                           (org-foresight--median ratios))
+                     out))
+             by)
+    (sort out (lambda (a b) (< (car a) (car b))))))
+
+(defun org-foresight-bias-summary (&optional data)
+  "Return one line describing the learned curve in DATA, or nil for none.
+
+Named at two sizes rather than as a slope, because nobody plans a day in
+exponents: what a reader can act on is that a five-minute job takes twenty
+and an hour-long one takes an hour and a bit."
+  (when-let ((data (or data (org-foresight--bias-data))))
+    (let ((small (org-foresight-bias-factor nil 5))
+          (large (org-foresight-bias-factor nil 60)))
+      (format "Estimates run ×%.1f at 0:05 and ×%.1f at 1:00 · slope %.2f · %d task(s)"
+              small large (or (plist-get data :slope) 1.0)
+              (or (plist-get data :samples) 0)))))
 
 (defun org-foresight--median (numbers)
   "Return the median of NUMBERS, or nil when there are none.
@@ -1304,6 +1535,44 @@ day that has already gone."
     (when window
       (org-foresight--intervals-subtract (list window) busy))))
 
+(defun org-foresight-waking-free-intervals (day &optional scan now)
+  "Return the stretches of DAY nothing has claimed, working hours or not.
+
+The same subtraction as `org-foresight-free-intervals\=' over the whole waking
+day rather than the working part of it.  Work that will not fit inside the
+hours you meant to keep does not stop existing at six o\='clock; it goes on
+into the evening, and where it stops is a fact worth having.
+
+Not capacity: nothing here may be promised away, and every minute of it is
+somebody\='s evening.  It exists to answer when, not to offer."
+  (let* ((now (or now (current-time)))
+         (awake (plist-get (org-foresight-day-shape day) :awake))
+         (window (org-foresight--window-remaining awake now))
+         (scan (or scan (org-foresight-scan 1 day)))
+         (idx (org-foresight--day-of day (plist-get scan :from)))
+         (busy (and (>= idx 0)
+                    (< idx (plist-get scan :days))
+                    (aref (plist-get scan :busy) idx))))
+    (when window
+      (org-foresight--intervals-subtract (list window) busy))))
+
+(defun org-foresight--bias-minutes (scan idx)
+  "Return how many of day IDX\'s promised minutes are the estimate correction.
+
+The difference between what the estimates said and what they are being
+treated as, which is the one figure that says what the correction is costing
+today.  Read off the ledger, where both numbers were kept side by side for
+exactly this: a correction nobody can see the size of is a correction nobody
+can argue with."
+  (let ((ledger (and (>= idx 0) (< idx (plist-get scan :days))
+                     (aref (plist-get scan :ledger) idx)))
+        (total 0.0))
+    (dolist (e ledger total)
+      (when (and (eq (plist-get e :kind) 'promised)
+                 (plist-get e :effort-adj))
+        (setq total (+ total (- (plist-get e :effort-adj)
+                                (or (plist-get e :effort) 0.0))))))))
+
 (defun org-foresight-capacity (day &optional scan now)
   "Return a plist describing how much of DAY may still be promised.
 
@@ -1314,6 +1583,7 @@ Within the work span, these divide it exactly:
   :travel-min getting to and from them
   :private-min-in-span  life that happens to fall in working hours
   :committed-min  effort promised for DAY but not placed at a time
+  :bias-min   how much of `:committed-min' is the estimate correction
   :surge-min  reserve held back for work that has not arrived
   :spare-min  what survives all five -- negative means overcommitted
 
@@ -1330,7 +1600,9 @@ And what is left of today, as opposed to what the day was shaped like:
   :free       stretches nothing has claimed yet, from NOW onwards
   :free-min   minutes in those stretches
   :headroom-min   `:free-min' less what is promised and reserved
-  :finish     when the remaining commitment runs out, or nil if it does not fit
+  :finish     when the commitment runs out inside the working day, or nil
+  :lands      when it runs out at all, evening included, or nil for not today
+  :overflow-min   what will not fit in today at all, zero when it all does
 
 The two groups answer different questions and must not be mixed: the first
 describes the day that was planned, the second what can still be promised.
@@ -1350,7 +1622,9 @@ reproducible, which is what lets this be tested at all."
          (committed (if (and (>= idx 0) (< idx (plist-get scan :days)))
                         (aref (plist-get scan :committed) idx)
                       0.0))
+         (bias (org-foresight--bias-minutes scan idx))
          (surge (org-foresight-surge-minutes))
+         (waking (org-foresight-waking-free-intervals day scan now))
          (bands (org-foresight-day-blocks day scan))
          (awake (plist-get (org-foresight-day-shape day) :awake))
          (booked 0.0) (travel 0.0) (private 0.0) (private-in 0.0)
@@ -1387,10 +1661,15 @@ reproducible, which is what lets this be tested at all."
           :free free
           :free-min free-min
           :committed-min committed
+          :bias-min bias
           :surge-min surge
           :spare-min (- span booked travel private-in committed surge)
           :headroom-min (- free-min committed surge)
           :finish (org-foresight--pour free (+ committed surge))
+          :lands (org-foresight--pour waking (+ committed surge))
+          :overflow-min (max 0.0 (- (+ committed surge)
+                                    (/ (org-foresight--intervals-seconds waking)
+                                       60.0)))
           :off-min (- (/ (float-time (time-subtract (cdr awake) (car awake)))
                          60.0)
                       span)
