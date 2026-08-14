@@ -156,8 +156,8 @@ then occasionally:
 no file contains:
 
 #+begin_example
- Work 8:30 · OVER by 3:45 · will not fit · est ×1.1
- ↳ any one of Rewrite the annual re… 6:00 · Project review 1:30
+ Work 8:30 · OVER by 3:45 · ends 20:39 · est +1:27
+ ↳ any one of Rewrite the annual re… 6:00→7:12 · Project review 1:30
             █ booked 2:45  █ travel 2:00  █ promised 7:30  ▭ surge 1:00
  Work  8:30 ████████████████████████████████████████┃██████████████████
  Off   7:00 ███████··························
@@ -169,7 +169,7 @@ Thursday   13 August 2026
           09:00-09:30 0:30 free · 0:26 usable
   outlook 09:30-09:45 Morning standup
           09:45-12:00 2:15 free · 1:59 usable
-  procure 09:45...... ↳ NEXT Write the vendor comparison 2:00
+  procure 09:45...... ↳ NEXT Write the vendor comparison 2:00→2:48
           10:00...... ----------------
           12:00...... ----------------
   travel  12:00-13:00 → office
@@ -182,7 +182,8 @@ Thursday   13 August 2026
   travel  16:15-17:30 ⨯ → home
           17:30...... work ends ──────────────
   family  19:00-20:30 ╰ Dinner with the family
-  reporti Scheduled:  6:00 ⨯ NEXT Rewrite the annual report
+          20:39...... work lands ─────────────
+  reporti Scheduled:  6:00→7:46 ⨯ NEXT Rewrite the annual report
 
 [Spent] where the hours actually went
  Clocked 3:20 of 8:30 at the machine · 8 spells, longest 0:35 · vs 7d +12%
@@ -201,7 +202,7 @@ Thursday   13 August 2026
 #+end_example
 
 The rules, the entries, =now=, the categories, the effort column — all of
-that is Org. Four things are not:
+that is Org. Five things are not:
 
 | Row                | What it is                                        |
 |--------------------+---------------------------------------------------|
@@ -209,6 +210,18 @@ that is Org. Four things are not:
 | =0:30 free=        | a stretch nothing has claimed, in the colour of room |
 | =↳ NEXT …=         | promised work that would fit in the gap above it  |
 | =work starts ────= | the edge of the working day                       |
+| =work lands ────=  | where the day actually ends, corrections included |
+
+The first two edges are declarations — the hours being defended — and the
+third is what the day is going to do with them. Same subject, one verb apart,
+because the difference between intending to stop at half five and stopping at
+half five is the subject of this whole package. It is drawn only when it
+disagrees with the declaration, in the overrun's colour past the edge and the
+colour of room before it: landing early is not a lesser kind of news. A day
+too full to end at all still gets the rule, at the last hour there is and
+reading =work lands · 4:15 will not fit= — a quantity of work with nowhere
+left to go, counting the evening in, not an hour. The day the projection
+matters most is not the day to go silent on.
 
 Three marks, explained by a key under the bars — and only when the day used
 them, because a key describing a clash on a day that has none is explaining a
@@ -331,7 +344,7 @@ The mirror of the same idea sits under the verdict. A bar says how far over
 the day is; it can never say by what. So an overcommitted day names its way
 out:
 
-: Work 8:30 · OVER by 0:45 · will not fit
+: Work 8:30 · OVER by 0:45 · ends 18:15
 : ↳ any one of Quarterly summary 1:00 · Project review 1:30
 
 Ranked by the *smallest that is on its own enough* — the opposite order to
@@ -512,7 +525,7 @@ time, some of it is spent getting somewhere, and the hours that belong to
 neither are not absent — they are private time that happens to be unclaimed.
 
 #+begin_example
- Work 8:30 · 1:15 left to promise · ends 16:45 · surge from 12 days · est ×1.4
+ Work 8:30 · 1:15 left to promise · ends 16:45 · surge from 12 days · est +0:40
             █ booked 2:45  █ travel 1:00  █ promised 2:30  ▭ surge 1:00
             · spare 1:15
  Work  8:30 ██████████████████████████████▭▭▭▭▭······
@@ -580,14 +593,59 @@ was done but never planned. =M-x org-foresight-learn-surge= takes the median of
 that and subtracts it up front, so an interrupted day still ends on time. This
 needs [[https://activitywatch.net/][ActivityWatch]]; without it the reserve falls back to a configured constant.
 
-*Estimates* are wrong in a consistent direction per kind of work, and the
-evidence is already in the file: every finished task that carried an =EFFORT=
-and was clocked is one estimate measured against its outcome.
-=M-x org-foresight-learn-bias= reads them back into a per-category multiplier
-and applies it to what is promised and to how long a task is given when placed.
+*Estimates* are wrong in a consistent direction, and the evidence is already in
+the file: every finished task that carried an =EFFORT= and was clocked is one
+estimate measured against its outcome. =M-x org-foresight-learn-bias= reads
+them back and applies what it finds to what is promised and to how long a task
+is given when placed. Work that was abandoned rather than carried through is
+left out — its clock says nothing about its estimate.
 
-The multiplier is always shown (=est ×1.4=), so a shrinking day reads as "my
-estimates are optimistic" rather than as the tool being pessimistic.
+How wrong depends on how big the estimate was, which one multiplier cannot
+say. Three minutes over a two-minute guess is ×2.5; the same three minutes over
+a two-hour one is ×1.025. So a line is fitted in log space —
+=ln(actual) = a + b·ln(estimate)= — which makes the correction a function of
+the size:
+
+: factor(est) = exp(a) · (est / pivot)^(b−1)
+
+A slope of 1 is a constant multiplier, and is what this reduces to when there
+is too little history to fit anything; =b < 1= is the common case, where small
+estimates are the broken ones. The slope is shared across categories and only
+the intercept is per-category: how far ahead of yourself you run is a habit of
+estimating, while which work runs long is a fact about the work, and the second
+needs far less evidence to place. The curve is held to the sizes actually seen
+— past the ends of the evidence it goes flat rather than extrapolating — and
+the final multiplier is clamped either way.
+
+What the correction cost today is always shown (=est +1:20=), in minutes rather
+than as a multiple, so a shrinking day reads as "my estimates are optimistic"
+rather than as the tool being pessimistic. Set the lower end of
+=org-foresight-bias-factor-range= to 1.0 for the cautious reading, where a
+correction may only ever grow an estimate.
+
+A row showing a figure that is not the one in the file says both
+(=2:00→2:48=). The estimate stays on the left because that is the number that
+was written and the one being questioned; the arrow is the learning. This
+applies to Org's own effort column too — where the day is planned on a
+corrected figure, the row that printed the estimate says what it is being
+treated as, in the face the derived rows use.
+
+=r= sets the fitted line against what it was fitted from, which is the one
+place to judge whether to believe it:
+
+#+begin_example
+[Estimates] how far each size of estimate runs over
+ Estimates run ×2.6 at 0:05 and ×1.4 at 1:00 · slope 0.75 · 128 task(s), 90 days
+   0:05  n=9    ×2.6   ██████████████████
+   0:15  n=19   ×1.9   █████████████
+   0:30  n=28   ×1.4   ██████████
+   1:00  n=14   ×1.2   ████████
+   2:00  n=6    ×1.0   ███████
+#+end_example
+
+That small estimates run over and large ones barely do is not a fact about the
+tool. It is a fact about how small things get estimated, and it is actionable
+on the very next one.
 
 * Signals
 

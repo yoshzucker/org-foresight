@@ -296,8 +296,7 @@ the key you would have pressed anyway."
            (concat (org-foresight-report--grid-todo (plist-get e :marker))
                    (or (plist-get e :title) "?")
                    " "
-                   (org-duration-from-minutes
-                    (org-foresight-report--entry-minutes e)))
+                   (org-foresight-report--effort-run e))
            (or (plist-get e :category) "")
            at 'shadow (plist-get e :marker) nil "↳"))
         (if (natnump org-foresight-grid-suggest)
@@ -312,24 +311,78 @@ the key you would have pressed anyway."
                 (org-foresight-agenda--gap b keep ledger)))
             bands)))
 
-(defun org-foresight-agenda--edges (cap)
-  "Return the rows marking where CAP's working day opens and closes.
+(defcustom org-foresight-agenda-lands-minutes 5
+  "How far the projected end must sit from the declared one to be drawn.
 
-Drawn as a rule rather than as a slot, so they read as the edges of something
-rather than as two more things in it.  Work sitting above or below them is
-work that escaped the day, which is the whole reason to draw them."
+A projection that agrees with the declaration is not news, and a rule saying
+so is a rule the eye learns to skip -- which costs the days it does have
+something to say."
+  :type 'integer
+  :group 'org-foresight)
+
+(defun org-foresight-agenda--edges (cap day)
+  "Return the rows marking where CAP's working day opens, closes, and lands.
+
+Drawn as rules rather than as slots, so they read as the edges of something
+rather than as more things in it.  Work sitting above or below them is work
+that escaped the day, which is the whole reason to draw them.
+
+Two of the three are declarations -- the hours being defended -- and the
+third is what the day is actually going to do with them.  Same subject, same
+shape, one verb apart, because the difference between intending to stop at
+six and stopping at six is the whole subject of this package.
+
+It takes the overrun's colour past the declared end and the colour of room
+before it: landing early is not a lesser kind of news.  Nothing is drawn when
+the work will not fit in the waking day either -- there is no hour to put a
+rule at, and the verdict has already said so in words.
+
+Drawn from where the work lands rather than from where it fits, which are
+different questions on exactly the days worth asking: the second stops at the
+edge of the working day by construction and so could never draw a rule past
+it, which is the one place a rule was worth drawing."
   (when-let ((window (plist-get cap :window)))
-    (seq-keep
-     (pcase-lambda (`(,time . ,label))
-       ;; Label first, rule after -- the order Org uses for `← now ────',
-       ;; which is the other line of this kind on the page.  Two rules that
-       ;; mean the same thing should be read the same way.
-       (org-foresight-agenda--item
-        (concat label " " (make-string 12 ?─))
-        "" (org-foresight-agenda--hhmm time)
-        'org-agenda-structure nil nil))
-     (list (cons (car window) "work starts")
-           (cons (cdr window) "work ends")))))
+    (let* ((ends (cdr window))
+           (lands (plist-get cap :lands))
+           (over (or (plist-get cap :overflow-min) 0.0))
+           (awake (plist-get (org-foresight-day-shape day) :awake))
+           (drift (and lands
+                       (/ (float-time (time-subtract lands ends)) 60.0))))
+      (seq-keep
+       (pcase-lambda (`(,time ,label ,face))
+         ;; Label first, rule after -- the order Org uses for `← now ────',
+         ;; which is the other line of this kind on the page.  Two rules that
+         ;; mean the same thing should be read the same way.
+         (org-foresight-agenda--item
+          (concat label " " (make-string 12 ?─))
+          "" (org-foresight-agenda--hhmm time)
+          face nil nil))
+       (append
+        (list (list (car window) "work starts" 'org-agenda-structure)
+              (list ends "work ends" 'org-agenda-structure))
+        (cond
+         ;; It ends somewhere today, and somewhere worth drawing a rule at.
+         ((and drift (>= (abs drift) org-foresight-agenda-lands-minutes))
+          (list (list lands "work lands"
+                      (if (> drift 0)
+                          'org-foresight-report-overcommitted
+                        'org-foresight-report-spare))))
+         ;; It does not end today at all.  The rule goes at the last hour
+         ;; there is and says how much is still standing then -- the day on
+         ;; which the projection matters most is exactly the day it used to
+         ;; go silent, and an hour that cannot be drawn is no reason to draw
+         ;; nothing.
+         ;;
+         ;; A quantity, not an hour: what is named is the work with nowhere
+         ;; left to go, counting the evening in.  In the mark\='s own words,
+         ;; because it is the mark\='s own meaning applied to the whole day
+         ;; rather than to one entry -- and because "past today" read as a
+         ;; time, which is the one thing it is not.
+         ((and (> over 0) awake)
+          (list (list (cdr awake)
+                      (format "work lands · %s will not fit"
+                              (org-duration-from-minutes over))
+                      'org-foresight-report-overcommitted)))))))))
 
 (defun org-foresight-agenda--mark-rows (list bands cap ledger)
   "Return LIST with LEDGER's entries marked, given BANDS and CAP.
@@ -465,6 +518,51 @@ which keeps `org-heading' over the heading text and nothing else."
          item))
      list)))
 
+(defun org-foresight-agenda--annotate-efforts (list ledger)
+  "Return LIST with LEDGER\='s corrections written beside the efforts Org printed.
+
+Org prints the estimate that is in the file, and the day is planned on a
+corrected one.  Where those differ the row said the first and meant the
+second, which is the one thing a number on a screen must never do.  Written
+as \"6:00→10:00\" in the face the derived rows use, because the second figure
+is not in any file and nothing about it can be edited where it appears.
+
+The effort is found by searching back from the heading rather than by
+counting columns: which field of the prefix it is depends on
+`org-agenda-prefix-format\=', but that it is the last thing before the heading
+that reads as a duration does not.  A row whose estimate cannot be found is
+left exactly as it was; a wrong insertion is worse than a missing one."
+  (let ((drifts (make-hash-table :test 'equal)))
+    (dolist (e ledger)
+      (when-let* ((m (plist-get e :marker))
+                  ((markerp m))
+                  (drift (org-foresight-report--effort-drift e)))
+        (puthash (cons (marker-buffer m) (marker-position m)) drift drifts)))
+    (if (zerop (hash-table-count drifts))
+        list
+      (mapcar
+       (lambda (item)
+         (let* ((m (or (get-text-property 0 'org-hd-marker item)
+                       (get-text-property 0 'org-marker item)))
+                (drift (and (markerp m)
+                            (gethash (cons (marker-buffer m)
+                                           (marker-position m))
+                                     drifts)))
+                (raw (and drift (get-text-property 0 'effort item)))
+                (head (and raw (org-foresight-agenda--heading-column item)))
+                (at (and head (string-search
+                               raw (substring-no-properties item 0 head)))))
+           (if (not at)
+               item
+             (let ((tail (+ at (length raw)))
+                   (text (copy-sequence drift)))
+               (set-text-properties 0 (length text)
+                                    (text-properties-at at item) text)
+               (add-face-text-property 0 (length text)
+                                       'org-foresight-agenda-derived nil text)
+               (concat (substring item 0 tail) text (substring item tail))))))
+       list))))
+
 (defun org-foresight-agenda--augment (list day &optional scan)
   "Return LIST marked and extended with what foresight knows about DAY.
 
@@ -478,11 +576,18 @@ is what puts a gap above the candidates hanging off it."
          (idx (org-foresight--day-of day (plist-get scan :from)))
          (ledger (and (>= idx 0) (< idx (plist-get scan :days))
                       (aref (plist-get scan :ledger) idx)))
-         (all (org-foresight-agenda--place-marks
-               (append (org-foresight-agenda--mark-rows list bands cap ledger)
-                       (org-foresight-agenda--edges cap)
-                       (org-foresight-agenda--travel bands)
-                       (org-foresight-agenda--gaps bands cap ledger)))))
+         ;; Marks first, then the corrections.  The mark column is read off
+         ;; where the headings start, and an estimate annotated before that is
+         ;; measured would push its own heading right and take the column with
+         ;; it; annotated after, the insertion lands to the right of the mark
+         ;; and leaves it where every other row has one.
+         (all (org-foresight-agenda--annotate-efforts
+               (org-foresight-agenda--place-marks
+                (append (org-foresight-agenda--mark-rows list bands cap ledger)
+                        (org-foresight-agenda--edges cap day)
+                        (org-foresight-agenda--travel bands)
+                        (org-foresight-agenda--gaps bands cap ledger)))
+               ledger)))
     ;; Read back off the finished rows rather than tracked while building
     ;; them: what the key has to explain is what ended up on the page, and
     ;; this cannot drift from it.  One day's worth -- the views that show a

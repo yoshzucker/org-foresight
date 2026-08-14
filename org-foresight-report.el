@@ -32,6 +32,7 @@
 (require 'org-clock)
 (require 'org-table)
 (require 'seq)
+(require 'cl-lib)
 
 ;;;; Style and glyphs
 
@@ -350,6 +351,66 @@ and MAXMIN scale the % and bar columns; COL2-LABEL names the category column
        rows "\n"))
      'face 'org-table)))
 
+(defcustom org-foresight-report-estimate-sizes 8
+  "How many estimate sizes the weekly review names.
+
+Enough to show the shape and few enough to read at a glance.  The sizes kept
+are the ones used most, since a size written once is not a habit and changing
+it is not a decision anybody can act on."
+  :type 'integer
+  :group 'org-foresight)
+
+(cl-defun org-foresight-report-estimates ()
+  "Return the learned estimate curve set against what it was learnt from.
+
+The fitted line is a claim and the rows beneath it are the evidence, so both
+are shown: a slope nobody can check against the tasks that produced it is a
+number to be taken on faith, and this whole package is an argument against
+planning on faith.
+
+Grouped by the size of the estimate rather than by category, because that is
+the axis the correction now turns on and the one a reader can do something
+about.  That five-minute jobs run three times over while hour-long ones
+barely do is not a fact about the tool -- it is a fact about how small things
+get estimated, and it is actionable on the very next one."
+  (when-let* ((data (org-foresight--bias-data))
+              ;; A file written before there was a curve carries the
+              ;; multipliers but not the tasks behind them, and there is no
+              ;; honest way to draw the second from the first.  Saying so
+              ;; beats a block that quietly is not there.
+              (all (or (plist-get data :by-effort)
+                       (cl-return-from org-foresight-report-estimates
+                         (concat
+                          (org-foresight-bias-summary data) "\n"
+                          "run M-x org-foresight-learn-bias again to see"
+                          " the sizes behind it"))))
+              ;; The sizes actually estimated with, not every size ever
+              ;; written: a corpus of free-form efforts has a long tail of
+              ;; ones used once, and a row per singleton buries the handful
+              ;; of sizes a reader could do anything about.  Chosen by how
+              ;; often each was used, shown in order of size.
+              (rows (sort (seq-take (seq-sort-by #'cadr #'> all)
+                                    org-foresight-report-estimate-sizes)
+                          (lambda (a b) (< (car a) (car b))))))
+    (let ((worst (apply #'max 1.0 (mapcar (lambda (r) (nth 2 r)) rows))))
+      (string-join
+       (cons
+        (concat (org-foresight-bias-summary data)
+                (when-let ((w (plist-get data :window)))
+                  (format ", %d days" w)))
+        (mapcar
+         (lambda (row)
+           (pcase-let ((`(,est ,n ,ratio) row))
+             (format "%6s  n=%-4d ×%-5.1f %s"
+                     (org-duration-from-minutes est) n ratio
+                     (propertize
+                      (make-string (max 1 (round (* 24 (/ ratio worst)))) ?█)
+                      'face (if (> ratio 1.0)
+                                'org-foresight-report-overcommitted
+                              'org-foresight-report-spare)))))
+         rows))
+       "\n"))))
+
 (defun org-foresight-report-week (clock)
   "Return a week-by-CATEGORY review table with a rhythm header (<=80 cols).
 Mirrors the daily `org-foresight-report-clocked' layout (Area/Time/%/Share)
@@ -639,7 +700,11 @@ being what it is -- a list of what the colours mean."
 Everything the block exists to say, in the width of a single line: what is
 left, what has been promised away, and the hour the day actually ends."
   (let ((headroom (plist-get cap :headroom-min))
-        (finish (plist-get cap :finish))
+        ;; Where it lands rather than where it fits: a day whose work runs
+        ;; past six does not stop having an end, and "will not fit" was
+        ;; refusing to name one on exactly the days it mattered most.  Nil is
+        ;; kept for what it now honestly means -- not today at all.
+        (finish (plist-get cap :lands))
         (samples (org-foresight-surge-samples)))
     (concat
      (format "Work %s" (org-duration-from-minutes (plist-get cap :span-min)))
@@ -649,14 +714,22 @@ left, what has been promised away, and the hour the day actually ends."
         (format " · OVER by %s" (org-duration-from-minutes (- headroom)))
         'face 'org-foresight-report-overcommitted))
      (if finish
-         (format " · ends %s" (format-time-string "%H:%M" finish))
-       (propertize " · will not fit" 'face 'org-foresight-report-overcommitted))
+         (let ((late (and (plist-get cap :window)
+                          (time-less-p (cdr (plist-get cap :window)) finish))))
+           (propertize (format " · ends %s" (format-time-string "%H:%M" finish))
+                       'face (if late 'org-foresight-report-overcommitted
+                               'default)))
+       (propertize " · not today" 'face 'org-foresight-report-overcommitted))
      (when samples (format " · surge from %d day(s)" samples))
      ;; Shown whenever it is doing anything, so a day that has shrunk reads as
      ;; "my estimates are optimistic" rather than "the tool is being harsh".
-     (let ((factor (org-foresight-bias-factor nil)))
-       (if (> (abs (- factor 1.0)) 0.1)
-           (format " · est ×%.1f" factor)
+     ;; In minutes rather than as a multiplier: the correction is a curve now,
+     ;; so there is no single multiple to name, and what the reader can act on
+     ;; is the time it cost -- in the same unit as the headroom beside it.
+     (let ((bias (or (plist-get cap :bias-min) 0.0)))
+       (if (>= (abs bias) org-foresight-bias-visible-minutes)
+           (format " · est %s%s" (if (> bias 0) "+" "−")
+                   (org-duration-from-minutes (abs bias)))
          "")))))
 
 (defun org-foresight-report--bars (cap)
@@ -800,6 +873,32 @@ answers to \"can this move\"."
 The adjusted estimate where there is one, since that is what capacity spends."
   (or (plist-get e :effort-adj) (plist-get e :effort) 0))
 
+(defun org-foresight-report--effort-run (e)
+  "Return what ledger entry E costs, saying so when that is not what it said.
+
+Written \"2:00→2:48\" where the correction is doing real work, and as the
+plain figure where it is not.  The estimate stays on the left because that is
+the number in the file and the one being questioned; the arrow is the
+learning, and it points at what the day is actually being planned around."
+  (let ((drift (org-foresight-report--effort-drift e)))
+    (if drift
+        (concat (org-duration-from-minutes (plist-get e :effort)) drift)
+      (org-duration-from-minutes (org-foresight-report--entry-minutes e)))))
+
+(defun org-foresight-report--effort-drift (e)
+  "Return \"→2:48\" where E\='s correction is doing real work, else nil.
+
+Split from `org-foresight-report--effort-run\=' so that a row which already
+carries the estimate -- one Org printed in its own effort column -- can be
+told what the estimate is being treated as without the figure being written
+out twice."
+  (let ((raw (plist-get e :effort))
+        (adj (org-foresight-report--entry-minutes e)))
+    (when (and raw (> raw 0)
+               (>= (abs (- adj raw)) org-foresight-bias-visible-minutes)
+               (> (abs (- (/ adj (float raw)) 1.0)) 0.1))
+      (concat "→" (org-duration-from-minutes adj)))))
+
 (defun org-foresight-report--budget (lead)
   "Return the columns a run may use on a line already carrying LEAD.
 
@@ -818,8 +917,7 @@ whole answer on some days."
                           (format "%s %s"
                                   (truncate-string-to-width
                                    (plist-get e :title) 22 nil nil "…")
-                                  (org-duration-from-minutes
-                                   (org-foresight-report--entry-minutes e))))
+                                  (org-foresight-report--effort-run e)))
                         entries))
         (total (length entries))
         shown)
@@ -959,12 +1057,26 @@ block scanning again for itself."
             "\n")))
 
 (defun org-foresight-report--review ()
-  "Return the weekly review report: where the last seven days actually went."
+  "Return the weekly review: where the last seven days went, and how far the
+estimates that shaped them were out.
+
+Two blocks rather than one, because they answer different questions over
+different periods: the week says where the hours landed, the curve says what
+to expect of the next estimate written.  The second is only here and not on
+the daily view -- changing how you estimate is done on reflection, not
+between two meetings."
   (concat "\n"
           (org-foresight-report--badge "Clocked" "by area · last 7 days")
           "\n"
           (org-foresight-report-week (org-foresight-clock-scan 7))
-          "\n"))
+          "\n"
+          (when-let ((estimates (org-foresight-report-estimates)))
+            (concat "\n"
+                    (org-foresight-report--badge
+                     "Estimates" "how far each size of estimate runs over")
+                    "\n"
+                    (org-foresight-report--indent estimates)
+                    "\n"))))
 
 (defun org-foresight-report--guarded (thunk)
   "Call THUNK, returning its string or a visible complaint on failure.
@@ -1122,9 +1234,7 @@ a signal and acting on it is not interrupted by the display jumping."
                      (org-duration-from-minutes (org-foresight-surge-minutes)))))
      (cons "estimates"
            (if bias
-               (format "×%.2f overall from %d task(s)%s"
-                       (or (plist-get bias :overall) 1.0)
-                       (or (plist-get bias :samples) 0)
+               (concat (org-foresight-bias-summary bias)
                        (if org-foresight-bias-enabled "" " (APPLYING DISABLED)"))
              "not learned (estimates taken at face value)"))
      (cons "places"
@@ -1159,9 +1269,17 @@ is what lets a whole feature quietly not run."
             out))
     (unless (org-foresight-surge-samples)
       (push "run `org-foresight-learn-surge' to measure the reserve" out))
-    (unless (org-foresight--bias-data)
-      (push "run `org-foresight-learn-bias' to see how far estimates run over"
-            out))
+    (let ((bias (org-foresight--bias-data)))
+      (cond
+       ((null bias)
+        (push "run `org-foresight-learn-bias' to see how far estimates run over"
+              out))
+       ;; Learnt, but by a version that recorded only the answer.  The
+       ;; correction still works; what is missing is any way to check it.
+       ((null (plist-get bias :by-effort))
+        (push (concat "run `org-foresight-learn-bias' again; the cached "
+                      "figures predate the estimate curve")
+              out))))
     (unless (bound-and-true-p org-foresight-task-file)
       (push "`org-foresight-task-file' is unset; generated tasks have nowhere to go"
             out))

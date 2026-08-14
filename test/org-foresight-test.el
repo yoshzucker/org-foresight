@@ -418,7 +418,13 @@ SCHEDULED: <2026-08-10 Mon>
       (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
                                          (org-foresight-test--ts 6 0 10))))
         (should (< (plist-get cap :headroom-min) 0))
-        (should (null (plist-get cap :finish)))))))
+        ;; nothing fits inside the hours meant to be kept ...
+        (should (null (plist-get cap :finish)))
+        ;; ... but the work does not stop existing at the edge of them, and
+        ;; where it actually stops is the fact worth having
+        (should (plist-get cap :lands))
+        (should (time-less-p (cdr (plist-get cap :window))
+                             (plist-get cap :lands)))))))
 
 (ert-deftest org-foresight-test-capacity-non-workday ()
   "A day with no working window has no free time to offer."
@@ -1455,6 +1461,43 @@ SCHEDULED: <2026-08-10 Mon 10:00>
       (should (string-match-p "peak" s))
       (should (org-foresight-test--within-80 s)))))
 
+(ert-deftest org-foresight-test-report-estimates ()
+  "The review names the sizes actually estimated with, and only a few of them.
+
+The claim and its evidence on one screen: the fitted line at the top, the
+sizes it was fitted from underneath.  Capped, because a corpus of free-form
+efforts has a long tail of sizes used once, and a row per singleton buries
+the handful anybody could act on."
+  (org-foresight-test--with-bias
+      (mapconcat
+       (lambda (est)
+         (org-foresight-test--done-minutes
+          (format "t%d" est) "work" est
+          (max 1 (round (* 3 (expt (float est) 0.6))))))
+       '(5 5 5 10 10 15 15 15 30 30 45 60 60 90 120 7 23 37 53 71 97)
+       "")
+    (org-foresight-learn-bias)
+    (let* ((org-foresight-report-estimate-sizes 8)
+           (s (org-foresight-report-estimates))
+           (lines (split-string (substring-no-properties s) "\n")))
+      (should (string-match-p "slope" (car lines)))
+      ;; the header and no more sizes than were asked for
+      (should (= 9 (length lines)))
+      ;; in order of size, so the shape is the thing the eye follows
+      (let ((sizes (mapcar (lambda (l)
+                             (org-duration-to-minutes
+                              (string-trim (substring l 0 6))))
+                           (cdr lines))))
+        (should (equal sizes (sort (copy-sequence sizes) #'<))))
+      (should (org-foresight-test--within-80 s))
+      ;; and it obeys the margin rule once the review has indented it
+      (should (seq-every-p (lambda (l) (or (string-empty-p l)
+                                           (string-prefix-p " " l)))
+                           (split-string
+                            (substring-no-properties
+                             (org-foresight-report--indent s))
+                            "\n"))))))
+
 (ert-deftest org-foresight-test-report-empty-clock ()
   "A day with nothing clocked must render a message, not crash or blank out."
   (org-foresight-test--without-aw
@@ -2050,6 +2093,10 @@ SCHEDULED: <2020-01-01 Wed>
                  (org-foresight-bias-enabled t)
                  (org-foresight-bias-window 90)
                  (org-foresight-bias-min-samples 3)
+                 (org-foresight-bias-max-samples 600)
+                 (org-foresight-bias-slope-range '(0.3 . 1.3))
+                 (org-foresight-bias-factor-range '(0.5 . 4.0))
+                 (org-foresight-bias-abandoned-keywords '("CANCEL"))
                  (org-foresight--bias-cache nil))
              ,@body))
        (delete-file cache))))
@@ -2097,6 +2144,193 @@ however long after it is written the tests are run."
     (should (= (org-foresight-bias-factor "reporting") 2.0))
     (should (= (org-foresight-bias-factor "admin")
                (org-foresight-bias-factor nil)))))
+
+(defun org-foresight-test--done-minutes (title category est-min act-min
+                                              &optional keyword)
+  "Return org text for a KEYWORD task estimated EST-MIN and clocked ACT-MIN."
+  (let* ((day (org-foresight--day-start 1))
+         (stamp (lambda (mins)
+                  (format-time-string "[%Y-%m-%d %a %H:%M]"
+                                      (time-add day (seconds-to-time
+                                                     (+ (* 9 3600)
+                                                        (* 60 mins))))))))
+    (concat "* " (or keyword "DONE") " " title "\n"
+            "CLOSED: " (funcall stamp 600) "\n"
+            ":PROPERTIES:\n"
+            ":EFFORT:   " (org-duration-from-minutes est-min) "\n"
+            ":CATEGORY: " category "\n"
+            ":END:\n"
+            ":LOGBOOK:\n"
+            "CLOCK: " (funcall stamp 0) "--" (funcall stamp act-min) "\n"
+            ":END:\n")))
+
+(ert-deftest org-foresight-test-bias-recovers-a-slope ()
+  "A corpus that really is a power law is read back as one.
+
+The whole point of fitting rather than averaging: when small estimates are
+missed by more than large ones, one multiplier cannot say so and a slope can.
+Built from `act = 3 * est^0.6\=', which is the shape being claimed."
+  (org-foresight-test--with-bias
+      (mapconcat
+       (lambda (est)
+         (org-foresight-test--done-minutes
+          (format "t%d" est) "work" est
+          (max 1 (round (* 3 (expt (float est) 0.6))))))
+       '(2 2 5 5 10 10 15 15 30 30 45 60 60 90 120 120)
+       "")
+    (org-foresight-learn-bias)
+    (let ((b (plist-get (org-foresight--bias-data) :slope)))
+      (should (< 0.5 b 0.7)))
+    ;; and the multiplier it implies falls away as the estimate grows
+    (should (> (org-foresight-bias-factor "work" 5)
+               (org-foresight-bias-factor "work" 30)
+               (org-foresight-bias-factor "work" 120)))
+    ;; an estimate nobody ever wrote is answered between its neighbours
+    (should (< (org-foresight-bias-factor "work" 30)
+               (org-foresight-bias-factor "work" 20)
+               (org-foresight-bias-factor "work" 15)))))
+
+(ert-deftest org-foresight-test-bias-ignores-abandoned-work ()
+  "Work that was dropped says nothing about the estimate it was given.
+
+An hour\='s job abandoned after ten minutes is not evidence that hours take
+minutes, and letting it count drags every estimate of that kind down."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done-minutes "d1" "work" 60 120)
+       (org-foresight-test--done-minutes "d2" "work" 60 120)
+       (org-foresight-test--done-minutes "d3" "work" 60 120)
+       (org-foresight-test--done-minutes "x1" "work" 60 5 "CANCEL")
+       (org-foresight-test--done-minutes "x2" "work" 60 5 "CANCEL"))
+    (org-foresight-learn-bias)
+    (should (= 3 (plist-get (org-foresight--bias-data) :samples)))
+    (should (= 2.0 (org-foresight-bias-factor "work" 60)))))
+
+(ert-deftest org-foresight-test-bias-is-clamped ()
+  "However wild the history, the day is not planned around an absurdity.
+
+A correction that quarters or quadruples an estimate is not a correction, it
+is a different plan -- and one bad fortnight should not be allowed to make
+one."
+  (org-foresight-test--with-bias
+      (mapconcat
+       (lambda (est)
+         (org-foresight-test--done-minutes (format "t%d" est) "work" est
+                                           (* est 40)))
+       '(2 2 5 5 10 15 30 60 120)
+       "")
+    (org-foresight-learn-bias)
+    (let ((b (plist-get (org-foresight--bias-data) :slope)))
+      (should (<= (car org-foresight-bias-slope-range) b
+                  (cdr org-foresight-bias-slope-range))))
+    (dolist (est '(2 5 15 60 120 480))
+      (should (<= (car org-foresight-bias-factor-range)
+                  (org-foresight-bias-factor "work" est)
+                  (cdr org-foresight-bias-factor-range))))))
+
+(ert-deftest org-foresight-test-bias-reads-a-cache-from-before-the-curve ()
+  "A file written when the correction was one number still works.
+
+It is the same statement with the slope pinned at 1, so it is read as that
+rather than discarded: upgrading keeps the correction you had instead of
+silently losing it until the next time you learn."
+  (org-foresight-test--with-bias ""
+    (with-temp-file org-foresight-bias-cache-file
+      (prin1 '(:overall 2.0 :categories (("admin" . 3.0)) :samples 9
+               :updated "2026-01-01")
+             (current-buffer)))
+    (setq org-foresight--bias-cache nil)
+    (should (= 1.0 (plist-get (org-foresight--bias-data) :slope)))
+    ;; a constant multiplier: the same whatever the estimate.  Compared
+    ;; within a tolerance because the number makes a round trip through a
+    ;; logarithm, and exp(log(3.0)) is 3.0000000000000004.
+    (should (< (abs (- 2.0 (org-foresight-bias-factor nil 5))) 1e-9))
+    (should (< (abs (- 2.0 (org-foresight-bias-factor nil 120))) 1e-9))
+    (should (< (abs (- 3.0 (org-foresight-bias-factor "admin" 30))) 1e-9))))
+
+(ert-deftest org-foresight-test-bias-minutes-is-what-the-correction-cost ()
+  "The day says what the correction added to it, in the unit it added it in.
+
+A multiplier stopped being a single number when the correction became a
+curve, so the verdict names minutes instead -- which is the same unit as the
+headroom beside it and therefore the only one worth comparing."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done-minutes "d1" "work" 60 120)
+       (org-foresight-test--done-minutes "d2" "work" 60 120)
+       (org-foresight-test--done-minutes "d3" "work" 60 120)
+       "* NEXT write it up\n"
+       "SCHEDULED: " (format-time-string "<%Y-%m-%d %a>"
+                                         (org-foresight--day-start 0)) "\n"
+       ":PROPERTIES:\n:EFFORT:   1:00\n:CATEGORY: work\n:END:\n")
+    (org-foresight-learn-bias)
+    (let* ((day (org-foresight--day-start 0))
+           (scan (org-foresight-scan 1 day))
+           (cap (org-foresight-capacity day scan))
+           (ledger (aref (plist-get scan :ledger) 0))
+           (sum 0.0))
+      (dolist (e ledger)
+        (when (eq (plist-get e :kind) 'promised)
+          (setq sum (+ sum (- (plist-get e :effort-adj)
+                              (plist-get e :effort))))))
+      ;; an hour of work that reliably takes two is an hour of correction
+      (should (< (abs (- 60.0 (plist-get cap :bias-min))) 0.001))
+      (should (< (abs (- sum (plist-get cap :bias-min))) 0.001)))))
+
+(ert-deftest org-foresight-test-a-corrected-estimate-says-so ()
+  "A row showing a figure that is not the one in the file says both.
+
+The estimate stays on the left because that is the number that was written
+and the one being questioned; the arrow is the learning.  Below the
+threshold nothing is said, because five columns spent reporting a two-minute
+adjustment is five columns spent reporting nothing."
+  (let ((org-foresight-bias-visible-minutes 5))
+    (should (equal "2:00→2:48"
+                   (org-foresight-report--effort-run
+                    '(:effort 120.0 :effort-adj 168.0))))
+    ;; pessimistic estimates are reported just as plainly
+    (should (equal "1:00→0:40"
+                   (org-foresight-report--effort-run
+                    '(:effort 60.0 :effort-adj 40.0))))
+    ;; inside the threshold, or inside a tenth, the row shows the figure the
+    ;; day is planned around and says nothing further: a difference this
+    ;; small is inside the rounding of the numbers beside it
+    (should (equal "0:32"
+                   (org-foresight-report--effort-run
+                    '(:effort 30.0 :effort-adj 32.0))))
+    (should (equal "8:20"
+                   (org-foresight-report--effort-run
+                    '(:effort 480.0 :effort-adj 500.0))))
+    ;; and an entry nobody estimated has nothing to compare
+    (should (equal "0:45"
+                   (org-foresight-report--effort-run '(:effort-adj 45.0))))))
+
+(ert-deftest org-foresight-test-bias-does-not-extrapolate ()
+  "The curve stops where the evidence does.
+
+A line fitted on jobs between five minutes and two hours says nothing about a
+day-long one, and following it out there would shrink an eight-hour estimate
+on no evidence at all -- wrong in the one direction this package exists to
+prevent.  Past the ends of the evidence the correction goes flat."
+  (org-foresight-test--with-bias
+      (mapconcat
+       (lambda (est)
+         (org-foresight-test--done-minutes
+          (format "t%d" est) "work" est
+          (max 1 (round (* 3 (expt (float est) 0.6))))))
+       '(5 5 10 10 15 15 30 30 60 60 120 120)
+       "")
+    (org-foresight-learn-bias)
+    (should (equal '(5.0 . 120.0) (plist-get (org-foresight--bias-data) :range)))
+    ;; beyond the largest estimate ever made, the factor stops moving
+    (should (= (org-foresight-bias-factor "work" 120)
+               (org-foresight-bias-factor "work" 480)))
+    ;; and below the smallest, likewise
+    (should (= (org-foresight-bias-factor "work" 5)
+               (org-foresight-bias-factor "work" 1)))
+    ;; inside it, the curve still falls away with size
+    (should (> (org-foresight-bias-factor "work" 10)
+               (org-foresight-bias-factor "work" 60)))))
 
 (ert-deftest org-foresight-test-bias-without-history-is-neutral ()
   "With nothing learned the factor is 1.0: an unknown bias corrects nothing."
@@ -2588,6 +2822,129 @@ arrangement of them -- so it can be said without placing anything."
                        'org-heading t row)
     row))
 
+(ert-deftest org-foresight-test-work-lands-is-drawn-where-it-lands ()
+  "The projected end of the day is a rule at its own hour, or nothing at all.
+
+Two of the day\='s three rules are declarations and this one is a prediction,
+so it is only worth a line when it disagrees with them: a projection that
+lands on the hour you declared is not news, and a rule that is always there
+is a rule the eye stops seeing.
+
+It takes the overrun\='s colour past the declared end and the colour of room
+before it -- landing early is the point of the whole exercise, not a lesser
+kind of news."
+  (let* ((window (cons (org-foresight-test--ts 9 0 10)
+                       (org-foresight-test--ts 17 30 10)))
+         (rows (lambda (finish)
+                 (mapcar #'substring-no-properties
+                         (org-foresight-agenda--edges
+                          (list :window window :lands finish)
+                          (org-foresight-test--ts 0 0 10)))))
+         (row-face (lambda (finish)
+                     (car (ensure-list
+                           (get-text-property
+                            0 'face
+                            (seq-find
+                             (lambda (r) (string-match-p
+                                          "work lands"
+                                          (substring-no-properties r)))
+                             (org-foresight-agenda--edges
+                              (list :window window :lands finish)
+                              (org-foresight-test--ts 0 0 10)))))))))
+    ;; the declared edges are always there
+    (should (= 2 (length (funcall rows nil))))
+    (should (seq-find (lambda (r) (string-match-p "work starts" r))
+                      (funcall rows nil)))
+    (should (seq-find (lambda (r) (string-match-p "work ends" r))
+                      (funcall rows nil)))
+    ;; agreeing with the declaration says nothing
+    (should (= 2 (length (funcall rows (org-foresight-test--ts 17 32 10)))))
+    ;; running past it is the overrun's news, filed at the hour it happens --
+    ;; the hour is a text property rather than text, which is what lets Org
+    ;; sort the row into the day rather than onto the end of it
+    (let* ((over (org-foresight-agenda--edges
+                  (list :window window :lands (org-foresight-test--ts 19 20 10))
+                  (org-foresight-test--ts 0 0 10)))
+           (lands (seq-find (lambda (r) (string-match-p
+                                         "work lands"
+                                         (substring-no-properties r)))
+                            over)))
+      (should (= 3 (length over)))
+      (should lands)
+      (should (= 1920 (get-text-property 0 'time-of-day lands)))
+      (should (= 1920 (get-text-property 1 'time-of-day lands))))
+    (should (eq 'org-foresight-report-overcommitted
+                (funcall row-face (org-foresight-test--ts 19 20 10))))
+    ;; landing early is room, and gets the colour of it
+    (should (eq 'org-foresight-report-spare
+                (funcall row-face (org-foresight-test--ts 15 40 10))))))
+
+(ert-deftest org-foresight-test-work-lands-still-speaks-when-it-cannot-fit ()
+  "A day too full to end is the day the projection matters most.
+
+Drawing nothing there put the rule on every day except the ones worth a rule.
+The line goes at the last hour there is and says how much is still standing
+then -- an hour that cannot be drawn is no reason to draw nothing."
+  (let* ((window (cons (org-foresight-test--ts 9 0 10)
+                       (org-foresight-test--ts 17 30 10)))
+         (day (org-foresight-test--ts 0 0 10))
+         (rows (org-foresight-agenda--edges
+                (list :window window :lands nil :overflow-min 255.0)
+                day))
+         (lands (seq-find (lambda (r) (string-match-p
+                                       "work lands"
+                                       (substring-no-properties r)))
+                          rows)))
+    (should lands)
+    (should (string-match-p "4:15 will not fit" (substring-no-properties lands)))
+    (should (eq 'org-foresight-report-overcommitted
+                (car (ensure-list (get-text-property 0 'face lands)))))
+    ;; at the last hour of the waking day, which is where it is still true
+    (should (= 2300 (get-text-property 1 'time-of-day lands)))
+    ;; and nothing at all when there is nothing left over
+    (should (= 2 (length (org-foresight-agenda--edges
+                          (list :window window :lands nil :overflow-min 0.0)
+                          day))))))
+
+(ert-deftest org-foresight-test-org-own-effort-column-is-corrected ()
+  "Org prints the estimate in the file; the day is planned on a corrected one.
+
+Where those differ the row said the first and meant the second, which is the
+one thing a number on a screen must never do.  The correction is written
+beside it in the derived face, since it is in no file and cannot be edited
+where it appears."
+  (let* ((buf (get-buffer-create "*foresight-effort*"))
+         (m (with-current-buffer buf
+              (insert "* big\n* small\n") (copy-marker (point-min))))
+         (other-m (with-current-buffer buf (copy-marker (point-max))))
+         (row (lambda (text marker effort)
+                (let ((r (propertize text 'org-hd-marker marker
+                                     'effort effort)))
+                  (put-text-property (string-match "NEXT" text) (length text)
+                                     'org-heading t r)
+                  r)))
+         (big (funcall row "  reporti Scheduled:  6:00 NEXT Rewrite" m "6:00"))
+         (small (funcall row "  admin    Scheduled:  0:30 NEXT Reply"
+                         other-m "0:30")))
+    (unwind-protect
+        (let* ((out (org-foresight-agenda--annotate-efforts
+                     (list big small)
+                     (list (list :kind 'promised :marker m
+                                 :effort 360.0 :effort-adj 466.0)
+                           ;; inside the threshold: nothing to say
+                           (list :kind 'promised :marker other-m
+                                 :effort 30.0 :effort-adj 31.0))))
+               (flat (mapcar #'substring-no-properties out)))
+          (should (equal "  reporti Scheduled:  6:00→7:46 NEXT Rewrite"
+                         (nth 0 flat)))
+          (should (equal small (nth 1 out)))
+          ;; the added figure is marked as nobody's writing
+          (let ((at (string-match "→" (nth 0 flat))))
+            (should (memq 'org-foresight-agenda-derived
+                          (ensure-list (get-text-property at 'face
+                                                          (nth 0 out)))))))
+      (kill-buffer buf))))
+
 (ert-deftest org-foresight-test-marks-share-one-column ()
   "Every mark in the grid goes in the same column, whatever the row.
 
@@ -2677,14 +3034,16 @@ meeting it collides with, which is where the collision is."
 (ert-deftest org-foresight-test-edges-read-like-the-now-line ()
   "The edges of the day are labelled then ruled, as Org rules `← now'.
 Two lines that mean the same kind of thing should be read the same way."
-  (let* ((rows (org-foresight-agenda--edges
+  (let* ((day (org-foresight-test--ts 0 0 10))
+         (rows (org-foresight-agenda--edges
                 (list :window (cons (org-foresight-test--ts 9 0 10)
-                                    (org-foresight-test--ts 17 30 10)))))
+                                    (org-foresight-test--ts 17 30 10)))
+                day))
          (plain (mapcar #'substring-no-properties rows)))
     (should (seq-find (lambda (r) (string-match-p "work starts ─+$" r)) plain))
     (should (seq-find (lambda (r) (string-match-p "work ends ─+$" r)) plain))
     ;; and a day with no working window has no edges to draw
-    (should-not (org-foresight-agenda--edges '(:window nil)))))
+    (should-not (org-foresight-agenda--edges '(:window nil) day))))
 
 (ert-deftest org-foresight-test-key-names-only-the-marks-used ()
   "A key describing a clash on a day that has none is explaining a problem
