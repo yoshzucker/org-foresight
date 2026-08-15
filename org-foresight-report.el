@@ -575,14 +575,15 @@ a horizontal bar carries its quantity in length rather than in ink.")
   "Segments of the second bar, dividing the waking day outside the work span.
 
 `unclaimed' rather than `free': the grid uses `free' for work time nothing
-has claimed, and an hour with no work in it and an evening with no plans in
+has claimed, and an hour with no work in it and an hour off with no plans in
 it are not the same kind of emptiness.")
 
 (defun org-foresight-report--bar-scale (cap)
   "Return minutes per column, chosen so both bars can share a scale.
 
 Two bars drawn to their own widths cannot be compared, and comparing them is
-the point: a working day that dwarfs the evening is the thing worth seeing.
+the point: a working day that dwarfs what is left of it is the thing worth
+seeing.
 So one scale serves both, taken from the longer of the two *spans*.
 
 Deliberately not from the promises.  Scaling to those would shrink an
@@ -757,8 +758,11 @@ left, what has been promised away, and the hour the day actually ends."
      (cond
       ((<= (or (plist-get cap :committed-min) 0.0) 0) "")
       (finish
-       (let ((late (and (plist-get cap :window)
-                        (time-less-p (cdr (plist-get cap :window)) finish))))
+       (let* ((work (plist-get cap :work))
+              ;; Late against the hour work was meant to be over -- the end of
+              ;; the last interval, not of whichever one it ran past.
+              (ends (cdr (car (last work))))
+              (late (and ends (time-less-p ends finish))))
          (propertize (format " · ends %s" (format-time-string "%H:%M" finish))
                      'face (if late 'org-foresight-report-overcommitted
                              'default))))
@@ -769,10 +773,19 @@ left, what has been promised away, and the hour the day actually ends."
      ;; multiplier cannot be compared with an hour, and these are the two
      ;; terms that decide whether the hour is there.
      (let ((reserve (or (plist-get cap :reserve-min) 0.0))
+           (budget (or (plist-get cap :reserve-day-min) 0.0))
            (bias (or (plist-get cap :bias-min) 0.0)))
        (concat
-        (when (>= reserve 1.0)
-          (format " · reserve %s" (org-duration-from-minutes reserve)))
+        ;; Said against the whole day's allowance, and said even at nothing.
+        ;; The reserve shrinks through the day, by the hours going past and by
+        ;; the interruptions that have already landed -- so on the day it
+        ;; matters most it is smallest, and a figure that disappears when it
+        ;; gets small disappears exactly then.  "0:00 of 1:35" is not an empty
+        ;; line: it is the day saying the allowance was real and is now spent.
+        (when (> budget 0)
+          (format " · reserve %s of %s"
+                  (org-duration-from-minutes (max 0.0 reserve))
+                  (org-duration-from-minutes budget)))
         ;; Shown whenever it is doing anything, so a day that has shrunk reads
         ;; as "my estimates are optimistic" rather than "the tool is harsh".
         (when (>= (abs bias) org-foresight-bias-visible-minutes)
@@ -783,14 +796,14 @@ left, what has been promised away, and the hour the day actually ends."
   "Return CAP's two bars with a legend above the first and below the second.
 
 The bars are set one directly under the other, which is the whole use of
-their shared scale: a working day that dwarfs the evening it leaves behind is
+their shared scale: a working day that dwarfs the hours it leaves behind is
 exactly the thing worth seeing, and nothing between them would let it be
 seen.  So each legend sits on the far side of its own bar, and the totals
 move on to the bars themselves.
 
-Unclaimed evenings are not capacity waiting to be spent: the emptiness is
-what makes room for anything new, and a day that quietly borrows from it
-should have to say so."
+Unclaimed hours are not capacity waiting to be spent: the emptiness is what
+makes room for anything new, and a day that quietly borrows from it should
+have to say so."
   (let ((work (org-foresight-report--bar cap))
         (off (org-foresight-report--off-bar cap)))
     (when work
@@ -820,7 +833,7 @@ not have to go looking for is a number you will not look at."
      ;; saying so on.  One line, because there is no span to draw and nothing
      ;; to offer: what is true is that the work exists and the day was not
      ;; meant for it.  A genuinely free day says nothing at all.
-     ((null (plist-get cap :window))
+     ((null (plist-get cap :work))
       (when (> (plist-get cap :committed-min) 0)
         (org-foresight-report--indent
          (concat (org-foresight-report--rest-day cap)
@@ -1300,8 +1313,11 @@ a signal and acting on it is not interrupted by the display jumping."
                    (format-time-string "%H:%M" (car awake))
                    (format-time-string "%H:%M" (cdr awake))
                    (if work
-                       (concat (format-time-string "%H:%M" (car work)) "–"
-                               (format-time-string "%H:%M" (cdr work)))
+                       (mapconcat
+                        (lambda (iv)
+                          (concat (format-time-string "%H:%M" (car iv)) "–"
+                                  (format-time-string "%H:%M" (cdr iv))))
+                        work " ")
                      "none")))
      (cons "surge"
            (if-let ((n (org-foresight-surge-samples)))
