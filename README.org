@@ -566,6 +566,32 @@ its intervals, and after it: =private= for commitments outside working hours,
 =unclaimed= for the hours nothing has claimed. Work that lands out there is
 not absorbed silently — it appears as =borrowed=, and says so.
 
+*** The spine
+
+The working hours are bracketed down the agenda's left edge, in the column
+every prefix already begins with:
+
+#+begin_example
+┌          9:00...... work starts ────────────
+│          9:00-9:30  0:30 free · 0:29 usable
+│ meeting  9:30-9:45  Standup
+└         12:00...... work pauses ────────────
+          12:15-12:45 Vendor call            ← outside the bracket
+┌         13:00...... work resumes ────────────
+│         13:00-17:30 4:30 free · 4:25 usable
+└         17:30...... work ends ────────────
+          19:00-20:30 Dinner
+#+end_example
+
+A day in pieces reads as pieces: two stretches of work are two brackets, and
+what falls in the declared break sits visibly outside them. The corners are
+what make that work — a plain bar would say only that some rows are work,
+without saying where a stretch begins.
+
+The glyph *replaces* the first column rather than being inserted into it, so
+no column moves; where that column is not blank, the line is left alone.
+=org-foresight-agenda-spine= turns it off.
+
 An overcommitted day is drawn past the width with =┃= where the span actually
 ended, rather than being scaled back until it fits. The one day that must not
 look workable is the one that is not.

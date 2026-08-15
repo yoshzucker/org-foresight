@@ -4148,7 +4148,10 @@ assertion about \"tomorrow\" survive being run tomorrow."
            (org-agenda-log-mode-items '(closed state))
            (org-agenda-start-with-clockreport-mode nil)
            (org-agenda-start-with-entry-text-mode nil)
-           (org-agenda-finalize-hook '(org-foresight-report-render))
+           ;; Both, in the order a real session ends up with: the package
+           ;; adds its own when it loads, and a config appends the report.
+           (org-agenda-finalize-hook '(org-foresight-agenda--draw-spine
+                                       org-foresight-report-render))
            (org-foresight-report-style 'daily)
            (org-foresight-awake '("07:00" . "22:00"))
            (org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:30")))
@@ -4214,7 +4217,10 @@ functions it calls says nothing about whether Org still calls it."
       (should (seq-find (lambda (l) (string-match-p "work starts" l)) lines))
       (should (seq-find (lambda (l) (string-match-p "work pauses" l)) lines))
       (should (seq-find (lambda (l) (string-match-p "work ends" l)) lines))
-      (should (seq-find (lambda (l) (string-match-p "free · " l)) lines))
+      ;; "free", not "free · 0:29 usable": the usable part is only shown while
+      ;; a reserve is still being held, so asserting on it would make this test
+      ;; pass in the afternoon and fail in the evening.
+      (should (seq-find (lambda (l) (string-match-p "free" l)) lines))
       ;; and the report block, which is a separate hook
       (should (seq-find (lambda (l) (string-match-p "Capacity" l)) lines))
       ;; nothing blew up on the way
@@ -4552,6 +4558,106 @@ to read as \"nothing is watching\" rather than as \"you did nothing\"."
                         :today-intervals nil :today-tasks nil))
            (text (substring-no-properties (org-foresight-report-spent clock))))
       (should (string-match-p "ActivityWatch" text)))))
+
+;;;; The spine
+
+(defun org-foresight-test--spine-of (lines)
+  "Return the first column of LINES as one string, blanks included."
+  (mapconcat (lambda (l) (string (if (string-empty-p l) ?\s (aref l 0)))) lines ""))
+
+(ert-deftest org-foresight-test-spine-brackets-each-stretch-of-work ()
+  "Two stretches of work read as two brackets, not one interrupted line.
+
+The corners are the whole point: with the hours in pieces, `am I inside them\='
+stopped being answerable from where a row sits, and a plain bar would say
+only that some rows are work without saying where a stretch begins."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n"
+              "* Call in the break\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "12:15" "12:45") "\n")
+    (let* ((lines (org-foresight-test--agenda))
+           (spine (org-foresight-test--spine-of lines)))
+      ;; one bracket per work interval
+      (should (= 2 (seq-count (lambda (c) (= c ?┌)) spine)))
+      (should (= 2 (seq-count (lambda (c) (= c ?└)) spine)))
+      (should (> (seq-count (lambda (c) (= c ?│)) spine) 0))
+      ;; the rules themselves are the corners
+      (should (seq-find (lambda (l) (string-prefix-p "┌" l))
+                        (seq-filter (lambda (l) (string-match-p "work starts" l)) lines)))
+      (should (seq-find (lambda (l) (string-prefix-p "└" l))
+                        (seq-filter (lambda (l) (string-match-p "work ends" l)) lines)))
+      ;; and what sits in the declared break is outside the bracket
+      (should (seq-find (lambda (l) (and (string-match-p "Call in the break" l)
+                                         (string-prefix-p " " l)))
+                        lines)))))
+
+(ert-deftest org-foresight-test-spine-leaves-every-column-where-it-was ()
+  "The glyph replaces the first column; it does not push the line right.
+
+Every column this package draws -- the mark column above all -- is counted
+from the start of the line.  An insertion would move all of them by one and
+leave the marks a column adrift from the headings they mark."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (let ((with (progn (org-foresight-test--agenda)
+                       (with-current-buffer org-agenda-buffer-name
+                         (goto-char (point-min))
+                         (re-search-forward "Standup")
+                         (- (match-beginning 0) (line-beginning-position)))))
+          (without (let ((org-foresight-agenda-spine nil))
+                     (org-foresight-test--agenda)
+                     (with-current-buffer org-agenda-buffer-name
+                       (goto-char (point-min))
+                       (re-search-forward "Standup")
+                       (- (match-beginning 0) (line-beginning-position))))))
+      (should (= with without)))))
+
+(ert-deftest org-foresight-test-spine-is-drawn-once-however-often-it-runs ()
+  "Redrawing must not stack glyphs or eat the column.
+
+The report block is re-rendered on every change made from the agenda, and the
+whole buffer is finalized again on every redo, so this pass runs far more
+often than it appears to."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (org-foresight-test--agenda)
+    (with-current-buffer org-agenda-buffer-name
+      (let ((before (buffer-substring-no-properties (point-min) (point-max))))
+        (org-foresight-agenda--draw-spine)
+        (org-foresight-agenda--draw-spine)
+        (should (equal before (buffer-substring-no-properties
+                               (point-min) (point-max))))))))
+
+(ert-deftest org-foresight-test-spine-does-not-cross-the-date-line ()
+  "Each day is bracketed on its own; a stretch cannot bleed into the next day."
+  (let ((org-foresight-test--e2e-span 2))
+    (org-foresight-test--with-agenda
+        (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                (org-foresight-test--stamp 0 "09:30" "09:45") "\n"
+                "* Review\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                (org-foresight-test--stamp 1 "10:00" "11:00") "\n")
+      (let* ((lines (org-foresight-test--agenda))
+             (spine (org-foresight-test--spine-of lines)))
+        ;; two days, two intervals each
+        (should (= 4 (seq-count (lambda (c) (= c ?┌)) spine)))
+        (should (= 4 (seq-count (lambda (c) (= c ?└)) spine)))
+        ;; and no date header wears one
+        (should-not (seq-find (lambda (l)
+                                (and (string-match-p "^[┌│└]" l)
+                                     (string-match-p "August\\|September" l)))
+                              lines))))))
+
+(ert-deftest org-foresight-test-spine-can-be-turned-off ()
+  "Somebody who does not want it gets the page exactly as it was before."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (let* ((org-foresight-agenda-spine nil)
+           (lines (org-foresight-test--agenda)))
+      (should-not (seq-find (lambda (l) (string-match-p "^[┌│└]" l)) lines)))))
 
 (provide 'org-foresight-test)
 
