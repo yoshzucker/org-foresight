@@ -129,7 +129,7 @@ this file\'s business to make the ground under it firm.  Inherits the standard
 table, so every other character stays as the user has it.")
 
 (defun org-foresight-agenda--item (txt &optional category dotime face marker
-                                       stamp mark)
+                                       stamp mark edge)
   "Return TXT as an agenda item at DOTIME, or nil where TXT is empty.
 
 CATEGORY fills the agenda's category column; FACE, when given, is laid over
@@ -149,6 +149,12 @@ duration in \"free 2:15\" as the time of day."
         (add-face-text-property 0 (length item) face t item))
       (when mark
         (put-text-property 0 (length item) 'org-foresight-mark mark item))
+      ;; EDGE says this row opens or closes a stretch of working hours.  A
+      ;; property rather than a shape of words: the spine is drawn later, off
+      ;; the finished buffer, and matching text there would be matching a
+      ;; label somebody may well translate.
+      (when edge
+        (put-text-property 0 (length item) 'org-foresight-edge edge item))
       (org-foresight-report--actionable item marker stamp))))
 
 (defun org-foresight-agenda--hhmm (time)
@@ -388,14 +394,14 @@ it, which is the one place a rule was worth drawing."
            (drift (and lands
                        (/ (float-time (time-subtract lands ends)) 60.0))))
       (seq-keep
-       (pcase-lambda (`(,time ,label ,face))
+       (pcase-lambda (`(,time ,label ,face ,edge))
          ;; Label first, rule after -- the order Org uses for `← now ────',
          ;; which is the other line of this kind on the page.  Two rules that
          ;; mean the same thing should be read the same way.
          (org-foresight-agenda--item
           (concat label " " (make-string 12 ?─))
           "" (org-foresight-agenda--hhmm time)
-          face nil nil))
+          face nil nil nil edge))
        (append
         ;; One pair per interval: the first opens the day and the last closes
         ;; it, and every edge in between is a break beginning or ending.
@@ -403,11 +409,11 @@ it, which is the one place a rule was worth drawing."
           (dolist (iv work (nreverse out))
             (push (list (car iv)
                         (if (zerop i) "work starts" "work resumes")
-                        'org-agenda-structure)
+                        'org-agenda-structure 'open)
                   out)
             (push (list (cdr iv)
                         (if (= i (1- n)) "work ends" "work pauses")
-                        'org-agenda-structure)
+                        'org-agenda-structure 'close)
                   out)
             (setq i (1+ i))))
         (cond
@@ -728,6 +734,98 @@ not to see empty days does not get them back full of derived rows."
 
 (advice-add 'org-agenda-add-time-grid-maybe :filter-return
             #'org-foresight-agenda--inject)
+
+;;;; The spine
+;; Which hours are work, read at a glance rather than by following the rules
+;; down the page.  A day that breaks has its working hours in two or three
+;; pieces now, and "am I inside them" stopped being answerable from where a
+;; row sits.
+
+(defcustom org-foresight-agenda-spine t
+  "When non-nil, bracket the working hours down the agenda's left edge."
+  :type 'boolean
+  :group 'org-foresight)
+
+(defconst org-foresight-agenda-spine-glyphs '((open . ?┌) (mid . ?│) (close . ?└))
+  "The three characters the spine is drawn with.
+
+Box drawing rather than a block or a bar: the corners say where a stretch
+begins and ends, so two stretches read as two brackets instead of as one
+interrupted line.  All three are one cell wide in the fonts this is meant
+for, which the mark glyphs are chosen for too.")
+
+(defface org-foresight-agenda-spine '((t :inherit shadow))
+  "The bracket down the left edge marking the working hours.
+
+Quiet on purpose.  It is a frame around the day, not a thing in it: the eye
+should be able to find it when it looks and ignore it when it does not.")
+
+(defun org-foresight-agenda--spine-glyph (kind)
+  "Return the spine character for KIND, one of `open', `mid' or `close'."
+  (cdr (assq kind org-foresight-agenda-spine-glyphs)))
+
+(defun org-foresight-agenda--draw-spine ()
+  "Bracket each stretch of working hours down the agenda's left edge.
+
+Drawn on the finished buffer rather than on the rows, because the shape
+depends on the order Org put them in, and that is not known until it has.
+The state is taken from the `org-foresight-edge' property the rules carry --
+not from their text, which is a label and may be reworded.
+
+The glyph replaces the first column rather than being inserted into it.
+Every agenda prefix begins with blanks, and every column in this package --
+the mark column above all -- is counted from the line's start; an insertion
+would move all of them by one and leave the marks a column adrift from the
+headings they belong to.  Where the first column is not a blank, the line is
+left alone: something else is using it, and this is only decoration."
+  (when (and org-foresight-agenda-spine
+             org-foresight-agenda-inject
+             (derived-mode-p 'org-agenda-mode))
+    (let ((inhibit-read-only t)
+          (open nil)                    ; row that began the current stretch
+          (last nil))                   ; last row seen inside it
+      (save-excursion
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((edge (get-text-property (point) 'org-foresight-edge))
+                (ours (get-text-property (point) 'org-foresight-report))
+                (header (get-text-property (point) 'org-agenda-date-header)))
+            (cond
+             ;; The report's own blocks are not part of the day's grid, and a
+             ;; date line belongs to no stretch: either one ends whatever was
+             ;; open, so a day that forgot to close cannot bleed into the next.
+             ((or ours header) (setq open nil last nil))
+             ((eq edge 'open) (setq open (point) last (point)))
+             ((eq edge 'close)
+              (when open
+                (org-foresight-agenda--spine-region open (point))
+                (setq open nil last nil)))
+             (open (setq last (point)))))
+          (forward-line 1))
+        ;; A stretch left open -- the day ended mid-bracket, which happens when
+        ;; a filter hid the closing rule -- is still drawn, down to the last
+        ;; row it reached.
+        (when (and open last) (org-foresight-agenda--spine-region open last))))))
+
+(add-hook 'org-agenda-finalize-hook #'org-foresight-agenda--draw-spine)
+
+(defun org-foresight-agenda--spine-region (open close)
+  "Draw the bracket from the line at OPEN down to the line at CLOSE."
+  (save-excursion
+    (goto-char open)
+    (let ((done nil))
+      (while (not done)
+        (setq done (>= (point) close))
+        (when (eq (char-after) ?\s)
+          (let ((glyph (org-foresight-agenda--spine-glyph
+                        (cond ((= (point) open) 'open)
+                              (done 'close)
+                              (t 'mid)))))
+            (delete-char 1)
+            (insert (propertize (string glyph)
+                                'face 'org-foresight-agenda-spine
+                                'org-foresight-spine t))))
+        (forward-line 1)))))
 
 (defconst org-foresight-agenda-attentions
   '(("blocking" . "needs all of you")
