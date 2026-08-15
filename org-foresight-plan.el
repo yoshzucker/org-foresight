@@ -238,7 +238,7 @@ than asking for one."
          (uids (make-hash-table :test 'equal))
          (scan (org-foresight-scan 1 today))
          meetings procrastinated unplannable followups outside-work
-         orphan-candidates undecided in-flight)
+         orphan-candidates undecided in-flight unreadable)
     (dolist (file (org-agenda-files))
       (when (file-exists-p file)
         (with-current-buffer (find-file-noselect file)
@@ -289,6 +289,20 @@ than asking for one."
                                  (format-time-string "%H:%M" (car occ))
                                  (format-time-string "%H:%M" (cdr occ))))
                         outside-work))
+                ;; (g) An estimate Org itself cannot read.  This one is
+                ;; not about the plan at all -- it is about the tool: the
+                ;; agenda calls `org-duration-to-minutes' on every EFFORT it
+                ;; is asked to display, and that function signals rather than
+                ;; shrugging.  So a single "2h" or "soon" takes down the
+                ;; whole of `C-c a a' with a message naming neither the file
+                ;; nor the heading.  This board is built by walking the files
+                ;; and so still works when the agenda does not, which makes it
+                ;; the one place that can say which heading to go and fix.
+                (when (and effort (null (org-foresight--duration-minutes effort)))
+                  (push (org-foresight--finding
+                         title (format "%S is not a duration Org can read"
+                                       effort))
+                        unreadable))
                 ;; (b) A decision that keeps not being made.
                 (when (and todo (not done))
                   (let ((n (org-foresight--reschedule-count)))
@@ -337,6 +351,8 @@ than asking for one."
        (list (cons "Impossible (travel clashes with a meeting)"
                    (org-foresight--clash-findings scan))
              (cons "Meetings without prep" (nreverse meetings))
+             (cons "Unreadable estimate (breaks the agenda itself)"
+                   (nreverse unreadable))
              (cons "Outside work hours (invisible to capacity)"
                    (nreverse outside-work))
              (cons "Won't fit today" (org-foresight--wont-fit-findings scan))
@@ -724,8 +740,8 @@ doing the same work twice."
 Preparation is placed to end when the meeting starts and follow-up to begin
 when it ends, so both land in the working day the meeting already occupies
 rather than in some abstract free slot."
-  (cons (time-subtract start (* 60 (org-duration-to-minutes
-                                    org-foresight-meeting-prep)))
+  (cons (time-subtract start (* 60 (org-foresight--duration-minutes
+                                    org-foresight-meeting-prep 30)))
         end))
 
 ;;;###autoload

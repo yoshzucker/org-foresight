@@ -63,6 +63,20 @@
 ;; these produce (START . END) time-cons lists.  Inputs need not be sorted or
 ;; disjoint -- each op normalizes first.
 
+(defun org-foresight--duration-minutes (raw &optional fallback)
+  "Return RAW read as minutes, or FALLBACK when it cannot be read.
+
+`org-duration-to-minutes\=' signals on anything it does not recognise, and a
+property typed by hand is exactly where that happens: \"2h\", \"soon\", a
+stray space.  One mistyped `EFFORT\=' would otherwise take down every number
+this package produces -- and the page it would have taken down is the page
+that shows the mistake.
+
+Unreadable is treated as absent, which is what it is: somebody meant to give
+an estimate and did not manage to."
+  (or (and raw (stringp raw) (ignore-errors (org-duration-to-minutes raw)))
+      fallback))
+
 (defun org-foresight--intervals-normalize (ivs)
   "Sort IVS (list of (START . END) time conses) and merge overlaps/adjacencies.
 Returns a fresh, sorted, disjoint list; never mutates IVS."
@@ -137,8 +151,8 @@ that heading is seen."
                  (list :title (org-get-heading t t t t)
                        :category cat
                        :todo (org-get-todo-state)
-                       :effort (when-let ((e (org-entry-get (point) "EFFORT")))
-                                 (org-duration-to-minutes e))
+                       :effort (org-foresight--duration-minutes
+                                (org-entry-get (point) "EFFORT"))
                        :marker (point-marker)
                        :minutes minutes))
                table))))
@@ -360,8 +374,9 @@ predicting occupancy from it would be invention rather than measurement."
 
 (defun org-foresight--entry-effort-minutes ()
   "Return the entry's EFFORT in minutes, falling back to the default."
-  (let ((raw (org-entry-get (point) "EFFORT")))
-    (org-duration-to-minutes (or raw org-foresight-default-effort))))
+  (org-foresight--duration-minutes
+   (org-entry-get (point) "EFFORT")
+   (org-foresight--duration-minutes org-foresight-default-effort 30.0)))
 
 (defun org-foresight--entry-timestamps ()
   "Return the parsed active timestamps that place the entry at point in time.
@@ -1205,12 +1220,12 @@ for a reason the tool can then name."
 (defun org-foresight-leak-minutes ()
   "Return the leak to expect over a whole working day, in minutes."
   (or (plist-get (org-foresight--leak-data) :leak)
-      (org-duration-to-minutes org-foresight-leak-default)))
+      (org-foresight--duration-minutes org-foresight-leak-default 0)))
 
 (defun org-foresight-lost-minutes ()
   "Return the time away from the machine to expect over a working day."
   (or (plist-get (org-foresight--leak-data) :lost)
-      (org-duration-to-minutes org-foresight-lost-default)))
+      (org-foresight--duration-minutes org-foresight-lost-default 0)))
 
 (defun org-foresight-leak-samples ()
   "Return how many days the leak budgets were learned from, or nil."
@@ -1261,7 +1276,7 @@ planning around the wrong quantity under the right name."
 Reads what `org-foresight-learn-surge\' cached; falls back to
 `org-foresight-surge-default\' when nothing has been learned yet."
   (or (plist-get (org-foresight--surge-data) :minutes)
-      (org-duration-to-minutes org-foresight-surge-default)))
+      (org-foresight--duration-minutes org-foresight-surge-default 0)))
 
 ;;;###autoload
 (defun org-foresight-learn-surge (&optional days)
@@ -1668,7 +1683,7 @@ that went badly wrong should not reshape the plan for every task like it."
                   (when (and closed effort)
                     (let ((when (org-time-string-to-time closed)))
                       (when (time-less-p from when)
-                        (let ((est (org-duration-to-minutes effort))
+                        (let ((est (org-foresight--duration-minutes effort 0))
                               (act (org-foresight--entry-clocked-minutes)))
                           (when (and (> est 0) (> act 0))
                             (push (list est act

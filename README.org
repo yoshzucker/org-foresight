@@ -645,7 +645,11 @@ over.
 day turns out shorter than the clock says — time at the keyboard that no clock
 accounted for, and time away from the machine — and holds those back too.
 Without the watcher both are zero, and the day is planned at the length it
-claims to have.
+claims to have. A machine that has never had one costs nothing: the request
+fails at once, the failure is cached, and the block says so in words rather
+than showing an empty table. A port that silently drops packets — a VPN, a
+corporate firewall — is the slow case, and =org-foresight-observe-timeout=
+(2 seconds) is what bounds it; a real answer takes about half of one.
 
 The verdict says the reserve as a remainder against the day's whole allowance
 — =reserve 0:24 of 1:00=. It shrinks twice over: by the hours going past, and
@@ -719,6 +723,8 @@ Work that exists but has not been planned for. Shown on the plan board.
 | Outside work hours  | work parked outside the working hours -- in the lunch     |
 |                     | break as much as at seven in the evening -- so it is      |
 |                     | subtracted from nothing and warns about nothing           |
+| Unreadable estimate | an =EFFORT= Org itself cannot parse, which breaks the      |
+|                     | agenda outright (see below)                              |
 | Won't fit today     | promised for today, and longer than any gap that remains  |
 | Meetings, unprepared| an invitation implies preparation and follow-up that no    |
 |                     | one has budgeted for                                      |
@@ -732,6 +738,17 @@ Work that exists but has not been planned for. Shown on the plan board.
 | Orphaned prep       | preparation for a meeting that has been cancelled         |
 | Undecided           | captured and never decided about (off by default: against |
 |                     | a real journal it matched 17% of headings, mostly diary)  |
+
+*The unreadable estimate is a special case*, and the only signal about the
+tool rather than about the plan. Org calls =org-duration-to-minutes= on every
+=EFFORT= it displays, and that function signals rather than shrugging — so one
+heading with =:EFFORT: whenever= takes down the whole of =C-c a a= with a
+message naming neither the file nor the heading. The board is built by walking
+the files rather than by building an agenda, so it still works when the agenda
+does not: when =C-c a a= dies with /Invalid duration format/, =M-x
+org-foresight-signals-list= is what tells you which heading to go and fix.
+(=2h=, =90= and =0:30= are all fine; it is words and stray punctuation that are
+not.)
 
 =M-x org-foresight-prepare-meetings= turns the second of these into real
 tasks, filed either side of the meeting. It marks each meeting it handles, so

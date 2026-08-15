@@ -45,7 +45,18 @@ Use the IPv4 literal, not `localhost': on Windows `localhost' resolves to IPv6
 (defvar org-foresight-observe--cache nil
   "Cons (FETCH-TIME . STRING) caching `org-foresight-report-observed'.")
 (defvar org-foresight-observe-cache-ttl 120
-  "Seconds to reuse `org-foresight-observe--cache' before refetching.")
+  "Seconds to reuse `org-foresight-observe--cache' before refetching.
+A failed fetch is cached too, so a machine with no watcher pays the wait once
+every couple of minutes rather than on every keystroke that redraws.")
+(defvar org-foresight-observe-timeout 2
+  "Seconds to wait for ActivityWatch before giving up on it.
+
+The watcher is a local service: a full day of events comes back in about half
+a second, measured, so two is four times the headroom it needs.  The number
+that matters is the other one -- what a render costs when nothing answers.
+A port that is closed fails at once, but one that silently drops packets (a
+VPN, a corporate firewall, a machine that has the port forwarded to nothing)
+makes every fetch wait out the whole timeout, and the agenda waits with it.")
 (defvar org-foresight-observe-clamp-afk t
   "When non-nil, exclude overnight idle from today's afk total.
 The day is treated as starting at the first not-afk activity, so `away (afk)'
@@ -55,7 +66,9 @@ counts only breaks within the active window, not pre-dawn idle time.")
   "GET PATH under `org-foresight-observe-url'.
 Return the parsed JSON, or nil when the server cannot be reached."
   (condition-case nil
-      (let ((buf (url-retrieve-synchronously (concat org-foresight-observe-url path) t t 5)))
+      (let ((buf (url-retrieve-synchronously
+                  (concat org-foresight-observe-url path) t t
+                  org-foresight-observe-timeout)))
         (when buf
           (unwind-protect
               (with-current-buffer buf
