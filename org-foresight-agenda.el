@@ -357,10 +357,15 @@ Drawn as rules rather than as slots, so they read as the edges of something
 rather than as more things in it.  Work sitting above or below them is work
 that escaped the day, which is the whole reason to draw them.
 
-Two of the three are declarations -- the hours being defended -- and the
-third is what the day is actually going to do with them.  Same subject, same
-shape, one verb apart, because the difference between intending to stop at
-six and stopping at six is the whole subject of this package.
+The starts and ends are declarations -- the hours being defended -- and the
+landing is what the day is actually going to do with them.  Same subject,
+same shape, one verb apart, because the difference between intending to stop
+at six and stopping at six is the whole subject of this package.
+
+A day that breaks gets a rule at every edge, and the inner ones say `pauses\='
+and `resumes\=' rather than `ends\=' and `starts\=': the hour between them was
+declared not to be work, and a break announced as the end of the day would be
+read as one.
 
 It takes the overrun's colour past the declared end and the colour of room
 before it: landing early is not a lesser kind of news.  Nothing is drawn when
@@ -371,8 +376,8 @@ Drawn from where the work lands rather than from where it fits, which are
 different questions on exactly the days worth asking: the second stops at the
 edge of the working day by construction and so could never draw a rule past
 it, which is the one place a rule was worth drawing."
-  (when-let ((window (plist-get cap :window)))
-    (let* ((ends (cdr window))
+  (when-let ((work (plist-get cap :work)))
+    (let* ((ends (cdr (car (last work))))
            ;; Nothing owed has nothing to land: a rule at the hour you are
            ;; already free would be drawn on every empty day, which is the
            ;; surest way to stop it being read on a full one.
@@ -392,8 +397,19 @@ it, which is the one place a rule was worth drawing."
           "" (org-foresight-agenda--hhmm time)
           face nil nil))
        (append
-        (list (list (car window) "work starts" 'org-agenda-structure)
-              (list ends "work ends" 'org-agenda-structure))
+        ;; One pair per interval: the first opens the day and the last closes
+        ;; it, and every edge in between is a break beginning or ending.
+        (let ((n (length work)) (i 0) out)
+          (dolist (iv work (nreverse out))
+            (push (list (car iv)
+                        (if (zerop i) "work starts" "work resumes")
+                        'org-agenda-structure)
+                  out)
+            (push (list (cdr iv)
+                        (if (= i (1- n)) "work ends" "work pauses")
+                        'org-agenda-structure)
+                  out)
+            (setq i (1+ i))))
         (cond
          ;; It ends somewhere today, and somewhere worth drawing a rule at.
          ((and drift (>= (abs drift) org-foresight-agenda-lands-minutes))
@@ -408,7 +424,7 @@ it, which is the one place a rule was worth drawing."
          ;; nothing.
          ;;
          ;; A quantity, not an hour: what is named is the work with nowhere
-         ;; left to go, counting the evening in.  In the mark\='s own words,
+         ;; left to go, counting the hours after work in.  In the mark\='s own words,
          ;; because it is the mark\='s own meaning applied to the whole day
          ;; rather than to one entry -- and because "past today" read as a
          ;; time, which is the one thing it is not.
@@ -444,7 +460,7 @@ marks go is a decision about the page as a whole and is taken once, by
          ;; piece of work would be marked -- and a mark on every row is a
          ;; mark that says nothing.  The fact is about the day, not about any
          ;; one task, and the verdict states it there instead.
-         (fits (and (plist-get cap :window) t))
+         (fits (and (plist-get cap :work) t))
          (largest (* keep
                      (apply #'max 0.0
                             (seq-keep

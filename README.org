@@ -43,12 +43,16 @@ records the value and loses the reason.
   :after org-agenda
   :config
   ;; The shape of an ordinary day.  A declaration, not an observation: the
-  ;; end time is the hour you intend to leave, so that there is something to
+  ;; end time is the hour you intend to stop, so that there is something to
   ;; defend.  M-x org-foresight-shape-day declares an unusual one.
-  (setq org-foresight-awake         '("06:30" . "23:00")
-        org-foresight-workday-start "09:00"
-        org-foresight-workday-end   "17:30"
-        org-foresight-workdays      '(1 2 3 4 5))
+  ;;
+  ;; Work is a list, so a day may break -- for lunch, for a school run, for
+  ;; anything.  The gap is not quiet working time: nothing is planned into it
+  ;; and it is not counted as capacity.
+  (setq org-foresight-awake    '("06:30" . "23:00")
+        org-foresight-work     '(("09:00" . "12:00")
+                                 ("13:00" . "17:30"))
+        org-foresight-workdays '(1 2 3 4 5))
 
   ;; Where entries happen, and what moving between them costs.  Without this
   ;; no journey is ever counted and every office meeting looks an hour long.
@@ -60,7 +64,7 @@ records the value and loses the reason.
         org-foresight-travel-default 45)
 
   ;; Categories that are life rather than work.  They fill the day but never
-  ;; count against capacity, and are not reported as work in the evening.
+  ;; count against capacity, and are never reported as work that escaped.
   (setq org-foresight-private-categories '("family" "personal"))
 
   ;; Meetings from this category imply preparation and follow-up.
@@ -158,7 +162,7 @@ then occasionally:
 no file contains:
 
 #+begin_example
- Work 8:30 · OVER by 3:45 · ends 20:39 · est +1:27
+ Work 8:30 · OVER by 3:45 · ends 20:39 · reserve 0:36 of 1:00 · est +1:27
  ↳ any one of Rewrite the annual re… 6:00→7:12 · Project review 1:30
             █ booked 2:45  █ travel 2:00  █ promised 7:30  ▭ reserve 1:00
  Work  8:30 ████████████████████████████████████████┃██████████████████
@@ -527,10 +531,15 @@ answer to a new request is a date, not a yes.
 
 A day is not one bar from nine to half five. Work and private life are mixed in
 time, some of it is spent getting somewhere, and the hours that belong to
-neither are not absent — they are private time that happens to be unclaimed.
+neither are not absent — they are time that happens to be unclaimed.
+
+Work itself need not be one stretch. Declaring =(("09:00" . "12:00") ("13:00"
+. "17:30"))= takes the lunch hour out of the span, out of the gaps that may be
+offered, and out of the projection: the day is drawn with =work pauses= and
+=work resumes= around it, and nothing plans through it.
 
 #+begin_example
- Work 8:30 · 1:15 left to promise · ends 16:45 · reserve 1:00 · est +0:40
+ Work 8:30 · 1:15 left to promise · ends 16:45 · reserve 0:24 of 1:00 · est +0:40
             █ booked 2:45  █ travel 1:00  █ promised 2:30  ▭ reserve 1:00
             · spare 1:15
  Work  8:30 ██████████████████████████████▭▭▭▭▭······
@@ -541,7 +550,7 @@ neither are not absent — they are private time that happens to be unclaimed.
 Two bars, written as the sums they are, so the parts can be checked against
 the whole without adding them up and hoping. They share one scale: an hour is
 the same length in both, which is what lets a working day be set against the
-evening it leaves behind.
+hours it leaves behind.
 
 | Segment    | What it is                                          |
 |------------+-----------------------------------------------------|
@@ -552,22 +561,36 @@ evening it leaves behind.
 | =reserve=  | held for arriving work, unrecorded time, and time away |
 | =spare=    | the span less all five — what may still be promised |
 
-The =Off= bar accounts for the rest of the waking day: =private= for
-commitments outside working hours, =unclaimed= for the hours nothing has
-claimed. Work that lands out there is not absorbed silently — it appears as
-=borrowed=, and says so.
+The =Off= bar accounts for the rest of the waking day — before work, between
+its intervals, and after it: =private= for commitments outside working hours,
+=unclaimed= for the hours nothing has claimed. Work that lands out there is
+not absorbed silently — it appears as =borrowed=, and says so.
 
 An overcommitted day is drawn past the width with =┃= where the span actually
 ended, rather than being scaled back until it fits. The one day that must not
 look workable is the one that is not.
 
-"I leave at 17:30" is therefore not the end of a window. It is that the evening
-is already spoken for.
+"I stop at 17:30" is therefore not the end of a window. It is that the hours
+after it are already spoken for.
 
-The span is *declared*, never inferred. Measuring when work actually stopped
-and calling that the working day would teach the system to plan around the late
-nights it exists to prevent. =M-x org-foresight-shape-day= declares an unusual
-day on its own heading; ordinary days need no input at all.
+The hours are *declared*, never inferred. Measuring when work actually stopped
+and calling that the working day would teach the system to plan around the
+overruns it exists to prevent. =M-x org-foresight-shape-day= declares an
+unusual day on its own heading; ordinary days need no input at all.
+
+A day's own heading may carry =WAKE=, =SLEEP= and =WORK=:
+
+#+begin_example
+*** 2026-08-10 Mon
+:PROPERTIES:
+:WAKE:  06:00
+:SLEEP: 22:00
+:WORK:  09:00-12:00 13:00-17:30
+:END:
+#+end_example
+
+=WORK= takes one range, several separated by spaces or commas, or =none= for a
+day with no work in it at all.
 
 * Travel is work
 
@@ -617,6 +640,13 @@ day turns out shorter than the clock says — time at the keyboard that no clock
 accounted for, and time away from the machine — and holds those back too.
 Without the watcher both are zero, and the day is planned at the length it
 claims to have.
+
+The verdict says the reserve as a remainder against the day's whole allowance
+— =reserve 0:24 of 1:00=. It shrinks twice over: by the hours going past, and
+by the interruptions that have already landed. So it is smallest exactly when
+it matters most, and a figure that vanished once it got small would vanish
+precisely then. =0:00 of 1:00= is not an empty line: it says the allowance was
+real and is now spent, and the next interruption has nowhere to go.
 
 *Estimates* are wrong in a consistent direction, and the evidence is already in
 the file: every finished task that carried an =EFFORT= and was clocked is one
@@ -680,7 +710,8 @@ Work that exists but has not been planned for. Shown on the plan board.
 |---------------------+----------------------------------------------------------|
 | Impossible          | a journey that overlaps a meeting — the day as written    |
 |                     | cannot happen, whatever effort is put into it             |
-| After hours         | work parked outside the working window, so it is          |
+| Outside work hours  | work parked outside the working hours -- in the lunch     |
+|                     | break as much as at seven in the evening -- so it is      |
 |                     | subtracted from nothing and warns about nothing           |
 | Won't fit today     | promised for today, and longer than any gap that remains  |
 | Meetings, unprepared| an invitation implies preparation and follow-up that no    |

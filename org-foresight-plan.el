@@ -159,25 +159,31 @@ for.  Returns 0 when reschedule logging is off."
                    (not (time-less-p (org-foresight--ts-start el) now))))
             stamps))
 
-(defun org-foresight--outside-window-p (occ)
-  "Non-nil when the interval OCC does not fit inside its day's working window."
-  (let ((window (org-foresight-workday-window (car occ))))
-    (or (null window)
-        (time-less-p (car occ) (car window))
-        (time-less-p (cdr window) (cdr occ)))))
+(defun org-foresight--outside-work-p (occ)
+  "Non-nil when the interval OCC does not fit inside any of its day's work hours.
 
-(defun org-foresight--after-hours (stamps now horizon)
+Any one of them: a meeting that starts before the lunch break and ends after
+it is outside the working hours even though both ends of it are inside them,
+because the middle is time that was declared not to be work."
+  (not (org-foresight--within-p (car occ) (cdr occ)
+                                (org-foresight-work-intervals (car occ)))))
+
+(defun org-foresight--outside-work-hours (stamps now horizon)
   "Return the first occurrence in STAMPS that lands outside working hours.
 
-Work parked at 19:00 is invisible to capacity -- the working window does not
-cover it, so it is subtracted from nothing and warns about nothing.  That is
-precisely the work that stops the day ending on time, so it is worth saying
-out loud rather than quietly excluding."
+Work parked in the lunch break, or at 19:00, is invisible to capacity -- the
+working hours do not cover it, so it is subtracted from nothing and warns
+about nothing.  That is precisely the work that stops the day ending on time,
+so it is worth saying out loud rather than quietly excluding.
+
+Not \"after hours\": that means after the close of business, and a day that
+breaks in the middle has work escaping into hours it is nowhere near the end
+of."
   (catch 'found
     (dolist (el stamps)
       (when (org-foresight--ts-timed-p el)
         (dolist (occ (org-foresight--ts-occurrences el now horizon))
-          (when (org-foresight--outside-window-p occ)
+          (when (org-foresight--outside-work-p occ)
             (throw 'found occ)))))
     nil))
 
@@ -231,7 +237,7 @@ than asking for one."
          (horizon (time-add today (days-to-time org-foresight-horizon-days)))
          (uids (make-hash-table :test 'equal))
          (scan (org-foresight-scan 1 today))
-         meetings procrastinated unplannable followups after-hours
+         meetings procrastinated unplannable followups outside-work
          orphan-candidates undecided in-flight)
     (dolist (file (org-agenda-files))
       (when (file-exists-p file)
@@ -266,23 +272,23 @@ than asking for one."
                 ;; not work that escaped the day; and anything belonging to
                 ;; somebody else, because a child's fixture is not overtime.
                 ;; A board that says otherwise is telling its reader off for
-                ;; having an evening.
+                ;; having a life.
                 (when-let ((occ (and stamps
                                      (not (member cat
                                                   org-foresight-private-categories))
                                      (eq (org-foresight--entry-attention cat)
                                          'blocking)
-                                     (org-foresight--after-hours
+                                     (org-foresight--outside-work-hours
                                       stamps now horizon))))
                   (push (org-foresight--finding
                          title
-                         ;; The group heading already says these are after
-                         ;; hours; the note only has to say when.
+                         ;; The group heading already says these are outside
+                         ;; the working hours; the note only has to say when.
                          (format "%s %s–%s"
                                  (format-time-string "%a %m-%d" (car occ))
                                  (format-time-string "%H:%M" (car occ))
                                  (format-time-string "%H:%M" (cdr occ))))
-                        after-hours))
+                        outside-work))
                 ;; (b) A decision that keeps not being made.
                 (when (and todo (not done))
                   (let ((n (org-foresight--reschedule-count)))
@@ -331,7 +337,8 @@ than asking for one."
        (list (cons "Impossible (travel clashes with a meeting)"
                    (org-foresight--clash-findings scan))
              (cons "Meetings without prep" (nreverse meetings))
-             (cons "After hours (invisible to capacity)" (nreverse after-hours))
+             (cons "Outside work hours (invisible to capacity)"
+                   (nreverse outside-work))
              (cons "Won't fit today" (org-foresight--wont-fit-findings scan))
              (cons "Unplannable (deadline, no estimate)" (nreverse unplannable))
              (cons "Gone quiet (follow-up overdue)" (nreverse followups))
@@ -406,8 +413,8 @@ in a day with ninety minutes left of it, whatever the morning looked like."
          ;; every piece of work would be called out and the list would say
          ;; nothing.  That the day was not meant for work is one fact about
          ;; the day, and the verdict states it there.
-         (window (org-foresight-workday-window today))
-         (free (and window (org-foresight-free-intervals today scan now)))
+         (work (org-foresight-work-intervals today))
+         (free (and work (org-foresight-free-intervals today scan now)))
          (longest (if free
                       (/ (apply #'max
                                 (mapcar (lambda (iv)
@@ -417,7 +424,7 @@ in a day with ninety minutes left of it, whatever the morning looked like."
                          60.0)
                     0.0))
          out)
-    (dolist (e (and window (aref (plist-get scan :ledger) 0)))
+    (dolist (e (and work (aref (plist-get scan :ledger) 0)))
       (when (and (eq (plist-get e :kind) 'promised)
                  (> (or (plist-get e :effort-adj) (plist-get e :effort)) longest))
         (push (list :file nil :point nil
@@ -493,10 +500,10 @@ benchmark and always shows in a keystroke."
     (catch 'enough
       (dotimes (i days)
         (let ((day (time-add today (days-to-time i))))
-          (when (org-foresight-workday-window day)
+          (when (org-foresight-work-intervals day)
             (let ((cap (org-foresight-capacity day scan now)))
               (when (zerop i) (setq today-cap cap))
-              (when (plist-get cap :window)
+              (when (plist-get cap :work)
                 (push (cons day cap) rows)
                 (when (>= (length rows) org-foresight-load-rows)
                   (throw 'enough nil))))))))
@@ -1019,7 +1026,7 @@ one, \\`C-c C-c' writes the rest."
          (free (plist-get cap :free))
          (budget (- (plist-get cap :free-min) (plist-get cap :reserve-min))))
     (cond
-     ((null (plist-get cap :window))
+     ((null (plist-get cap :work))
       (message "Not a working day"))
      ((<= budget 0)
       (message "No headroom today: %s free, %s reserved for interruptions"

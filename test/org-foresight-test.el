@@ -326,8 +326,7 @@ odd shapes this scan has to survive."
 (defmacro org-foresight-test--with-window (&rest body)
   "Run BODY with a fixed 09:00-18:00 Mon-Fri window and a 60 minute reserve."
   (declare (indent 0))
-  `(let ((org-foresight-workday-start "09:00")
-         (org-foresight-workday-end "17:30")
+  `(let ((org-foresight-work '(("09:00" . "17:30")))
          (org-foresight-workdays '(1 2 3 4 5))
          (org-foresight-surge-cache-file "/nonexistent/org-foresight-surge.eld")
          (org-foresight-leak-cache-file "/nonexistent/org-foresight-leak.eld")
@@ -336,11 +335,15 @@ odd shapes this scan has to survive."
          (org-foresight-lost-default "0:00"))
      ,@body))
 
-(ert-deftest org-foresight-test-workday-window ()
+(defun org-foresight-test--work-ends (cap)
+  "Return when CAP\='s work is meant to be over: the end of its last interval."
+  (cdr (car (last (plist-get cap :work)))))
+
+(ert-deftest org-foresight-test-work-intervals ()
   (org-foresight-test--with-window
     ;; 2026-08-10 is a Monday; 2026-08-09 a Sunday.
-    (should (org-foresight-workday-window (org-foresight-test--ts 12 0 10)))
-    (should-not (org-foresight-workday-window (org-foresight-test--ts 12 0 9)))))
+    (should (org-foresight-work-intervals (org-foresight-test--ts 12 0 10)))
+    (should-not (org-foresight-work-intervals (org-foresight-test--ts 12 0 9)))))
 
 (ert-deftest org-foresight-test-capacity-subtracts-meetings-and-effort ()
   "Free time is the window minus meetings; headroom also loses effort and surge."
@@ -747,7 +750,7 @@ SCHEDULED: <2026-08-10 Mon>
         ;; ... but the work does not stop existing at the edge of them, and
         ;; where it actually stops is the fact worth having
         (should (plist-get cap :lands))
-        (should (time-less-p (cdr (plist-get cap :window))
+        (should (time-less-p (org-foresight-test--work-ends cap)
                              (plist-get cap :lands)))))))
 
 (ert-deftest org-foresight-test-a-day-off-with-work-on-it-says-so ()
@@ -799,7 +802,7 @@ SCHEDULED: <2026-08-09 Sun>
     (org-foresight-test--with-org "* nothing\n"
       (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 9) nil
                                          (org-foresight-test--ts 6 0 9))))
-        (should (null (plist-get cap :window)))
+        (should (null (plist-get cap :work)))
         (should (= (plist-get cap :free-min) 0.0))))))
 
 (ert-deftest org-foresight-test-report-capacity-line ()
@@ -1267,8 +1270,7 @@ all: the numbers look right, and the commute is simply missing from them."
   (declare (indent 1))
   `(org-foresight-test--with-org ,text
      (let ((org-foresight-awake '("07:00" . "23:00"))
-           (org-foresight-workday-start "09:00")
-           (org-foresight-workday-end "17:30")
+           (org-foresight-work '(("09:00" . "17:30")))
            ;; Every day is a working day here.  Tests built on "today" would
            ;; otherwise answer differently at the weekend -- a day with no
            ;; working window has no capacity, no gaps and nothing to mark --
@@ -1379,6 +1381,13 @@ one test that turns on a day not being one."
 
 ;;;; Day shape
 
+(defun org-foresight-test--work-string (shape)
+  "Return SHAPE\='s working hours as \"HH:MM-HH:MM ...\", for readable assertions."
+  (mapconcat (lambda (iv)
+               (concat (format-time-string "%H:%M" (car iv)) "-"
+                       (format-time-string "%H:%M" (cdr iv))))
+             (plist-get shape :work) " "))
+
 (ert-deftest org-foresight-test-day-shape-defaults ()
   (org-foresight-test--with-day "* nothing\n"
    (let ((org-foresight-workdays '(1 2 3 4 5))
@@ -1386,10 +1395,8 @@ one test that turns on a day not being one."
     (let ((shape (org-foresight-day-shape (org-foresight-test--ts 0 0 10))))
       (should (equal (format-time-string "%H:%M" (car (plist-get shape :awake)))
                      "07:00"))
-      (should (equal (format-time-string "%H:%M" (car (plist-get shape :work)))
-                     "09:00"))
-      (should (equal (format-time-string "%H:%M" (cdr (plist-get shape :work)))
-                     "17:30")))
+      (should (equal (org-foresight-test--work-string shape)
+                     "09:00-17:30")))
     ;; Sunday has no work span at all
     (should-not (plist-get (org-foresight-day-shape (org-foresight-test--ts 0 0 9))
                            :work)))))
@@ -1401,17 +1408,13 @@ one test that turns on a day not being one."
     (unwind-protect
         (let ((org-foresight-day-file file)
               (org-foresight-awake '("07:00" . "23:00"))
-              (org-foresight-workday-start "09:00")
-              (org-foresight-workday-end "17:30")
+              (org-foresight-work '(("09:00" . "17:30")))
               (org-foresight-workdays '(1 2 3 4 5))
               (org-foresight--shape-cache nil))
           (let ((shape (org-foresight-day-shape (org-foresight-test--ts 0 0 10))))
             (should (equal (format-time-string "%H:%M" (car (plist-get shape :awake)))
                            "06:00"))
-            (should (equal (format-time-string "%H:%M" (car (plist-get shape :work)))
-                           "10:00"))
-            (should (equal (format-time-string "%H:%M" (cdr (plist-get shape :work)))
-                           "16:00")))
+            (should (equal (org-foresight-test--work-string shape) "10:00-16:00")))
           ;; a day with no heading falls back
           (should (equal (format-time-string
                           "%H:%M" (car (plist-get (org-foresight-day-shape
@@ -1743,7 +1746,7 @@ alongside whatever else is happening, rather than instead of it."
                             bands)))))))
 
 (ert-deftest org-foresight-test-informational-is-not-overtime ()
-  "Somebody else's evening fixture must not be reported as your late night."
+  "Somebody else's fixture must not be reported as your overrun."
   (org-foresight-test--with-signals
       "* 子供の部活
 :PROPERTIES:
@@ -1754,12 +1757,12 @@ alongside whatever else is happening, rather than instead of it."
     (let ((org-foresight-informational-categories '("club"))
           (org-foresight-horizon-days 400))
       (should-not (org-foresight-test--signal
-                   "After hours (invisible to capacity)")))
+                   "Outside work hours (invisible to capacity)")))
     ;; without the category it is ordinary work, and is reported
     (let ((org-foresight-informational-categories nil)
           (org-foresight-horizon-days 400))
       (should (org-foresight-test--signal
-               "After hours (invisible to capacity)")))))
+               "Outside work hours (invisible to capacity)")))))
 
 ;;;; Ledger
 
@@ -1960,8 +1963,7 @@ the new answer, not the one cached moments earlier."
            (org-foresight-borrow-warn 180)
            (org-foresight-leak-warn 90)
            (org-foresight-awake '("07:00" . "23:00"))
-           (org-foresight-workday-start "09:00")
-           (org-foresight-workday-end "17:30")
+           (org-foresight-work '(("09:00" . "17:30")))
            ;; See `org-foresight-test--with-day': signals are computed for
            ;; today, so today has to be a working day whatever day it is.
            (org-foresight-workdays '(0 1 2 3 4 5 6))
@@ -2099,8 +2101,8 @@ SCHEDULED: <2026-08-05 Wed>
       (should (equal (plist-get (car found) :title)
                      "prep for a cancelled meeting")))))
 
-(ert-deftest org-foresight-test-signal-after-hours ()
-  "Work parked outside the working window is subtracted from nothing, so it
+(ert-deftest org-foresight-test-signal-outside-work-hours ()
+  "Work parked outside the working hours is subtracted from nothing, so it
 must be named: it is the work that quietly stops the day ending on time."
   (org-foresight-test--with-window
     (org-foresight-test--with-signals
@@ -2117,13 +2119,13 @@ must be named: it is the work that quietly stops the day ending on time."
              (org-foresight--shape-cache nil)
              (org-foresight-horizon-days 400)
              (found (org-foresight-test--signal
-                     "After hours (invisible to capacity)"))
+                     "Outside work hours (invisible to capacity)"))
              (titles (mapcar (lambda (f) (plist-get f :title)) found)))
         (should (member "evening call" titles))
         (should (member "saturday work" titles))
         (should-not (member "during the day" titles))))))
 
-(ert-deftest org-foresight-test-signal-after-hours-reports-once ()
+(ert-deftest org-foresight-test-signal-outside-work-hours-reports-once ()
   "A repeating out-of-hours meeting is one problem, not fifty."
   (org-foresight-test--with-window
     (org-foresight-test--with-signals
@@ -2132,7 +2134,7 @@ must be named: it is the work that quietly stops the day ending on time."
 "
       (let ((org-foresight-horizon-days 400))
         (should (= (length (org-foresight-test--signal
-                            "After hours (invisible to capacity)"))
+                            "Outside work hours (invisible to capacity)"))
                    1))))))
 
 (ert-deftest org-foresight-test-signal-undecided ()
@@ -2963,8 +2965,7 @@ SCHEDULED: <2026-08-10 Mon>
                 (org-todo-keywords
                  '((sequence "NEXT" "ONGO" "|" "DONE" "CANCEL")
                    (sequence "WAIT" "|" "DELEG")))
-                (org-foresight-workday-start "09:00")
-                (org-foresight-workday-end "17:30")
+                (org-foresight-work '(("09:00" . "17:30")))
                 ;; The demo is written relative to today, so today has to be
                 ;; a working day whatever day the tests are run on.  Its
                 ;; after-hours example is an evening, not a weekend, so
@@ -3059,7 +3060,7 @@ setting somebody lives by, so it has to come back exactly as it was."
   (org-foresight-test--with-demo
     (let ((labels (mapcar #'car (org-foresight-signals))))
       (dolist (expected '("Meetings without prep"
-                          "After hours (invisible to capacity)"
+                          "Outside work hours (invisible to capacity)"
                           "Unplannable (deadline, no estimate)"
                           "Gone quiet (follow-up overdue)"
                           "Kept moving (not really NEXT)"
@@ -3200,7 +3201,7 @@ the choice of what goes in it stays entirely with the reader."
 (ert-deftest org-foresight-test-what-will-not-fit-is-marked ()
   "Whether work fits is a fact about the work and the day, not about any
 arrangement of them -- so it can be said without placing anything."
-  (let* ((cap (list :span-min 510.0 :surge-min 0.0 :window t))
+  (let* ((cap (list :span-min 510.0 :surge-min 0.0 :work t))
          (buf (get-buffer-create "*foresight-fit*"))
          ;; two distinct positions: a marker is identified by buffer and
          ;; offset, so an empty buffer would make every entry the same one
@@ -3264,7 +3265,7 @@ kind of news."
          (rows (lambda (finish)
                  (mapcar #'substring-no-properties
                          (org-foresight-agenda--edges
-                          (list :window window :lands finish :committed-min 120.0)
+                          (list :work (list window) :lands finish :committed-min 120.0)
                           (org-foresight-test--ts 0 0 10)))))
          (row-face (lambda (finish)
                      (car (ensure-list
@@ -3275,7 +3276,7 @@ kind of news."
                                           "work lands"
                                           (substring-no-properties r)))
                              (org-foresight-agenda--edges
-                              (list :window window :lands finish :committed-min 120.0)
+                              (list :work (list window) :lands finish :committed-min 120.0)
                               (org-foresight-test--ts 0 0 10)))))))))
     ;; the declared edges are always there
     (should (= 2 (length (funcall rows nil))))
@@ -3289,7 +3290,7 @@ kind of news."
     ;; the hour is a text property rather than text, which is what lets Org
     ;; sort the row into the day rather than onto the end of it
     (let* ((over (org-foresight-agenda--edges
-                  (list :window window :lands (org-foresight-test--ts 19 20 10)
+                  (list :work (list window) :lands (org-foresight-test--ts 19 20 10)
                         :committed-min 120.0)
                   (org-foresight-test--ts 0 0 10)))
            (lands (seq-find (lambda (r) (string-match-p
@@ -3316,7 +3317,7 @@ then -- an hour that cannot be drawn is no reason to draw nothing."
                        (org-foresight-test--ts 17 30 10)))
          (day (org-foresight-test--ts 0 0 10))
          (rows (org-foresight-agenda--edges
-                (list :window window :lands nil :overflow-min 255.0 :committed-min 600.0)
+                (list :work (list window) :lands nil :overflow-min 255.0 :committed-min 600.0)
                 day))
          (lands (seq-find (lambda (r) (string-match-p
                                        "work lands"
@@ -3330,7 +3331,7 @@ then -- an hour that cannot be drawn is no reason to draw nothing."
     (should (= 2300 (get-text-property 1 'time-of-day lands)))
     ;; and nothing at all when there is nothing left over
     (should (= 2 (length (org-foresight-agenda--edges
-                          (list :window window :lands nil :overflow-min 0.0 :committed-min 600.0)
+                          (list :work (list window) :lands nil :overflow-min 0.0 :committed-min 600.0)
                           day))))))
 
 (ert-deftest org-foresight-test-org-own-effort-column-is-corrected ()
@@ -3500,14 +3501,14 @@ meeting it collides with, which is where the collision is."
 Two lines that mean the same kind of thing should be read the same way."
   (let* ((day (org-foresight-test--ts 0 0 10))
          (rows (org-foresight-agenda--edges
-                (list :window (cons (org-foresight-test--ts 9 0 10)
-                                    (org-foresight-test--ts 17 30 10)))
+                (list :work (list (cons (org-foresight-test--ts 9 0 10)
+                                        (org-foresight-test--ts 17 30 10))))
                 day))
          (plain (mapcar #'substring-no-properties rows)))
     (should (seq-find (lambda (r) (string-match-p "work starts ─+$" r)) plain))
     (should (seq-find (lambda (r) (string-match-p "work ends ─+$" r)) plain))
     ;; and a day with no working window has no edges to draw
-    (should-not (org-foresight-agenda--edges '(:window nil) day))))
+    (should-not (org-foresight-agenda--edges '(:work nil) day))))
 
 (ert-deftest org-foresight-test-key-names-only-the-marks-used ()
   "A key describing a clash on a day that has none is explaining a problem
@@ -3756,17 +3757,291 @@ reader to resolve a clash that was never there."
          (item (propertize " club      Kids' basketball" 'org-hd-marker m)))
     (unwind-protect
         (let ((out (car (org-foresight-agenda--mark-rows
-                         (list item) nil (list :span-min 480.0 :surge-min 0.0 :window t)
+                         (list item) nil (list :span-min 480.0 :surge-min 0.0 :work t)
                          ledger))))
           (should (equal org-foresight-agenda-alongside
                          (get-text-property 0 'org-foresight-mark out)))
           ;; blocking work is left alone
           (should (equal item
                          (car (org-foresight-agenda--mark-rows
-                               (list item) nil (list :span-min 480.0 :surge-min 0.0 :window t)
+                               (list item) nil (list :span-min 480.0 :surge-min 0.0 :work t)
                                (list (list :kind 'meeting :title "listen"
                                            :marker m :attention 'blocking)))))))
       (kill-buffer buf))))
+
+;;;; A day that breaks
+;; Work is a list of intervals, so a day may stop for lunch, for a school run,
+;; for anything.  What these fix is that the break is *not* working time in
+;; every place the day is measured: it is not capacity, it is not offered, it
+;; is not planned into, and it is not quietly worked through in the
+;; projection.  Each of those was a separate subtraction before, and each of
+;; them could have been missed on its own.
+
+(defmacro org-foresight-test--with-broken-day (text &rest body)
+  "Run BODY over TEXT with work declared as 09:00-12:00 and 13:00-17:30."
+  (declare (indent 1))
+  `(org-foresight-test--with-day ,text
+     (let ((org-foresight-work '(("09:00" . "12:00")
+                                 ("13:00" . "17:30")))
+           (org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-leak-cache-file "/nonexistent/leak.eld")
+           (org-foresight-surge-default "0:00")
+           (org-foresight-leak-default "0:00")
+           (org-foresight-lost-default "0:00")
+           (org-foresight--shape-cache nil))
+       ,@body)))
+
+(ert-deftest org-foresight-test-broken-day-loses-the-break-from-the-span ()
+  "The hour off is not capacity.
+
+Nine to half five with an hour for lunch is seven and a half hours of work,
+not eight and a half.  Taking first-start to last-end would hand the lunch
+hour back as time that may be promised away -- which is exactly the hour that
+was declared not to be available."
+  (org-foresight-test--with-broken-day "* nothing\n"
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 6 0 10))))
+      (should (= 450.0 (plist-get cap :span-min)))
+      ;; and the two intervals are what the day says its work is
+      (should (= 2 (length (plist-get cap :work)))))))
+
+(ert-deftest org-foresight-test-broken-day-does-not-offer-the-break ()
+  "The break is not among the stretches nothing has claimed.
+
+`free' means work time nothing has claimed.  An hour that is not work time
+cannot be free in that sense, however empty it is."
+  (org-foresight-test--with-broken-day "* nothing\n"
+    (let ((free (org-foresight-free-intervals (org-foresight-test--ts 0 0 10)
+                                              nil
+                                              (org-foresight-test--ts 6 0 10))))
+      (should (equal '("09:00-12:00" "13:00-17:30")
+                     (mapcar (lambda (iv)
+                               (concat (format-time-string "%H:%M" (car iv)) "-"
+                                       (format-time-string "%H:%M" (cdr iv))))
+                             free))))))
+
+(ert-deftest org-foresight-test-broken-day-greys-the-break ()
+  "The break is drawn as time off, not as time waiting to be filled.
+
+Same glyph and same colour as the hours before work and after it, because it
+is the same kind of thing: the day, not the job."
+  (org-foresight-test--with-broken-day "* nothing\n"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      (should (member "grey 12:00-13:00" bands))
+      (should (member "available 09:00-12:00" bands))
+      (should (member "available 13:00-17:30" bands)))))
+
+(ert-deftest org-foresight-test-broken-day-cannot-hold-work-across-the-break ()
+  "A job longer than the longest interval does not fit, however long the day is.
+
+Seven and a half hours of working time will not take a four-hour job when it
+comes in two pieces of three and four and a half.  Measuring against the total
+would promise a day that cannot happen."
+  (org-foresight-test--with-broken-day "* nothing\n"
+    (let* ((day (org-foresight-test--ts 0 0 10))
+           (cap (org-foresight-capacity day nil (org-foresight-test--ts 6 0 10)))
+           (bands (org-foresight-day-blocks day))
+           (entry (list :kind 'promised :effort 240.0
+                        :marker (point-marker) :title "long job"))
+           (marked (org-foresight-agenda--mark-rows
+                    nil bands cap (list entry))))
+      (ignore marked)
+      ;; the longest stretch of work available is the afternoon, not the day
+      (should (= 270.0
+                 (apply #'max
+                        (mapcar (lambda (b)
+                                  (/ (float-time
+                                      (time-subtract (plist-get b :end)
+                                                     (plist-get b :start)))
+                                     60.0))
+                                (seq-filter (lambda (b)
+                                              (eq (plist-get b :kind) 'available))
+                                            bands))))))))
+
+(ert-deftest org-foresight-test-work-in-the-break-is-outside-work-hours ()
+  "Work placed in the break is work that escaped the day.
+
+The signal used to be called \"after hours\", which could only ever mean the
+end of the day.  A day that breaks in the middle has work escaping into hours
+it is nowhere near the end of, and that work is just as invisible to
+capacity."
+  (org-foresight-test--with-signals
+      "* NEXT lunchtime call
+<2027-01-05 Tue 12:15-12:45>
+* NEXT during the morning
+<2027-01-05 Tue 10:00-11:00>
+"
+    (let* ((org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:30")))
+           (org-foresight-workdays '(1 2 3 4 5))
+           (org-foresight--shape-cache nil)
+           (org-foresight-horizon-days 400)
+           (titles (mapcar (lambda (f) (plist-get f :title))
+                           (org-foresight-test--signal
+                            "Outside work hours (invisible to capacity)"))))
+      (should (member "lunchtime call" titles))
+      (should-not (member "during the morning" titles)))))
+
+(ert-deftest org-foresight-test-work-property-takes-several-ranges ()
+  "A day may declare its own broken shape, and it survives the round trip."
+  (let ((file (make-temp-file
+               "org-foresight-day" nil ".org"
+               "* 2026\n** 2026-08 August\n*** 2026-08-10 Mon\n:PROPERTIES:\n:WORK: 09:00-12:00 13:00-17:30\n:END:\n")))
+    (unwind-protect
+        (let* ((org-foresight-day-file file)
+               (org-foresight-work '(("08:00" . "16:00")))
+               (org-foresight-workdays '(1 2 3 4 5))
+               (org-foresight--shape-cache nil)
+               (shape (org-foresight-day-shape (org-foresight-test--ts 0 0 10))))
+          (should (equal "09:00-12:00 13:00-17:30"
+                         (org-foresight-test--work-string shape))))
+      (delete-file file))))
+
+;;;; Where the day lands
+
+(ert-deftest org-foresight-test-lands-steps-over-the-break ()
+  "The projection does not work through a break that was declared.
+
+Two hours owed at eleven do not finish at one o'clock: one of those hours is
+lunch.  Pouring through it answers \"when will this be over\" with the
+comfortable number, on precisely the days somebody is deciding whether to
+skip lunch."
+  (org-foresight-test--with-broken-day
+      "* NEXT write the report
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+"
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 11 0 10))))
+      (should (equal "14:00" (format-time-string "%H:%M" (plist-get cap :lands)))))))
+
+(ert-deftest org-foresight-test-lands-is-unchanged-on-an-unbroken-day ()
+  "One interval, and the answer is what it always was.
+
+The generalisation has to be conservative: on a day with no break there is
+nothing to step over, and work runs straight from now to when it is done."
+  (org-foresight-test--with-day
+      "* NEXT write the report
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+"
+    (let* ((org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-leak-cache-file "/nonexistent/leak.eld")
+           (org-foresight-surge-default "0:00")
+           (org-foresight-leak-default "0:00")
+           (org-foresight-lost-default "0:00")
+           (cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                        (org-foresight-test--ts 11 0 10))))
+      (should (equal "13:00" (format-time-string "%H:%M" (plist-get cap :lands)))))))
+
+(ert-deftest org-foresight-test-overflow-runs-past-the-end-not-into-the-break ()
+  "What will not fit runs on after work ends -- it does not fill the break.
+
+The break is not a reservoir the day may draw on once it is in trouble.  The
+overrun goes where an overrun actually goes: after the hour work was meant to
+be over."
+  (org-foresight-test--with-broken-day
+      "* NEXT the whole day and then some
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT: 9:00
+:END:
+"
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 9 0 10))))
+      ;; 7:30 of work hours, so 1:30 of it lands after 17:30
+      (should (equal "19:00" (format-time-string "%H:%M" (plist-get cap :lands))))
+      (should (= 0.0 (plist-get cap :overflow-min))))))
+
+(ert-deftest org-foresight-test-overflow-and-lands-never-disagree ()
+  "Nothing may be said not to fit while an hour is named for it.
+
+Both are read off the same list of stretches, so the invariant is structural:
+a day that overflows has no landing, and a day that lands has no overflow."
+  (org-foresight-test--with-broken-day
+      "* NEXT far more than a day
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT: 20:00
+:END:
+"
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 9 0 10))))
+      (should (> (plist-get cap :overflow-min) 0))
+      (should (null (plist-get cap :lands))))))
+
+;;;; The reserve is said even when it is spent
+
+(ert-deftest org-foresight-test-reserve-is-said-against-the-day-s-allowance ()
+  "The remainder means nothing without the allowance it came out of.
+
+The reserve shrinks as the hours pass and as interruptions land, so by the
+afternoon it is small -- and a figure that disappears when it gets small
+disappears exactly when it is being spent."
+  (org-foresight-test--with-day "* nothing\n"
+    (let* ((org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-leak-cache-file "/nonexistent/leak.eld")
+           (org-foresight-surge-default "1:00")
+           (org-foresight-leak-default "0:20")
+           (org-foresight-lost-default "0:15")
+           (day (org-foresight-test--ts 0 0 10))
+           (cap (org-foresight-capacity day nil (org-foresight-test--ts 9 0 10))))
+      ;; the whole allowance, before the day has spent any of it
+      (should (= 95.0 (plist-get cap :reserve-day-min)))
+      (should (string-match-p "reserve 1:35 of 1:35"
+                              (substring-no-properties
+                               (org-foresight-report--verdict cap)))))))
+
+(ert-deftest org-foresight-test-reserve-survives-being-used-up ()
+  "A reserve down to nothing is reported, not dropped.
+
+\"0:00 of 1:35\" is the day saying the allowance was real and is now spent,
+which is a different statement from silence -- and the more useful one, since
+it is the day on which the next interruption has nowhere to go."
+  (org-foresight-test--with-day "* nothing\n"
+    (let* ((org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-leak-cache-file "/nonexistent/leak.eld")
+           (org-foresight-surge-default "1:00")
+           (org-foresight-leak-default "0:20")
+           (org-foresight-lost-default "0:15")
+           (day (org-foresight-test--ts 0 0 10))
+           ;; after the working hours are over: nothing is held back any more
+           (cap (org-foresight-capacity day nil (org-foresight-test--ts 18 0 10))))
+      (should (= 0.0 (plist-get cap :reserve-min)))
+      (should (string-match-p "reserve 0:00 of 1:35"
+                              (substring-no-properties
+                               (org-foresight-report--verdict cap)))))))
+
+;;;; The edges of a broken day
+
+(ert-deftest org-foresight-test-edges-say-pauses-and-resumes ()
+  "The inner edges are a break, and are labelled as one.
+
+A break announced as \"work ends\" would be read as the end of the day, and
+the day would look like it finished at noon."
+  (let* ((day (org-foresight-test--ts 0 0 10))
+         (rows (mapcar #'substring-no-properties
+                       (org-foresight-agenda--edges
+                        (list :work (org-foresight-test--ivs '(9 0 12 0)
+                                                             '(13 0 17 30)))
+                        day))))
+    (should (= 4 (length rows)))
+    (should (seq-find (lambda (r) (string-match-p "work starts" r)) rows))
+    (should (seq-find (lambda (r) (string-match-p "work pauses" r)) rows))
+    (should (seq-find (lambda (r) (string-match-p "work resumes" r)) rows))
+    (should (seq-find (lambda (r) (string-match-p "work ends" r)) rows))
+    ;; and each is filed at its own hour (HHMM, as Org writes it), so the
+    ;; rules sort into the day rather than onto the end of it
+    (should (equal '(900 1200 1300 1730)
+                   (sort (mapcar (lambda (r) (get-text-property 1 'time-of-day r))
+                                 (org-foresight-agenda--edges
+                                  (list :work (org-foresight-test--ivs
+                                               '(9 0 12 0) '(13 0 17 30)))
+                                  day))
+                         #'<)))))
 
 (provide 'org-foresight-test)
 

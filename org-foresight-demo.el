@@ -123,7 +123,8 @@ CATEGORY, because that is what the meeting signal keys on."
      ":CATEGORY: outlook\n:LOCATION: 顧客様先\n:END:\n"
      (org-foresight-demo--stamp d1 "09:00" "12:00") "\n\n"
 
-     ;; A private commitment: it fills the evening but is not borrowed work.
+     ;; A private commitment outside the working hours: it fills the time but
+     ;; is not borrowed work.
      "* Dinner with the family\n:PROPERTIES:\n:UID: demo-dinner\n"
      ":CATEGORY: family\n:END:\n"
      (org-foresight-demo--stamp 0 "19:00" "20:30") "\n\n"
@@ -133,8 +134,8 @@ CATEGORY, because that is what the meeting signal keys on."
      ":CATEGORY: outlook\n:END:\n"
      (org-foresight-demo--stamp d2 "16:00" "17:00" "+1w") "\n\n"
 
-     ;; Outside the working window: subtracted from nothing, warned about by
-     ;; nothing -- which is why the After hours signal exists.
+     ;; Outside the working hours: subtracted from nothing, warned about by
+     ;; nothing -- which is why the Outside work hours signal exists.
      "* Overseas call\n:PROPERTIES:\n:UID: demo-overseas\n"
      ":CATEGORY: outlook\n:END:\n"
      (org-foresight-demo--stamp d3 "19:00" "20:00") "\n\n"
@@ -413,6 +414,7 @@ from, and there is no undo for that."
                     :task-file (bound-and-true-p org-foresight-task-file)
                     :day-file (bound-and-true-p org-foresight-day-file)
                     :workdays org-foresight-workdays
+                    :work org-foresight-work
                     :surge-cache org-foresight-surge-cache-file
                     :leak-cache org-foresight-leak-cache-file
                     :bias-cache org-foresight-bias-cache-file))
@@ -430,6 +432,12 @@ from, and there is no undo for that."
         ;; day, not the calendar.  Set after the files are generated, so the
         ;; dates in them still land on real working days.
         (setq org-foresight-workdays '(0 1 2 3 4 5 6))
+        ;; And the day breaks for lunch, because a day that does is the one
+        ;; worth demonstrating: the hour is missing from the span, no work is
+        ;; planned into it, and the rules say `pauses' and `resumes' around
+        ;; it.  A demo of an unbroken nine-to-five would show none of that.
+        (setq org-foresight-work '(("09:00" . "12:00")
+                                   ("13:00" . "17:30")))
         ;; Learned figures are redirected too: a reserve, a leak or a
         ;; multiplier taken from real history would describe a different life
         ;; than the demo's.
@@ -451,7 +459,8 @@ from, and there is no undo for that."
       (setq org-foresight-day-file
             (plist-get org-foresight-demo--saved :day-file)))
     (setq org-foresight-workdays
-          (plist-get org-foresight-demo--saved :workdays))
+          (plist-get org-foresight-demo--saved :workdays)
+          org-foresight-work (plist-get org-foresight-demo--saved :work))
     (setq org-foresight-surge-cache-file
           (plist-get org-foresight-demo--saved :surge-cache)
           org-foresight-leak-cache-file

@@ -19,7 +19,7 @@
 ;;   interval algebra  set operations on (START . END) time conses
 ;;   clock scan        what was actually spent, per day and per category
 ;;   day scan          what is already committed: event intervals + effort sums
-;;   capacity          window - busy - committed - surge, and when that runs out
+;;   capacity          work hours - busy - committed - surge, and when that runs out
 ;;
 ;; The split between "busy" and "committed" is the one rule the whole package
 ;; rests on, so it is stated once here and referred to elsewhere:
@@ -444,10 +444,11 @@ journey moves earlier into whatever gap will take it, which is what a person
 does.  Only when no gap will take it at all is the day genuinely impossible,
 and that is left to be reported as a clash rather than smoothed over.
 
-The journey home ends when the work span does -- the commute is inside the
-working day, not appended to it, so a day that ends at 17:30 means being home
-at 17:30."
-  (let* ((work (org-foresight-workday-window day))
+The journey home ends when the work does -- the commute is inside the working
+day, not appended to it, so a day that ends at 17:30 means being home at
+17:30.  On a day that breaks, that is the end of the last interval: you go
+home once, not at every pause."
+  (let* ((work (org-foresight-work-intervals day))
          (placed (seq-filter (lambda (e)
                                (and (plist-get e :start)
                                     (plist-get e :place)
@@ -465,7 +466,7 @@ at 17:30."
          ;; afternoon's client while still sitting in the morning's meeting,
          ;; and without this the backward search happily puts the second
          ;; journey before the first.
-         (since (and work (car work)))
+         (since (car (car work)))
          out)
     (dolist (e placed)
       (let ((there (plist-get e :place)))
@@ -490,7 +491,7 @@ at 17:30."
       (let ((mins (org-foresight--travel-minutes here org-foresight-home-place)))
         (when (> mins 0)
           (let ((leg (org-foresight--travel-slot
-                      (cdr work) mins taken since)))
+                      (cdr (car (last work))) mins taken since)))
             (push (list :kind 'travel
                         :title (format "→ %s" org-foresight-home-place)
                         :marker nil
@@ -803,16 +804,22 @@ a done-type keyword such as DELEG drops out too."
 ;;
 ;; So a day is modelled as bands filling the waking hours:
 ;;
-;;   grey │ travel │ meeting │ available │ travel │ private │ grey
-;;         └──────────── work span ────────────┘
+;;   grey │ travel │ meeting │ available │ grey │ available │ private │ grey
+;;         └───────── work ─────────┘          └─── work ───┘
 ;;
-;; "I leave at 17:30" is not the end of a window; it is that the evening is
-;; already spoken for.  Work that lands outside the span therefore does not
-;; disappear -- it is borrowed from private time, and is marked as such.
+;; Work is a LIST of intervals, not one bar from nine to half five.  A day can
+;; break for lunch, for a school run, for anything -- and the time between two
+;; work intervals is not a lesser kind of working time, it is time that is not
+;; work at all.  Whoever declared the break declared it for a reason.
 ;;
-;; The span itself is DECLARED, never inferred from history.  Measuring when
-;; work actually stopped and calling that the working day would teach the
-;; system to plan around the late nights it is supposed to prevent.
+;; "I stop at 17:30" is not the end of a window; it is that the hours after it
+;; are already spoken for.  Work that lands outside the intervals therefore
+;; does not disappear -- it is borrowed from time meant for something else,
+;; and is marked as such.
+;;
+;; The intervals themselves are DECLARED, never inferred from history.
+;; Measuring when work actually stopped and calling that the working day would
+;; teach the system to plan around the overruns it is supposed to prevent.
 
 (defcustom org-foresight-awake '("07:00" . "23:00")
   "Waking hours as (START . END), each \"HH:MM\".
@@ -820,22 +827,24 @@ An END at or before START is taken as the following morning."
   :type '(cons string string)
   :group 'org-foresight)
 
-(defcustom org-foresight-workday-start "09:00"
-  "Default time the work span opens, as \"HH:MM\".
-A declaration, not an observation: this is the shape of day being defended,
-which is why it is never derived from when work actually happened."
-  :type 'string
-  :group 'org-foresight)
+(defcustom org-foresight-work '(("09:00" . "17:30"))
+  "The hours meant for work, as a list of (START . END), each \"HH:MM\".
 
-(defcustom org-foresight-workday-end "17:30"
-  "Default time the work span closes, as \"HH:MM\".
+A list, because a day need not be one unbroken stretch:
 
-A declaration, not an observation: this is the hour you intend to leave, and
-the number exists to be defended.  Setting it to the hour you actually tend
-to leave would make every day fit by construction and defeat the point of
-having it at all.  A day that is genuinely different is declared on its own
+  \\='((\"09:00\" . \"12:00\")
+    (\"13:00\" . \"17:30\"))
+
+The gaps between intervals are not quiet working time -- they are time that
+is not work, declared as such, and nothing here will plan into them.  That is
+the whole point of being able to name more than one.
+
+A declaration, not an observation: these are the hours you intend to keep,
+and the numbers exist to be defended.  Setting them to the hours you actually
+tend to work would make every day fit by construction and defeat the point of
+having them at all.  A day that is genuinely different is declared on its own
 heading with \\[org-foresight-shape-day]."
-  :type 'string
+  :type '(repeat (cons string string))
   :group 'org-foresight)
 
 (defcustom org-foresight-workdays '(1 2 3 4 5)
@@ -863,7 +872,7 @@ own heading, so a day nobody has said anything about needs no input at all."
 
 (defvar org-foresight--shape-cache nil
   "Cons (TICK . TABLE) memoizing day shapes for one state of the day file.
-`org-foresight-workday-window' is asked for every day of the horizon, several
+`org-foresight-work-intervals' is asked for every day of the horizon, several
 times per render; without this each call would search the whole file again.")
 
 (defun org-foresight--day-property (day name)
@@ -894,15 +903,32 @@ times per render; without this each call would search the whole file again.")
 (defun org-foresight--max-time (a b) (if (time-less-p a b) b a))
 
 (defun org-foresight-day-shape (day)
-  "Return DAY's shape as a plist (:awake (S . E) :work (S . E)-or-nil).
+  "Return DAY's shape as a plist (:awake (S . E) :work LIST-OF-(S . E)).
+
+`:work' is nil on a day with no working hours -- which an empty list also is,
+so a caller may test it either way.
 
 Resolution order is the day's own `WAKE' / `SLEEP' / `WORK' properties, then
-the configured defaults.  `WORK' may be \"09:00-17:30\" to move the span or
-\"none\" to declare the day free of work entirely."
+the configured defaults.  `WORK' may be \"09:00-17:30\" to move the hours,
+\"09:00-12:00 13:00-17:30\" to break them up, or \"none\" to declare the day
+free of work entirely."
   (let ((key (format-time-string "%Y-%m-%d" day))
         (table (org-foresight--shape-table)))
     (or (gethash key table)
         (puthash key (org-foresight--day-shape-1 day) table))))
+
+(defun org-foresight--parse-ranges (s)
+  "Return the \"HH:MM-HH:MM\" ranges in S as a list of string conses.
+
+Separated by whitespace or commas, so \"09:00-12:00, 13:00-17:30\" and
+\"09:00-12:00 13:00-17:30\" both read.  Anything that is not a range -- most
+importantly the word \"none\" -- contributes nothing, which is what lets a day
+be declared free of work by saying so."
+  (let ((start 0) out)
+    (while (string-match "\\([0-9]+:[0-9]+\\)-\\([0-9]+:[0-9]+\\)" s start)
+      (push (cons (match-string 1 s) (match-string 2 s)) out)
+      (setq start (match-end 0)))
+    (nreverse out)))
 
 (defun org-foresight--day-shape-1 (day)
   "Work out DAY's shape from the day file and the defaults."
@@ -913,11 +939,9 @@ the configured defaults.  `WORK' may be \"09:00-17:30\" to move the span or
          (raw (org-foresight--day-property day "WORK"))
          (work
           (cond
-           ((and raw (string-match "\\`\\([0-9]+:[0-9]+\\)-\\([0-9]+:[0-9]+\\)\\'" raw))
-            (cons (match-string 1 raw) (match-string 2 raw)))
-           (raw nil)                    ; "none", or anything unparseable
+           (raw (org-foresight--parse-ranges raw))  ; "none" parses to nothing
            ((memq (nth 6 (decode-time day)) org-foresight-workdays)
-            (cons org-foresight-workday-start org-foresight-workday-end))
+            org-foresight-work)
            (t nil)))
          (wake-t (org-foresight--hhmm-on day wake))
          (sleep-t (org-foresight--hhmm-on day sleep)))
@@ -925,33 +949,47 @@ the configured defaults.  `WORK' may be \"09:00-17:30\" to move the span or
     (unless (time-less-p wake-t sleep-t)
       (setq sleep-t (time-add sleep-t (days-to-time 1))))
     (list :awake (cons wake-t sleep-t)
-          :work (and work (cons (org-foresight--hhmm-on day (car work))
-                                (org-foresight--hhmm-on day (cdr work)))))))
+          ;; Normalized, so everything downstream may assume the intervals are
+          ;; in order and do not touch: two that overlap are one stretch of
+          ;; work however they were written, and a caller that had to check
+          ;; would be a caller that eventually forgot to.
+          :work (org-foresight--intervals-normalize
+                 (mapcar (lambda (iv)
+                           (cons (org-foresight--hhmm-on day (car iv))
+                                 (org-foresight--hhmm-on day (cdr iv))))
+                         work)))))
 
 (defun org-foresight--gap-bands (start end work)
-  "Split the empty stretch \[START, END) by whether it is inside WORK.
-Inside the span the time is available for work; outside it is private time
-that merely happens to be unclaimed."
-  (if (null work)
-      (list (list :kind 'grey :start start :end end))
-    (let ((ws (car work)) (we (cdr work)) out)
-      (let ((b (org-foresight--min-time end ws)))
-        (when (time-less-p start b)
-          (push (list :kind 'grey :start start :end b) out)))
-      (let ((a (org-foresight--max-time start ws))
-            (b (org-foresight--min-time end we)))
-        (when (time-less-p a b)
-          (push (list :kind 'available :start a :end b) out)))
-      (let ((a (org-foresight--max-time start we)))
-        (when (time-less-p a end)
-          (push (list :kind 'grey :start a :end end) out)))
-      (nreverse out))))
+  "Split the empty stretch \[START, END) by whether it falls in WORK.
 
-(defun org-foresight--within-p (start end window)
-  "Non-nil when \[START, END) lies wholly inside WINDOW."
-  (and window
-       (not (time-less-p start (car window)))
-       (not (time-less-p (cdr window) end))))
+WORK is the day's work intervals.  Inside them the time is available for
+work; outside them it is time that merely happens to be unclaimed, and a
+break declared between two work intervals is as much outside as the hours
+after work are.
+
+Set algebra rather than case analysis: with several intervals the cases
+multiply, and every one of them is a chance to hand back an hour that was
+declared not to be work."
+  (let ((gap (list (cons start end))))
+    (sort (append
+           (mapcar (lambda (iv)
+                     (list :kind 'available :start (car iv) :end (cdr iv)))
+                   (org-foresight--intervals-intersect gap work))
+           (mapcar (lambda (iv)
+                     (list :kind 'grey :start (car iv) :end (cdr iv)))
+                   (org-foresight--intervals-subtract gap work)))
+          (lambda (a b) (time-less-p (plist-get a :start) (plist-get b :start))))))
+
+(defun org-foresight--within-p (start end intervals)
+  "Non-nil when \[START, END) lies wholly inside one of INTERVALS.
+
+One of them, not their hull: a meeting from noon to one on a day that breaks
+for lunch is not inside working hours merely by being between the first hour
+of the morning and the last of the afternoon."
+  (seq-some (lambda (iv)
+              (and (not (time-less-p start (car iv)))
+                   (not (time-less-p (cdr iv) end))))
+            intervals))
 
 (defun org-foresight-day-blocks (day &optional scan)
   "Return DAY as an ordered list of bands filling the waking hours.
@@ -1087,7 +1125,7 @@ dentist appointment lives where every other appointment lives."
              (format-time-string "%Y-%m-%d %a" day) wake sleep span)))
 
 ;;;; Capacity
-;; Supply and demand for one day.  Supply is the working window minus what is
+;; Supply and demand for one day.  Supply is the working hours minus what is
 ;; already spoken for; demand is the effort promised plus a reserve for work
 ;; that has not arrived yet.  Whatever is left is what may still be promised.
 
@@ -1167,12 +1205,23 @@ for a reason the tool can then name."
                  (string-to-number (car parts))
                  (nth 3 d) (nth 4 d) (nth 5 d))))
 
-(defun org-foresight-workday-window (day)
-  "Return (START . END) for DAY's working window, or nil if DAY has none.
+(defun org-foresight-work-intervals (day)
+  "Return DAY's working hours as a sorted list of (START . END), or nil.
+
 Delegates to `org-foresight-day-shape', so a day whose heading declares its
-own hours is honoured everywhere the window is consulted -- capacity, the
-forward load and placement all follow the same answer."
+own hours is honoured everywhere they are consulted -- capacity, the forward
+load and placement all follow the same answer.
+
+A list, not a window: the day may break, and code that took the first start
+and the last end would quietly hand back the break as working time."
   (plist-get (org-foresight-day-shape day) :work))
+
+(defun org-foresight-work-ends (day)
+  "Return when DAY's work is meant to be over, or nil if it has none.
+
+The end of the last interval -- the hour being defended, and the one thing a
+list of intervals is still asked for as a single time."
+  (cdr (car (last (org-foresight-work-intervals day)))))
 
 (defun org-foresight--surge-data ()
   "Return the cached surge reserve as a plist, or nil when there is none.
@@ -1337,7 +1386,7 @@ correction, it is a different plan.
 
 Set the lower bound to 1.0 for the cautious reading, where a correction may
 only ever grow an estimate.  Being wrong pessimistically costs an afternoon
-that turns out free; being wrong optimistically costs the evening."
+that turns out free; being wrong optimistically costs the hours after work."
   :type '(cons number number)
   :group 'org-foresight)
 
@@ -1764,42 +1813,74 @@ over is not free time however empty the calendar looked at breakfast."
         ((time-less-p now (cdr window)) (cons now (cdr window)))
         (t nil)))                                       ; wholly past
 
+(defun org-foresight--intervals-remaining (intervals now)
+  "Return the parts of INTERVALS that have not already elapsed at NOW."
+  (seq-keep (lambda (iv) (org-foresight--window-remaining iv now)) intervals))
+
+(defun org-foresight--day-busy (day scan)
+  "Return what SCAN says is already taken on DAY."
+  (let ((idx (org-foresight--day-of day (plist-get scan :from))))
+    (and (>= idx 0)
+         (< idx (plist-get scan :days))
+         (aref (plist-get scan :busy) idx))))
+
 (defun org-foresight-free-intervals (day &optional scan now)
-  "Return the stretches of DAY's working window that nothing has claimed.
+  "Return the stretches of DAY's working hours that nothing has claimed.
 SCAN is a `org-foresight-scan' result covering DAY; one is taken for DAY alone
 when omitted.  NOW defaults to the current time and clips away the part of the
-day that has already gone."
+day that has already gone.
+
+A declared break is not among them.  It is not free working time that happens
+to be empty -- it is not working time."
   (let* ((now (or now (current-time)))
-         (window (org-foresight--window-remaining
-                  (org-foresight-workday-window day) now))
-         (scan (or scan (org-foresight-scan 1 day)))
-         (idx (org-foresight--day-of day (plist-get scan :from)))
-         (busy (and (>= idx 0)
-                    (< idx (plist-get scan :days))
-                    (aref (plist-get scan :busy) idx))))
-    (when window
-      (org-foresight--intervals-subtract (list window) busy))))
+         (windows (org-foresight--intervals-remaining
+                   (org-foresight-work-intervals day) now))
+         (scan (or scan (org-foresight-scan 1 day))))
+    (when windows
+      (org-foresight--intervals-subtract
+       windows (org-foresight--day-busy day scan)))))
 
 (defun org-foresight-waking-free-intervals (day &optional scan now)
   "Return the stretches of DAY nothing has claimed, working hours or not.
 
 The same subtraction as `org-foresight-free-intervals\=' over the whole waking
 day rather than the working part of it.  Work that will not fit inside the
-hours you meant to keep does not stop existing at six o\='clock; it goes on
-into the evening, and where it stops is a fact worth having.
+hours you meant to keep does not stop existing when they end; it runs on into
+the time after them, and where it stops is a fact worth having.
 
-Not capacity: nothing here may be promised away, and every minute of it is
-somebody\='s evening.  It exists to answer when, not to offer."
+Not capacity: nothing here may be promised away, and every minute of it was
+meant for something else.  It exists to answer when, not to offer."
   (let* ((now (or now (current-time)))
          (awake (plist-get (org-foresight-day-shape day) :awake))
          (window (org-foresight--window-remaining awake now))
-         (scan (or scan (org-foresight-scan 1 day)))
-         (idx (org-foresight--day-of day (plist-get scan :from)))
-         (busy (and (>= idx 0)
-                    (< idx (plist-get scan :days))
-                    (aref (plist-get scan :busy) idx))))
+         (scan (or scan (org-foresight-scan 1 day))))
     (when window
-      (org-foresight--intervals-subtract (list window) busy))))
+      (org-foresight--intervals-subtract
+       (list window) (org-foresight--day-busy day scan)))))
+
+(defun org-foresight--run-out-intervals (day &optional scan now)
+  "Return where DAY's work would actually go, in the order it would go there.
+
+Two stretches, and the order is the whole point:
+
+  first  what is left of the working hours themselves, break excluded
+  then   whatever is still free once those hours are over
+
+So work fills the hours meant for it, and only what will not fit runs on past
+the end.  A declared break is in neither -- not the lunch hour, and not the
+morning before work starts.  Pouring through a break would answer \"when will
+this be over\" with an hour that assumes you worked through the one part of
+the day you said you would not, which is the comfortable answer and the wrong
+one.
+
+On a day with a single unbroken stretch of work this is exactly the waking
+day from NOW, which is what it has always been."
+  (let* ((now (or now (current-time)))
+         (scan (or scan (org-foresight-scan 1 day)))
+         (ends (org-foresight-work-ends day))
+         (after (if ends (org-foresight--max-time now ends) now)))
+    (append (org-foresight-free-intervals day scan now)
+            (org-foresight-waking-free-intervals day scan after))))
 
 (defun org-foresight--bias-minutes (scan idx)
   "Return how many of day IDX\'s promised minutes are the estimate correction.
@@ -1857,6 +1938,10 @@ Within the work span, these divide it exactly:
   :leak-min   what is still expected to go unrecorded
   :lost-min   what is still expected to go away from the machine
   :reserve-min  the three of them together
+  :reserve-day-min  the whole of today's allowance, before the day spent any
+              of it: what `:reserve-min' was at the first minute of the span.
+              The denominator that makes the remainder mean something -- a
+              reserve down to nothing has been used, not abolished
   :spare-min  what survives all of it -- negative means overcommitted
 
 Outside it, these divide the rest of the waking day:
@@ -1874,10 +1959,10 @@ And what is left of today, as opposed to what the day was shaped like:
   :needed-min `:committed-min' plus `:reserve-min' -- the wall clock the rest
               of the day has to find
   :headroom-min   `:free-min' less `:needed-min'
-  :lands      when the day's work runs out, evening included, or nil when it
-              does not fit in today at all.  A day with nothing owed still
-              lands -- at once -- and it is for the caller to decide that
-              saying so is not worth a line
+  :lands      when the day's work runs out, counting the hours past the end
+              of work, or nil when it does not fit in today at all.  A day
+              with nothing owed still lands -- at once -- and it is for the
+              caller to decide that saying so is not worth a line
   :overflow-min   what will not fit in today at all, zero when it all does
 
 These five close over the remaining working day, by construction:
@@ -1897,11 +1982,11 @@ reproducible, which is what lets this be tested at all."
   (let* ((now (or now (current-time)))
          (scan (or scan (org-foresight-scan 1 day now)))
          (idx (org-foresight--day-of day (plist-get scan :from)))
-         (window (org-foresight-workday-window day))
-         (span (if window
-                   (/ (float-time (time-subtract (cdr window) (car window)))
-                      60.0)
-                 0.0))
+         (work (org-foresight-work-intervals day))
+         ;; The hours themselves, not first-start to last-end: a day that
+         ;; breaks for an hour has an hour less to promise, and a hull would
+         ;; hand that hour back as capacity.
+         (span (/ (org-foresight--intervals-seconds work) 60.0))
          (free (org-foresight-free-intervals day scan now))
          (free-min (/ (org-foresight--intervals-seconds free) 60.0))
          (committed (if (and (>= idx 0) (< idx (plist-get scan :days)))
@@ -1912,19 +1997,27 @@ reproducible, which is what lets this be tested at all."
          ;; claim about the hours still ahead, so each is measured against
          ;; them rather than against the whole span -- which is what stops a
          ;; full day's allowance being held against the last half hour of it.
-         (rest (if window
-                   (/ (org-foresight--intervals-seconds
-                       (let ((r (org-foresight--window-remaining window now)))
-                         (and r (list r))))
-                      60.0)
-                 0.0))
+         (rest (/ (org-foresight--intervals-seconds
+                   (org-foresight--intervals-remaining work now))
+                  60.0))
          (ahead (if (> span 0) (min 1.0 (/ rest span)) 0.0))
          (surge (org-foresight--surge-left scan idx ahead))
          (leak (* (org-foresight-leak-minutes) ahead))
          (lost (* (org-foresight-lost-minutes) ahead))
          (reserve (+ surge leak lost))
+         ;; The same three at the top of the day: nothing arrived yet and the
+         ;; whole span still ahead.  Kept beside the remainder so the two can
+         ;; be shown together -- a reserve that has shrunk to nothing looks
+         ;; identical to one that never existed, and they are opposites.
+         (reserve-day (+ (org-foresight-surge-minutes)
+                         (org-foresight-leak-minutes)
+                         (org-foresight-lost-minutes)))
          (needed (+ committed reserve))
-         (waking (org-foresight-waking-free-intervals day scan now))
+         ;; Where the work would actually go: the hours meant for it first,
+         ;; then whatever is left once they are over.  Both `:lands' and
+         ;; `:overflow-min' are read off this one list, so the hour named and
+         ;; the amount said not to fit can never disagree.
+         (run-out (org-foresight--run-out-intervals day scan now))
          (bands (org-foresight-day-blocks day scan))
          (awake (plist-get (org-foresight-day-shape day) :awake))
          (booked 0.0) (travel 0.0) (private 0.0) (private-in 0.0)
@@ -1937,13 +2030,13 @@ reproducible, which is what lets this be tested at all."
           ('grey (setq grey (+ grey mins)))
           ;; A private commitment is not work and not empty time; without a
           ;; figure of its own it vanished from the account entirely, leaving
-          ;; an evening that was spoken for looking like a free one.  One that
-          ;; falls in working hours is counted separately, because it is time
-          ;; the span cannot spend and must not be handed back as spare.
+          ;; hours that were spoken for looking free.  One that falls in
+          ;; working hours is counted separately, because it is time the day
+          ;; cannot spend on work and must not be handed back as spare.
           ('private
            (setq private (+ private mins))
            (when (org-foresight--within-p (plist-get b :start) (plist-get b :end)
-                                          window)
+                                          work)
              (setq private-in (+ private-in mins))))
           ('travel (if (plist-get b :borrowed)
                        (setq borrowed (+ borrowed mins))
@@ -1953,7 +2046,7 @@ reproducible, which is what lets this be tested at all."
                (setq borrowed (+ borrowed mins))
              (setq booked (+ booked mins))))
           (_ nil))))
-    (list :window window
+    (list :work work
           :span-min span
           :booked-min booked
           :travel-min travel
@@ -1966,12 +2059,13 @@ reproducible, which is what lets this be tested at all."
           :leak-min leak
           :lost-min lost
           :reserve-min reserve
+          :reserve-day-min reserve-day
           :needed-min needed
           :spare-min (- span booked travel private-in committed reserve)
           :headroom-min (- free-min needed)
-          :lands (org-foresight--pour waking needed)
+          :lands (org-foresight--pour run-out needed)
           :overflow-min (max 0.0 (- needed
-                                    (/ (org-foresight--intervals-seconds waking)
+                                    (/ (org-foresight--intervals-seconds run-out)
                                        60.0)))
           :off-min (- (/ (float-time (time-subtract (cdr awake) (car awake)))
                          60.0)
