@@ -1190,12 +1190,42 @@ find out why, which is far worse to live with than one ugly line."
        pos (or (next-single-property-change pos 'org-foresight-report)
                (point-max))))))
 
+(defconst org-foresight-report--agenda-properties
+  '(org-redo-cmd org-last-args org-series-cmd org-series-redo-cmd org-agenda-type)
+  "The properties Org reads from the character under point to redraw a view.
+
+`org-agenda-list' stamps them over the whole buffer just before the finalize
+hook runs, so anything inserted from that hook is born without them.")
+
+(defun org-foresight-report--inherit-agenda-properties (beg end)
+  "Give the text in \[BEG, END) the redo properties Org gave the rest.
+
+`org-agenda-redo' takes the command to re-run from the text under point --
+which means `r', `g', and every view toggle that redraws by way of it.  A
+block inserted here carries none of that, so a cursor left sitting in one made
+the agenda stop responding: not with an error, and not always, but exactly
+whenever the cursor happened to be resting on our text rather than Org's.
+
+The donor is the character just past the block, falling back to the first
+place in the buffer that has the property at all -- which is what the block at
+the very foot of the page needs."
+  (let ((donor (or (and (< end (point-max))
+                        (get-text-property end 'org-redo-cmd)
+                        end)
+                   (text-property-not-all (point-min) (point-max)
+                                          'org-redo-cmd nil))))
+    (when donor
+      (dolist (prop org-foresight-report--agenda-properties)
+        (when-let ((value (get-text-property donor prop)))
+          (put-text-property beg end prop value))))))
+
 (defun org-foresight-report--insert (text)
   "Insert TEXT at point and mark it as ours, so a later render can reclaim it."
   (when (and text (not (string-empty-p text)))
     (let ((beg (point)))
       (insert text)
-      (put-text-property beg (point) 'org-foresight-report t))))
+      (put-text-property beg (point) 'org-foresight-report t)
+      (org-foresight-report--inherit-agenda-properties beg (point)))))
 
 (defun org-foresight-report-render ()
   "Render the current style's report into an agenda view.
