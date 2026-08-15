@@ -4117,6 +4117,442 @@ for it."
       ;; 7:30 of work, less the meeting and the two journeys
       (should (= (- 450.0 60.0 120.0) (plist-get cap :spare-min))))))
 
+;;;; The agenda Org actually draws
+;; Everything above tests the rows in isolation.  These build a real agenda
+;; buffer with `org-agenda-list' and read what came out, because every bug
+;; found in this layer so far lived in the seam rather than in either side of
+;; it: which day Org thinks it is drawing, and whether it calls us at all.
+
+(defvar org-foresight-test--e2e-span 'day
+  "Span passed to `org-agenda-list' by `org-foresight-test--agenda'.")
+
+(defmacro org-foresight-test--with-agenda (text &rest body)
+  "Run BODY with TEXT as the only agenda file and the agenda machinery armed.
+
+Dates in TEXT are written by the caller, so they are relative to nothing --
+`org-foresight-test--stamp' builds them from today, which is what makes an
+assertion about \"tomorrow\" survive being run tomorrow."
+  (declare (indent 1))
+  `(org-foresight-test--with-org ,text
+     (let ((org-agenda-sticky nil)
+           (org-agenda-buffer-name "*org-foresight-test-agenda*")
+           (org-agenda-span 'day)
+           (org-agenda-start-on-weekday nil)
+           (org-agenda-prefix-format
+            '((agenda . "  %-8.8c%?-12t% s%?-5e") (todo . "  %-8c %-7e")
+              (tags . "  %i %-5c %-7e") (search . " %i %-12c")))
+           (org-agenda-sorting-strategy
+            '((agenda time-up category-keep) (todo habit-down category-up time-up)
+              (tags priority-down category-keep) (search category-keep)))
+           (org-agenda-start-with-log-mode '(state))
+           (org-agenda-log-mode-items '(closed state))
+           (org-agenda-start-with-clockreport-mode nil)
+           (org-agenda-start-with-entry-text-mode nil)
+           (org-agenda-finalize-hook '(org-foresight-report-render))
+           (org-foresight-report-style 'daily)
+           (org-foresight-awake '("07:00" . "22:00"))
+           (org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:30")))
+           (org-foresight-workdays '(0 1 2 3 4 5 6))
+           (org-foresight-private-categories '("family"))
+           (org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-leak-cache-file "/nonexistent/leak.eld")
+           (org-foresight-bias-cache-file "/nonexistent/bias.eld")
+           (org-foresight-surge-default "0:30")
+           (org-foresight-leak-default "0:00")
+           (org-foresight-lost-default "0:00")
+           (org-foresight--shape-cache nil))
+       (unwind-protect (progn ,@body)
+         (when (get-buffer org-agenda-buffer-name)
+           (kill-buffer org-agenda-buffer-name))))))
+
+(defun org-foresight-test--logstamp (offset hhmm)
+  "Return an inactive timestamp OFFSET days from today at HHMM.
+
+Inactive on purpose: Org reads LOGBOOK state lines with `[...]', and a log
+line written with `<...>' is a log line Org does not see -- which makes a
+test of log mode pass while proving nothing."
+  (concat "[" (format-time-string
+               "%Y-%m-%d %a"
+               (time-add (org-foresight--day-start 0) (days-to-time offset)))
+          " " hhmm "]"))
+
+(defun org-foresight-test--agenda ()
+  "Draw today's agenda and return its lines, properties stripped.
+
+ActivityWatch is answered as if it were not installed: what a machine without
+it does is the case worth testing, and a suite that reaches the network is a
+suite that fails on a train."
+  (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+             (lambda (&rest _) nil)))
+    (org-agenda-list nil nil org-foresight-test--e2e-span)
+    (with-current-buffer org-agenda-buffer-name
+      (split-string (buffer-substring-no-properties (point-min) (point-max))
+                    "\n"))))
+
+(defun org-foresight-test--day-section (lines day-name)
+  "Return the LINES belonging to DAY-NAME's date block."
+  (let (out (in nil))
+    (dolist (l lines (nreverse out))
+      (cond
+       ((string-match-p (concat "^" day-name "\\b") l) (setq in t))
+       ;; another date header ends the section
+       ((and in (string-match-p
+                 "^\\(Monday\\|Tuesday\\|Wednesday\\|Thursday\\|Friday\\|Saturday\\|Sunday\\)"
+                 l))
+        (setq in nil))
+       (in (push l out))))))
+
+(ert-deftest org-foresight-test-e2e-rows-reach-the-agenda ()
+  "The rows arrive in the buffer Org draws, not merely in a list.
+
+The whole layer hangs off one advice on an Org internal.  Testing the
+functions it calls says nothing about whether Org still calls it."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (let ((lines (org-foresight-test--agenda)))
+      (should (seq-find (lambda (l) (string-match-p "work starts" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "work pauses" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "work ends" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "free · " l)) lines))
+      ;; and the report block, which is a separate hook
+      (should (seq-find (lambda (l) (string-match-p "Capacity" l)) lines))
+      ;; nothing blew up on the way
+      (should-not (seq-find (lambda (l) (string-match-p "org-foresight failed" l))
+                            lines)))))
+
+(ert-deftest org-foresight-test-e2e-an-empty-day-still-has-a-shape ()
+  "A day Org found nothing for is still a day with hours in it.
+
+`org-agenda-finalize-entries' is called only `(when rtnall)', so hooking it --
+as this once did -- left exactly the emptiest day blank.  That is the day the
+shape is most worth drawing: the answer to \"is there room this week\" is a
+column of free stretches, and it used to be a column of bare dates."
+  (org-foresight-test--with-agenda "* nothing dated\n"
+    (let ((lines (org-foresight-test--agenda)))
+      (should (seq-find (lambda (l) (string-match-p "work starts" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "3:00 free" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "4:30 free" l)) lines)))))
+
+(ert-deftest org-foresight-test-e2e-each-day-is-drawn-from-its-own-entries ()
+  "Every day of a span answers with its own gaps, not with today's.
+
+org-agenda.el binds the loop's `date' lexically and never declares it
+special, so an advice reading it saw nothing and fell through to today --
+correct by accident on a one-day agenda, and wrong on every other day of a
+two-day one.  Org's own `org-agenda-current-date' is the answer."
+  (let ((org-foresight-test--e2e-span 2))
+    (org-foresight-test--with-agenda
+        (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                (org-foresight-test--stamp 0 "09:30" "09:45") "\n"
+                "* Review\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                (org-foresight-test--stamp 1 "10:00" "11:00") "\n")
+      (let* ((lines (org-foresight-test--agenda))
+             (tomorrow (format-time-string
+                        "%A" (time-add (current-time) (days-to-time 1))))
+             (section (org-foresight-test--day-section lines tomorrow)))
+        (should section)
+        ;; tomorrow's gaps are cut by tomorrow's meeting at 10:00 ...
+        (should (seq-find (lambda (l) (string-match-p "9:00-10:00" l)) section))
+        (should (seq-find (lambda (l) (string-match-p "11:00-12:00" l)) section))
+        ;; ... and not by today's, which starts at 9:30
+        (should-not (seq-find (lambda (l) (string-match-p "9:00-9:30" l)) section))))))
+
+(ert-deftest org-foresight-test-e2e-clockcheck-keeps-the-day ()
+  "Clock-check mode lists clock lines and nothing else, and that is a day too.
+
+Its list holds no ordinary entries at all, so the day went blank under the
+old hook -- the audit view lost the working hours it was auditing against."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (let* ((org-agenda-start-with-log-mode 'clockcheck)
+           (lines (org-foresight-test--agenda)))
+      (should (seq-find (lambda (l) (string-match-p "work starts" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "work ends" l)) lines)))))
+
+(ert-deftest org-foresight-test-e2e-coexists-with-org-s-own-modes ()
+  "Log mode, the clock report and entry text all still draw what they draw.
+
+Each of these inserts its own material around the entries; the rows added
+here must not displace it, and must survive being drawn beside it."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n"
+              "* DONE Finished thing\nCLOSED: " (org-foresight-test--logstamp 0 "11:00") "\n"
+              ":LOGBOOK:\n- State \"DONE\"       from \"ONGO\"       "
+              (org-foresight-test--logstamp 0 "11:00") "\n:END:\n")
+    ;; log mode: Org's own State line survives beside ours
+    (let ((lines (org-foresight-test--agenda)))
+      (should (seq-find (lambda (l) (string-match-p "State:" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "work starts" l)) lines)))
+    ;; the clock report table is still written
+    (let* ((org-agenda-start-with-clockreport-mode t)
+           (lines (org-foresight-test--agenda)))
+      (should (seq-find (lambda (l) (string-match-p "^|" l)) lines))
+      (should (seq-find (lambda (l) (string-match-p "work starts" l)) lines)))
+    ;; entry text mode adds its lines without disturbing ours
+    (let* ((org-agenda-start-with-entry-text-mode t)
+           (lines (org-foresight-test--agenda)))
+      (should (seq-find (lambda (l) (string-match-p "work starts" l)) lines)))))
+
+(ert-deftest org-foresight-test-e2e-every-injected-row-carries-its-hour ()
+  "Rows are placed by Org, which can only place what carries a time.
+
+The invariant is checked on the finished buffer rather than on the list,
+because a row can lose its property on the way through the formatter."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (org-foresight-test--agenda)
+    (with-current-buffer org-agenda-buffer-name
+      (goto-char (point-min))
+      (let ((bad '()))
+        (while (not (eobp))
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (when (and (string-match-p
+                        "work starts\\|work ends\\|work pauses\\|work resumes\\|work lands\\|free · "
+                        line)
+                       (not (get-text-property (line-beginning-position) 'time-of-day))
+                       (not (get-text-property (1+ (line-beginning-position))
+                                               'time-of-day)))
+              (push line bad)))
+          (forward-line 1))
+        (should-not bad)))))
+
+;;;; Headings people actually write
+;; A day's file is not a fixture.  It has a timestamp somebody typed backwards,
+;; an estimate in the wrong units, a clock that is still running, a heading with
+;; a link in it.  None of that should produce a wrong number, and none of it
+;; should produce an error -- the block is drawn while the agenda is being
+;; built, so an error here costs the whole page.
+
+(defmacro org-foresight-test--with-day-at-8 (text &rest body)
+  "Run BODY over TEXT with the day fixed and NOW at 08:00, before anything."
+  (declare (indent 1))
+  `(org-foresight-test--with-day ,text
+     (let ((org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-leak-cache-file "/nonexistent/leak.eld")
+           (org-foresight-surge-default "0:00")
+           (org-foresight-leak-default "0:00")
+           (org-foresight-lost-default "0:00"))
+       ,@body)))
+
+(defun org-foresight-test--partition-holds-p (day)
+  "Non-nil when DAY's bands tile the waking hours exactly."
+  (let* ((bands (org-foresight-day-blocks day))
+         (awake (plist-get (org-foresight-day-shape day) :awake))
+         (cursor (car awake))
+         (ok t))
+    (dolist (b bands)
+      (unless (equal (float-time cursor) (float-time (plist-get b :start)))
+        (setq ok nil))
+      (setq cursor (plist-get b :end)))
+    (and ok (equal (float-time cursor) (float-time (cdr awake))))))
+
+(ert-deftest org-foresight-test-hard-timestamps-do-not-break-the-day ()
+  "A backwards or empty timestamp gives a duration, not a negative one.
+
+Neither is a thing anybody means to write, and both survive in a file for
+years.  What must not happen is a band of negative length, which would make
+every total below it quietly wrong rather than visibly odd."
+  (dolist (case '(("14:00" "14:00")     ; zero length
+                  ("15:00" "14:00")))   ; end before start
+    (org-foresight-test--with-day-at-8
+        (format "* Odd\n<2026-08-10 Mon %s-%s>\n" (car case) (cadr case))
+      (let* ((day (org-foresight-test--ts 0 0 10))
+             (cap (org-foresight-capacity day nil (org-foresight-test--ts 8 0 10))))
+        (should (>= (plist-get cap :booked-min) 0))
+        (should (org-foresight-test--partition-holds-p day))))))
+
+(ert-deftest org-foresight-test-hard-efforts-are-read-or-ignored ()
+  "An estimate that cannot be read is treated as one that was not given.
+
+Org's own reader signals on it, which is how a single mistyped EFFORT takes
+down `C-c a a' with a message naming no heading.  Nothing here may do the
+same: these numbers are drawn while the agenda is being built."
+  (dolist (case '(("2:00"     120.0)    ; the ordinary form
+                  ("90"        90.0)    ; bare minutes, which Org also reads
+                  ("2h"       120.0)    ; and this, which looks wrong and is not
+                  ("whenever"  30.0)    ; unreadable -> the default effort
+                  ("-1:00"     30.0)))  ; negative -> likewise
+    (org-foresight-test--with-day-at-8
+        (concat "* NEXT A task\nSCHEDULED: <2026-08-10 Mon>\n"
+                ":PROPERTIES:\n:EFFORT: " (car case) "\n:END:\n")
+      (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                         (org-foresight-test--ts 8 0 10))))
+        (should (= (cadr case) (plist-get cap :committed-min)))))))
+
+(ert-deftest org-foresight-test-hard-an-unreadable-effort-is-named ()
+  "The one thing that can still be said when the agenda itself will not draw.
+
+The board is built by walking the files, so it works when `org-agenda-list'
+does not -- which is exactly the situation a mistyped estimate creates.  It
+has to name the heading, because Org's error names neither file nor heading."
+  (org-foresight-test--with-signals
+      "* NEXT Mistyped estimate
+:PROPERTIES:
+:EFFORT: whenever
+:END:
+* NEXT Fine estimate
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+"
+    (let* ((found (org-foresight-test--signal
+                   "Unreadable estimate (breaks the agenda itself)"))
+           (titles (mapcar (lambda (f) (plist-get f :title)) found)))
+      (should (member "Mistyped estimate" titles))
+      (should-not (member "Fine estimate" titles))
+      (should (string-match-p "not a duration" (plist-get (car found) :note))))))
+
+(ert-deftest org-foresight-test-hard-a-running-clock-counts-so-far ()
+  "Work in progress is owed less than it was, by exactly as much as has gone.
+
+The clock has no end yet, so the elapsed part is measured against NOW -- and
+the remainder is what the rest of the day still has to find."
+  (org-foresight-test--with-day-at-8
+      (concat "* ONGO In progress\nSCHEDULED: <2026-08-10 Mon>\n"
+              ":PROPERTIES:\n:EFFORT: 2:00\n:END:\n"
+              ":LOGBOOK:\nCLOCK: [2026-08-10 Mon 07:00]\n:END:\n")
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 8 0 10))))
+      ;; an hour of the two has been done
+      (should (= 60.0 (plist-get cap :committed-min))))))
+
+(ert-deftest org-foresight-test-hard-clocking-past-the-estimate-owes-nothing ()
+  "Work already over its estimate is not owed backwards.
+
+Four hours clocked against a half-hour guess means the estimate was wrong,
+not that the day has minus three and a half hours of work left in it."
+  (org-foresight-test--with-day-at-8
+      (concat "* ONGO Overran\nSCHEDULED: <2026-08-10 Mon>\n"
+              ":PROPERTIES:\n:EFFORT: 0:30\n:END:\n:LOGBOOK:\n"
+              "CLOCK: [2026-08-10 Mon 05:00]--[2026-08-10 Mon 09:00] =>  4:00\n:END:\n")
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 8 0 10))))
+      (should (= 0.0 (plist-get cap :committed-min))))))
+
+(ert-deftest org-foresight-test-hard-headings-survive-their-own-punctuation ()
+  "A heading is text somebody wrote, and it may contain anything.
+
+Links, emphasis, a pipe, a percent sign, the glyphs this package draws with,
+and Japanese with its wide spaces: all of it goes through a formatter and a
+column count, and none of it may throw."
+  (org-foresight-test--with-day-at-8
+      (concat "* Heading with [[https://example.com][a link]] and *bold*\n"
+              "<2026-08-10 Mon 10:00-10:30>\n"
+              "* 日本語の見出し・全角スペース　あり\n"
+              "<2026-08-10 Mon 10:30-10:45>\n"
+              "* A | pipe, 100% and a ⨯ of our own\n"
+              "<2026-08-10 Mon 11:00-11:15>\n")
+    (let ((day (org-foresight-test--ts 0 0 10)))
+      (should (org-foresight-test--partition-holds-p day))
+      (should (org-foresight-capacity day nil (org-foresight-test--ts 8 0 10)))
+      ;; and the rows are made without complaint
+      (should (org-foresight-agenda--augment
+               nil day (org-foresight-scan 1 day))))))
+
+(ert-deftest org-foresight-test-hard-an-empty-file-is-a-quiet-day ()
+  "Nothing dated is not an error; it is a day with everything still free."
+  (org-foresight-test--with-day-at-8 "* just a heading\nwith a body\n"
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 8 0 10))))
+      (should (= 0.0 (plist-get cap :booked-min)))
+      (should (= 0.0 (plist-get cap :committed-min)))
+      (should (= (plist-get cap :span-min) (plist-get cap :spare-min))))))
+
+;;;; Living beside the rest of the agenda
+
+(ert-deftest org-foresight-test-e2e-redrawing-does-not-double-the-rows ()
+  "A sticky agenda redrawn is the same agenda, not two of them.
+
+Every redraw runs the injection again on a buffer that already holds the last
+one's output, which is precisely how derived rows accumulate."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (let ((org-agenda-sticky t))
+      (org-foresight-test--agenda)
+      (let ((first (length (seq-filter
+                            (lambda (l) (string-match-p "work starts" l))
+                            (with-current-buffer org-agenda-buffer-name
+                              (split-string (buffer-string) "\n"))))))
+        (should (= 1 first))
+        (with-current-buffer org-agenda-buffer-name
+          (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                     (lambda (&rest _) nil)))
+            (org-agenda-redo)
+            (org-agenda-redo))
+          (should (= 1 (length (seq-filter
+                                (lambda (l) (string-match-p "work starts" l))
+                                (split-string (buffer-string) "\n"))))))))))
+
+(ert-deftest org-foresight-test-e2e-injected-rows-refuse-to-be-acted-on ()
+  "A derived row is not an entry, and Org's commands must say so.
+
+They are drawn in the same column as real rows, so the cursor lands on them
+by accident constantly.  What must never happen is a keystroke meant for a
+task silently doing something to a rule."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (org-foresight-test--agenda)
+    (with-current-buffer org-agenda-buffer-name
+      (goto-char (point-min))
+      (should (re-search-forward "work starts" nil t))
+      (beginning-of-line)
+      (dolist (cmd '(org-agenda-todo org-agenda-goto org-agenda-set-effort))
+        (should-error (call-interactively cmd))))))
+
+(ert-deftest org-foresight-test-e2e-a-tag-filter-keeps-the-shape-of-the-day ()
+  "Filtering narrows the entries, not the hours they sit in.
+
+The rules and gaps carry no tags, so a tag filter has nothing to reject them
+by -- which is the behaviour worth having: you filter to see less work, not
+to lose the day around it."
+  (org-foresight-test--with-agenda
+      (concat "* NEXT Tagged work :work:\nSCHEDULED: "
+              (org-foresight-test--stamp 0) "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n"
+              "* NEXT Something else :home:\nSCHEDULED: "
+              (org-foresight-test--stamp 0) "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n")
+    (org-foresight-test--agenda)
+    (with-current-buffer org-agenda-buffer-name
+      (let ((visible-ours
+             (lambda ()
+               (goto-char (point-min))
+               (let ((n 0))
+                 (while (not (eobp))
+                   (when (and (string-match-p
+                               "work starts\\|work ends\\|free · "
+                               (buffer-substring-no-properties
+                                (line-beginning-position) (line-end-position)))
+                              (not (get-char-property (line-beginning-position)
+                                                      'invisible)))
+                     (setq n (1+ n)))
+                   (forward-line 1))
+                 n))))
+        (let ((before (funcall visible-ours)))
+          (should (> before 0))
+          (org-agenda-filter-apply '("+work") 'tag)
+          (should (= before (funcall visible-ours)))
+          (org-agenda-filter-show-all-tag))))))
+
+(ert-deftest org-foresight-test-observed-block-says-when-there-is-no-watcher ()
+  "A machine with no ActivityWatch gets a sentence, not an empty block.
+
+The company machine will not have one for a while, and \"nothing here\" has
+to read as \"nothing is watching\" rather than as \"you did nothing\"."
+  (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+             (lambda (&rest _) nil)))
+    (let* ((org-foresight-observe--cache nil)
+           (clock (list :rows nil :total 0 :days 7 :byday (make-vector 7 0)
+                        :today-rows nil :today-total 0 :today-segments 0
+                        :today-intervals nil :today-tasks nil))
+           (text (substring-no-properties (org-foresight-report-spent clock))))
+      (should (string-match-p "ActivityWatch" text)))))
+
 (provide 'org-foresight-test)
 
 ;;; org-foresight-test.el ends here

@@ -667,40 +667,66 @@ is what puts a gap above the candidates hanging off it."
   "Non-nil while rows are being made, to stop advice recursing.")
 
 (defun org-foresight-agenda--day ()
-  "Return the day the agenda is currently finalising.
+  "Return the day the agenda is currently drawing.
 
-`org-agenda-list' assigns the unprefixed `date' -- calendar's own dynamic
-variable -- once per day before finalising that day's entries, so a
-multi-day span gets its rows day by day without this having to know the
-span at all."
-  (if (and (boundp 'date) (consp date) (= (length date) 3))
-      (org-foresight--midnight
-       (encode-time 0 0 0 (nth 1 date) (nth 0 date) (nth 2 date)))
-    (org-foresight--day-start 0)))
+`org-agenda-current-date' is Org's own answer to that question: it is set
+once per file per day inside `org-agenda-get-day-entries', which runs
+immediately before the day's rows are assembled.  So a multi-day span gets
+its rows day by day without this having to know the span at all.
 
-(defun org-foresight-agenda--inject (args)
-  "Add foresight's derived rows to `org-agenda-finalize-entries' ARGS.
+Deliberately not the `date' the loop itself uses.  org-agenda.el is
+lexically bound and never declares `date' special, so from outside that
+function the name does not exist -- and reading it, as this once did, meant
+falling through to `today' on every single day.  On a one-day agenda that
+answer is right by accident, which is exactly why it survived: the second day
+of a two-day view was drawn with the first day's gaps, its own entries
+ignored.  It is still tried first, for an Org old enough to have made `date'
+special, and costs nothing when it is not."
+  (let ((d (or (and (boundp 'date) (consp date) date)
+               org-agenda-current-date)))
+    (if (and (consp d) (= (length d) 3))
+        (org-foresight--midnight
+         (encode-time 0 0 0 (nth 1 d) (nth 0 d) (nth 2 d)))
+      (org-foresight--day-start 0))))
 
-`:filter-args' rather than `:filter-return': the rows go in before Org sorts,
-so Org places them.  Anything done after the sort would have to reproduce
-`org-entries-lessp', and would still be wrong the moment a setting changed."
-  (pcase-let ((`(,list ,type) args))
-    (if (or org-foresight-agenda--in-progress
-            (not org-foresight-agenda-inject)
-            (not (eq type 'agenda)))
-        args
-      (let ((org-foresight-agenda--in-progress t))
-        (condition-case err
-            (list (org-foresight-agenda--augment
-                   list (org-foresight-agenda--day))
-                  type)
-          (error
-           ;; A broken annotation must never cost the day its agenda: the
-           ;; entries are the point, everything added here is commentary.
-           (message "org-foresight: %s" (error-message-string err))
-           args))))))
+(defun org-foresight-agenda--inject (list)
+  "Add foresight's derived rows to one day's LIST of agenda entries.
 
-(advice-add 'org-agenda-finalize-entries :filter-args
+Hooked onto `org-agenda-add-time-grid-maybe', which looks like the wrong
+place until you read the day loop in `org-agenda-list':
+
+  (setq rtnall (org-agenda-add-time-grid-maybe rtnall ndays todayp))
+  (when rtnall (insert (org-agenda-finalize-entries rtnall \\='agenda) ...))
+
+Finalize runs only `when rtnall'.  A day Org found nothing for is therefore
+never finalized -- so hooking finalize, as this once did, meant the day whose
+shape is most worth drawing was the one day nothing was drawn on.  An empty
+working day should say when work starts and how much of it is free rather
+than going blank, and in clockcheck mode -- where the list holds clock lines
+and nothing else -- that was every day.
+
+The grid function runs immediately before that test, once per day, with
+`date' bound.  Adding here puts the rows in the list Org sorts, so Org still
+places them, and leaves a day that was empty with entries to finalize.  The
+grid's own `require-timed' decision is taken before this returns, so nothing
+here changes when hour lines are drawn.
+
+It also inherits the right silence: the whole block sits inside
+`(when (or rtnall org-agenda-show-all-dates) ...)', so somebody who has asked
+not to see empty days does not get them back full of derived rows."
+  (if (or org-foresight-agenda--in-progress
+          (not org-foresight-agenda-inject))
+      list
+    (let ((org-foresight-agenda--in-progress t))
+      (condition-case err
+          (org-foresight-agenda--augment list (org-foresight-agenda--day))
+        (error
+         ;; A broken annotation must never cost the day its agenda: the
+         ;; entries are the point, everything added here is commentary.
+         (message "org-foresight: %s" (error-message-string err))
+         list)))))
+
+(advice-add 'org-agenda-add-time-grid-maybe :filter-return
             #'org-foresight-agenda--inject)
 
 (defconst org-foresight-agenda-attentions
