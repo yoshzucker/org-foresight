@@ -4043,6 +4043,80 @@ the day would look like it finished at noon."
                                   day))
                          #'<)))))
 
+;;;; Journeys and the break
+
+(defmacro org-foresight-test--with-broken-travel (text &rest body)
+  "Run BODY over TEXT with an hour to the client and a 12:00-13:00 break."
+  (declare (indent 1))
+  `(org-foresight-test--with-broken-day ,text
+     (let ((org-foresight-places '((office . "Client")))
+           (org-foresight-home-place 'home)
+           (org-foresight-travel-matrix '(((home . office) . 60)))
+           (org-foresight-travel-default 60))
+       ,@body)))
+
+(ert-deftest org-foresight-test-travel-is-not-planned-into-the-break ()
+  "A journey is work, so it is not quietly put in the hour set aside for lunch.
+
+Arriving just in time for a one o'clock meeting an hour away means leaving at
+noon -- which is exactly the break.  The search steps past it as it steps past
+a meeting, and the journey costs the working hour before it instead.  A plan
+that spends the break on the motorway has planned a day nobody agreed to, and
+it is the plan that should give, not the break."
+  (org-foresight-test--with-broken-travel
+      "* Client review
+:PROPERTIES:
+:LOCATION: Client site
+:END:
+<2026-08-10 Mon 13:00-14:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      (should (member "travel 11:00-12:00" bands))
+      ;; and the break is still a break
+      (should (member "grey 12:00-13:00" bands))
+      (should-not (seq-find (lambda (b) (string-match-p "travel 12:00" b)) bands)))))
+
+(ert-deftest org-foresight-test-travel-that-cannot-fit-is-still-shown ()
+  "A journey that has to begin before work does not stop being necessary.
+
+Nothing can be moved to make an hour appear before a nine o'clock meeting an
+hour away, so the leg is drawn where it actually happens and counted as
+borrowed.  Refusing to place it -- or forcing it into hours it cannot fit --
+would hide the one journey the day cannot absorb."
+  (org-foresight-test--with-broken-travel
+      "* Early client review
+:PROPERTIES:
+:LOCATION: Client site
+:END:
+<2026-08-10 Mon 09:00-10:00>
+"
+    (let ((bands (org-foresight-day-blocks (org-foresight-test--ts 0 0 10))))
+      (let ((leg (seq-find (lambda (b) (eq (plist-get b :kind) 'travel)) bands)))
+        (should leg)
+        (should (equal "08:00" (format-time-string "%H:%M" (plist-get leg :start))))
+        (should (plist-get leg :borrowed))))))
+
+(ert-deftest org-foresight-test-travel-costs-the-day-its-working-hour ()
+  "The hour the journey takes comes out of capacity, not out of the break.
+
+Which is the point of moving it: the day is an hour shorter for work, and the
+verdict says so, rather than the day looking whole while lunch quietly paid
+for it."
+  (org-foresight-test--with-broken-travel
+      "* Client review
+:PROPERTIES:
+:LOCATION: Client site
+:END:
+<2026-08-10 Mon 13:00-14:00>
+"
+    (let ((cap (org-foresight-capacity (org-foresight-test--ts 0 0 10) nil
+                                       (org-foresight-test--ts 8 0 10))))
+      ;; both legs are inside the working hours and are counted as travel
+      (should (= 120.0 (plist-get cap :travel-min)))
+      (should (= 0.0 (plist-get cap :borrowed-min)))
+      ;; 7:30 of work, less the meeting and the two journeys
+      (should (= (- 450.0 60.0 120.0) (plist-get cap :spare-min))))))
+
 (provide 'org-foresight-test)
 
 ;;; org-foresight-test.el ends here

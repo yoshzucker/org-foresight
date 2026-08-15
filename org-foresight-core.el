@@ -461,6 +461,14 @@ home once, not at every pause."
                             (and (plist-get e :start)
                                  (cons (plist-get e :start) (plist-get e :end))))
                           ledger))
+         ;; The breaks: everything between the first start and the last end
+         ;; that is not work.  Not the hours before work or after it -- a
+         ;; journey to a nine o'clock meeting has to begin before nine, and
+         ;; refusing to place it there would not stop it happening.
+         (off (and (cdr work)
+                   (org-foresight--intervals-subtract
+                    (list (cons (car (car work)) (cdr (car (last work)))))
+                    work)))
          (here org-foresight-home-place)
          ;; When you become free to set off.  You cannot leave for the
          ;; afternoon's client while still sitting in the morning's meeting,
@@ -474,7 +482,7 @@ home once, not at every pause."
           (let ((mins (org-foresight--travel-minutes here there)))
             (when (> mins 0)
               (let ((leg (org-foresight--travel-slot
-                          (plist-get e :start) mins taken since)))
+                          (plist-get e :start) mins taken since off)))
                 (push (list :kind 'travel
                             :title (format "→ %s" there)
                             :marker (plist-get e :marker)
@@ -491,7 +499,7 @@ home once, not at every pause."
       (let ((mins (org-foresight--travel-minutes here org-foresight-home-place)))
         (when (> mins 0)
           (let ((leg (org-foresight--travel-slot
-                      (cdr (car (last work))) mins taken since)))
+                      (cdr (car (last work))) mins taken since off)))
             (push (list :kind 'travel
                         :title (format "→ %s" org-foresight-home-place)
                         :marker nil
@@ -502,18 +510,29 @@ home once, not at every pause."
                   out)))))
     (nreverse out)))
 
-(defun org-foresight--travel-slot (arrive mins taken earliest)
+(defun org-foresight--travel-slot (arrive mins taken earliest &optional off)
   "Return (START . END) for a MINS journey that has to be finished by ARRIVE.
 
 The latest slot that does not run over anything in TAKEN, searched backwards
 from ARRIVE and not before EARLIEST.  Leaving at the last moment is only
 right when the last moment is free; otherwise a person goes earlier, and so
-does this.  When nothing fits, the last-moment slot is returned anyway -- a
-day where the journey cannot be made is a fact about the day, and hiding it
-by inventing a slot would be worse than showing the clash."
+does this.
+
+OFF are stretches of the day that are not working time -- a declared break
+between two work intervals.  A journey is work, so it is searched past one of
+those exactly as it is searched past a meeting: the hour set aside for lunch
+was set aside, and a plan that quietly spends it on the motorway has planned
+a day nobody agreed to.  The cost lands where it belongs instead, on the
+working hour before the break.
+
+When nothing fits, the last-moment slot is returned anyway -- a day where the
+journey cannot be made is a fact about the day, and hiding it by inventing a
+slot would be worse than showing the clash.  That is also what happens to a
+journey that has to begin before work starts: it is real, it is shown, and it
+is counted as borrowed rather than being forced into hours it cannot fit."
   (let* ((secs (* 60 mins))
          (latest (cons (time-subtract arrive secs) arrive))
-         (busy (org-foresight--intervals-normalize taken))
+         (busy (org-foresight--intervals-normalize (append taken off)))
          (end arrive)
          (found nil))
     (while (and (not found) end

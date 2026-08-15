@@ -604,6 +604,12 @@ the same one-hour meeting, held remotely:   free 7:30 · spare 6:30
                           held at the office: free 5:30 · spare 4:30
 #+end_example
 
+A journey is work, so it is placed inside the working hours. On a day that
+breaks, the search steps past the break exactly as it steps past a meeting: an
+hour's drive to a one o'clock meeting is taken out of the working hour before
+lunch, not out of lunch. What cannot fit — the drive that has to begin before
+work starts — is still drawn, and counted as =borrowed=.
+
 Only a place someone wrote down counts. Every imported invitation carries a
 video link, and a link says nothing about where the body has to be — so an
 unhelpful =LOCATION= leaves you where you already were rather than inventing a
