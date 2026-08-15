@@ -4561,9 +4561,30 @@ to read as \"nothing is watching\" rather than as \"you did nothing\"."
 
 ;;;; The spine
 
-(defun org-foresight-test--spine-of (lines)
-  "Return the first column of LINES as one string, blanks included."
-  (mapconcat (lambda (l) (string (if (string-empty-p l) ?\s (aref l 0)))) lines ""))
+(defun org-foresight-test--spine-of (&optional buffer)
+  "Return what BUFFER's first column *shows*, one character per line.
+
+Read from the display property rather than from the text: the spine is drawn
+by showing a glyph in the space that is already there, so the buffer's own
+characters are unchanged -- which is the point of drawing it that way."
+  (with-current-buffer (or buffer org-agenda-buffer-name)
+    (save-excursion
+      (goto-char (point-min))
+      (let (out)
+        (while (not (eobp))
+          (let ((shown (get-text-property (line-beginning-position) 'display)))
+            (push (if (stringp shown) shown " ") out))
+          (forward-line 1))
+        (apply #'concat (nreverse out))))))
+
+(defun org-foresight-test--shown-at (regexp)
+  "Return what the first column shows on the first line matching REGEXP."
+  (with-current-buffer org-agenda-buffer-name
+    (save-excursion
+      (goto-char (point-min))
+      (when (re-search-forward regexp nil t)
+        (let ((shown (get-text-property (line-beginning-position) 'display)))
+          (if (stringp shown) shown " "))))))
 
 (ert-deftest org-foresight-test-spine-brackets-each-stretch-of-work ()
   "Two stretches of work read as two brackets, not one interrupted line.
@@ -4577,20 +4598,19 @@ only that some rows are work without saying where a stretch begins."
               "* Call in the break\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
               (org-foresight-test--stamp 0 "12:15" "12:45") "\n")
     (let* ((lines (org-foresight-test--agenda))
-           (spine (org-foresight-test--spine-of lines)))
+           (spine (org-foresight-test--spine-of)))
       ;; one bracket per work interval
       (should (= 2 (seq-count (lambda (c) (= c ?┌)) spine)))
       (should (= 2 (seq-count (lambda (c) (= c ?└)) spine)))
       (should (> (seq-count (lambda (c) (= c ?│)) spine) 0))
       ;; the rules themselves are the corners
-      (should (seq-find (lambda (l) (string-prefix-p "┌" l))
-                        (seq-filter (lambda (l) (string-match-p "work starts" l)) lines)))
-      (should (seq-find (lambda (l) (string-prefix-p "└" l))
-                        (seq-filter (lambda (l) (string-match-p "work ends" l)) lines)))
+      (should (equal "┌" (org-foresight-test--shown-at "work starts")))
+      (should (equal "└" (org-foresight-test--shown-at "work ends")))
+      (should (equal "└" (org-foresight-test--shown-at "work pauses")))
+      (should (equal "┌" (org-foresight-test--shown-at "work resumes")))
       ;; and what sits in the declared break is outside the bracket
-      (should (seq-find (lambda (l) (and (string-match-p "Call in the break" l)
-                                         (string-prefix-p " " l)))
-                        lines)))))
+      (should (equal " " (org-foresight-test--shown-at "Call in the break")))
+      (ignore lines))))
 
 (ert-deftest org-foresight-test-spine-leaves-every-column-where-it-was ()
   "The glyph replaces the first column; it does not push the line right.
@@ -4640,24 +4660,80 @@ often than it appears to."
                 "* Review\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
                 (org-foresight-test--stamp 1 "10:00" "11:00") "\n")
       (let* ((lines (org-foresight-test--agenda))
-             (spine (org-foresight-test--spine-of lines)))
+             (spine (org-foresight-test--spine-of)))
         ;; two days, two intervals each
         (should (= 4 (seq-count (lambda (c) (= c ?┌)) spine)))
         (should (= 4 (seq-count (lambda (c) (= c ?└)) spine)))
         ;; and no date header wears one
-        (should-not (seq-find (lambda (l)
-                                (and (string-match-p "^[┌│└]" l)
-                                     (string-match-p "August\\|September" l)))
-                              lines))))))
+        (should (equal " " (org-foresight-test--shown-at "August\\|September")))
+        (ignore lines)))))
 
 (ert-deftest org-foresight-test-spine-can-be-turned-off ()
   "Somebody who does not want it gets the page exactly as it was before."
   (org-foresight-test--with-agenda
       (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
               (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
-    (let* ((org-foresight-agenda-spine nil)
-           (lines (org-foresight-test--agenda)))
-      (should-not (seq-find (lambda (l) (string-match-p "^[┌│└]" l)) lines)))))
+    (let ((org-foresight-agenda-spine nil))
+      (org-foresight-test--agenda)
+      (should (string-match-p "\\`[[:space:]]*\\'" (org-foresight-test--spine-of))))))
+
+(ert-deftest org-foresight-test-e2e-redo-works-wherever-the-cursor-is ()
+  "Every line must answer to `r', including the ones this package drew.
+
+`org-agenda-redo' takes the command to re-run from the text under point, and
+Org stamps that property over the buffer just *before* the finalize hook
+runs.  So anything inserted from that hook was born without it, and a cursor
+resting there made `r', `g' and every view toggle -- which redraw by way of
+redo -- do nothing at all.  Silently, and only sometimes: it depended on
+where the cursor happened to be."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n")
+    (org-foresight-test--agenda)
+    (with-current-buffer org-agenda-buffer-name
+      (goto-char (point-min))
+      (let ((missing '()))
+        (while (not (eobp))
+          (unless (or (eolp)            ; a blank line belongs to nobody
+                      (get-text-property (point) 'org-redo-cmd))
+            (push (buffer-substring-no-properties
+                   (line-beginning-position) (line-end-position))
+                  missing))
+          ;; the first column especially: `n' and `p' leave the cursor there,
+          ;; and the spine draws exactly there
+          (forward-line 1))
+        (should-not missing)))))
+
+(ert-deftest org-foresight-test-e2e-toggling-log-mode-takes-effect ()
+  "Turning the log on and off redraws the day, with our blocks in place.
+
+The toggle redraws through `org-agenda-redo', so this is the same defect as
+above seen from the outside -- and the way it was actually noticed."
+  (org-foresight-test--with-agenda
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:30" "09:45") "\n"
+              "* DONE Finished thing\nCLOSED: "
+              (org-foresight-test--logstamp 0 "11:00") "\n"
+              ":LOGBOOK:\n- State \"DONE\"       from \"ONGO\"       "
+              (org-foresight-test--logstamp 0 "11:00") "\n:END:\n")
+    (org-foresight-test--agenda)
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (lambda (&rest _) nil)))
+      (with-current-buffer org-agenda-buffer-name
+        (let ((states (lambda ()
+                        (seq-count (lambda (l) (string-match-p "State:" l))
+                                   (split-string (buffer-string) "\n")))))
+          (should (= 1 (funcall states)))
+          ;; from the top of the buffer, which is inside the Capacity block
+          (goto-char (point-min))
+          (org-agenda-log-mode)
+          (should (= 0 (funcall states)))
+          ;; and back on, from the first column of a row wearing the spine
+          (goto-char (point-min))
+          (re-search-forward "work starts")
+          (beginning-of-line)
+          (org-agenda-log-mode)
+          (should (= 1 (funcall states))))))))
 
 (provide 'org-foresight-test)
 

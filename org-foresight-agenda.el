@@ -772,12 +772,16 @@ depends on the order Org put them in, and that is not known until it has.
 The state is taken from the `org-foresight-edge' property the rules carry --
 not from their text, which is a label and may be reworded.
 
-The glyph replaces the first column rather than being inserted into it.
-Every agenda prefix begins with blanks, and every column in this package --
-the mark column above all -- is counted from the line's start; an insertion
-would move all of them by one and leave the marks a column adrift from the
-headings they belong to.  Where the first column is not a blank, the line is
-left alone: something else is using it, and this is only decoration."
+The glyph is *shown* in the first column rather than written there: the space
+keeps its place in the buffer and only its appearance changes.  Nothing about
+the text moves, which matters twice over.  Every column in this package -- the
+mark column above all -- is counted from the line\='s start, so an insertion
+would leave the marks a column adrift.  And Org stamps the whole buffer with
+the properties `org-agenda-redo\=' reads from under the cursor *before* this
+hook runs; text put in afterwards has none of them, and a cursor resting on
+such a character makes `r\=', `g\=' and every mode toggle quietly do nothing.
+Where the first column is not a blank, the line is left alone: something else
+is using it, and this is only decoration."
   (when (and org-foresight-agenda-spine
              org-foresight-agenda-inject
              (derived-mode-p 'org-agenda-mode))
@@ -821,10 +825,11 @@ left alone: something else is using it, and this is only decoration."
                         (cond ((= (point) open) 'open)
                               (done 'close)
                               (t 'mid)))))
-            (delete-char 1)
-            (insert (propertize (string glyph)
-                                'face 'org-foresight-agenda-spine
-                                'org-foresight-spine t))))
+            (add-text-properties
+             (point) (1+ (point))
+             (list 'display (propertize (string glyph)
+                                        'face 'org-foresight-agenda-spine)
+                   'org-foresight-spine t))))
         (forward-line 1)))))
 
 (defconst org-foresight-agenda-attentions
