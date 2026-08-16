@@ -459,10 +459,17 @@ journey moves earlier into whatever gap will take it, which is what a person
 does.  Only when no gap will take it at all is the day genuinely impossible,
 and that is left to be reported as a clash rather than smoothed over.
 
-The journey home ends when the work does -- the commute is inside the working
-day, not appended to it, so a day that ends at 17:30 means being home at
+The journey back ends when the work does -- the commute is inside the working
+day, not appended to it, so a day that ends at 17:30 means being back at
 17:30.  On a day that breaks, that is the end of the last interval: you go
-home once, not at every pause."
+back once, not at every pause.
+
+Where the day's work happens is not where the body starts.  A day worked from
+the office is still begun and ended at home, so it carries a journey in
+before its hours and a journey back inside them -- and that pair is the cost
+that makes a token appearance at the office worth thinking twice about.  It
+is the reason the day has a place of its own: an office day with nothing in
+the calendar used to look like a day at home."
   (let* ((work (org-foresight-work-intervals day))
          (placed (seq-filter (lambda (e)
                                (and (plist-get e :start)
@@ -484,6 +491,14 @@ home once, not at every pause."
                    (org-foresight--intervals-subtract
                     (list (cons (car (car work)) (cdr (car (last work)))))
                     work)))
+         ;; Two different places, and confusing them is how a commute
+         ;; disappears.  The body starts and ends where it sleeps; the day's
+         ;; own place is where its work is done.  On a day worked from the
+         ;; office the first of those is home and the second is the office, so
+         ;; there is a journey in before the day starts and a journey back
+         ;; before it ends -- which is the cost that makes a token appearance
+         ;; at the office worth thinking twice about.
+         (base (org-foresight-day-place day))
          (here org-foresight-home-place)
          ;; When you become free to set off.  You cannot leave for the
          ;; afternoon's client while still sitting in the morning's meeting,
@@ -491,6 +506,47 @@ home once, not at every pause."
          ;; journey before the first.
          (since (car (car work)))
          out)
+    ;; Going in.  Pinned by the earliest thing that actually needs you there:
+    ;; a meeting at the place, if one comes early enough to matter, and
+    ;; otherwise the working day itself.  In the first case the arrival is
+    ;; what is fixed and the journey is the last slot that makes it; in the
+    ;; second nothing needs you at any particular minute, so what is fixed is
+    ;; the departure and the journey is the first thing the day does.
+    ;;
+    ;; Which is what puts it inside the working hours, and that is the point.
+    ;; Travel is work here: an hour spent getting somewhere is an hour that
+    ;; could have gone on something else.  Placed before the hours instead, it
+    ;; would come out of the morning, and going in would cost the same working
+    ;; day as staying home -- which is exactly the arithmetic that makes a
+    ;; token appearance at the office look free.
+    (when (and work (not (eq base here)))
+      (let* ((mins (org-foresight--travel-minutes here base))
+             (opens (car (car work)))
+             ;; The first thing today that is at the day's own place.
+             (needed-by
+              (car (sort (seq-keep (lambda (e)
+                                     (and (plist-get e :start)
+                                          (eq (plist-get e :place) base)
+                                          (plist-get e :start)))
+                                   placed)
+                         #'time-less-p))))
+        (when (> mins 0)
+          (let ((leg (if (and needed-by
+                              (time-less-p needed-by (time-add opens (* 60 mins))))
+                         ;; Something is there before you could be: the
+                         ;; arrival is what is pinned, and the journey starts
+                         ;; before the day if it has to.
+                         (org-foresight--travel-slot needed-by mins taken nil off)
+                       (org-foresight--travel-slot-from opens mins taken off))))
+            (push (list :kind 'travel
+                        :title (format "→ %s" base)
+                        :marker nil
+                        :effort (float mins)
+                        :start (car leg) :end (cdr leg)
+                        :place base :location nil :category nil)
+                  out)
+            (push leg taken))))
+      (setq here base))
     (dolist (e placed)
       (let ((there (plist-get e :place)))
         (unless (eq there here)
@@ -510,11 +566,60 @@ home once, not at every pause."
         (setq since (if since
                         (org-foresight--max-time since (plist-get e :end))
                       (plist-get e :end)))))
-    (when (and work (not (eq here org-foresight-home-place)))
-      (let ((mins (org-foresight--travel-minutes here org-foresight-home-place)))
+    ;; Coming back from somewhere the day is not worked from.  What took you
+    ;; there is over, so nothing keeps you: you leave when it ends.  Waiting
+    ;; instead until the day closed -- which is what this used to do -- put you
+    ;; at the office from noon until half four with nothing to be there for,
+    ;; and offered those hours as though they could be worked.
+    ;;
+    ;; Where you go back to is where the day is worked from, not home: on a day
+    ;; worked from the office an errand elsewhere is an excursion, and the rest
+    ;; of the day still happens at the office.  On a day worked from home the
+    ;; two are the same place, and this is the journey home.
+    ;;
+    ;; Skipped when there would be nothing left to come back for -- if getting
+    ;; back lands after the moment you would have to set off home anyway, going
+    ;; back is a journey to nowhere, and the leg below takes you straight home.
+    (when (and work (not (eq here base)))
+      (let ((mins (org-foresight--travel-minutes here base)))
         (when (> mins 0)
-          (let ((leg (org-foresight--travel-slot
-                      (cdr (car (last work))) mins taken since off)))
+          (let* ((leg (org-foresight--travel-slot-from since mins taken off))
+                 (home-mins (org-foresight--travel-minutes
+                             base org-foresight-home-place))
+                 (must-leave (time-subtract (cdr (car (last work)))
+                                            (* 60 home-mins))))
+            (when (time-less-p (cdr leg) must-leave)
+              (push (list :kind 'travel
+                          :title (format "→ %s" base)
+                          :marker nil
+                          :effort (float mins)
+                          :start (car leg) :end (cdr leg)
+                          :place base :location nil :category nil)
+                    out)
+              (push leg taken)
+              (setq here base
+                    since (cdr leg)))))))
+    ;; And home, by the way in read from the other end.  What pins it is
+    ;; normally the arrival: the day ends at half five and you are home then,
+    ;; so the journey is the last slot that manages it and sits inside the
+    ;; hours like the one that opened them.
+    ;;
+    ;; Unless something is still holding you there.  A meeting that runs to six
+    ;; makes being home at half five impossible, and then the departure is what
+    ;; is pinned -- exactly as a meeting early enough to matter pins the
+    ;; arrival on the way in.  The journey runs past the end of the day and is
+    ;; counted as borrowed, because that is what it is: an hour of the evening
+    ;; the day took without asking.
+    (when (and work (not (eq here org-foresight-home-place)))
+      (let* ((mins (org-foresight--travel-minutes here org-foresight-home-place))
+             (closes (cdr (car (last work))))
+             (held (and since
+                        (time-less-p (time-subtract closes (* 60 mins)) since)
+                        since)))
+        (when (> mins 0)
+          (let ((leg (if held
+                         (org-foresight--travel-slot-from held mins taken off)
+                       (org-foresight--travel-slot closes mins taken since off))))
             (push (list :kind 'travel
                         :title (format "→ %s" org-foresight-home-place)
                         :marker nil
@@ -524,6 +629,37 @@ home once, not at every pause."
                         :location nil :category nil)
                   out)))))
     (nreverse out)))
+
+(defun org-foresight--travel-slot-from (depart mins taken off)
+  "Return (START . END) for a MINS journey that may begin at DEPART.
+
+The other half of the same rule.  A journey is placed as close as it can be
+to the moment that pins it; usually what is pinned is the arrival -- a
+meeting needs you there -- and the journey is the last slot that gets you
+there in time.  Here it is the departure that is pinned, because nothing in
+particular needs you at nine o\='clock: what needs you is the day, and the
+journey is the first thing the day does.
+
+Searched forwards for the same reason the other is searched backwards: to sit
+as near the pin as the day allows, sliding past whatever is already booked
+instead of being drawn over it."
+  (let* ((secs (* 60 mins))
+         (busy (org-foresight--intervals-normalize (append taken off)))
+         (start depart)
+         (found nil)
+         (guard 0))
+    (while (and (not found) (< guard 64))
+      (setq guard (1+ guard))
+      (let* ((end (time-add start secs))
+             (hit (seq-find (lambda (iv)
+                              (and (time-less-p start (cdr iv))
+                                   (time-less-p (car iv) end)))
+                            busy)))
+        (if hit
+            ;; Slide to begin exactly when the obstruction ends.
+            (setq start (cdr hit))
+          (setq found (cons start end)))))
+    (or found (cons depart (time-add depart secs)))))
 
 (defun org-foresight--travel-slot (arrive mins taken earliest &optional off)
   "Return (START . END) for a MINS journey that has to be finished by ARRIVE.
@@ -610,6 +746,29 @@ have to listen to\" can be said about a single meeting."
      ((member category org-foresight-informational-categories) 'informational)
      ((member category org-foresight-background-categories) 'background)
      (t 'blocking))))
+
+(defcustom org-foresight-people-property "PEOPLE"
+  "Property naming the people a piece of work involves.
+
+Read as a multi-valued property, so `:PEOPLE: 佐藤 田中\=' is two people and
+`:PEOPLE+:\=' appends to the list.
+
+It says who, and nothing else.  In particular it does not say where: most
+work involving somebody can be done by message, and what makes a
+conversation need a room is a judgement about that conversation -- that it
+would go wrong in writing -- which nothing here can infer.  When it does need
+a room, say so the way anything else says so, with `:PLACE:\='.
+
+What the relation is comes from the entry\='s own state: work in a state
+listed in `org-foresight-followup-keywords\=' is with them, and anything else
+needs them."
+  :type 'string
+  :group 'org-foresight)
+
+(defun org-foresight--entry-people ()
+  "Return the people the entry at point involves, as a list of strings."
+  (when org-foresight-people-property
+    (org-entry-get-multivalued-property (point) org-foresight-people-property)))
 
 (defun org-foresight--entry-place ()
   "Return the place of the entry at point, or nil when it names none.
@@ -886,6 +1045,33 @@ heading with \\[org-foresight-shape-day]."
   :type '(repeat integer)
   :group 'org-foresight)
 
+(defcustom org-foresight-horizon-days 14
+  "How many days ahead this package looks.
+
+One number for every forward question -- which signals are worth raising, how
+far the forward load is costed, when you are next at a given place -- because
+they are the same question asked three times, and a horizon that differed
+between them would answer them inconsistently."
+  :type 'integer
+  :group 'org-foresight)
+
+(defcustom org-foresight-day-places nil
+  "Alist of (WEEKDAY . PLACE) saying where an ordinary week is worked.
+
+WEEKDAY is 0 for Sunday.  PLACE is one of the symbols
+`org-foresight-places' names.  A day not listed is worked from
+`org-foresight-home-place', and any day may say otherwise on its own heading
+with \\[org-foresight-shape-day].
+
+  \\='((1 . office) (3 . office))   ; in on Mondays and Wednesdays
+
+This is what lets the day know something no entry can tell it: that tomorrow
+is worked from somewhere else.  Work that needs a place is not late until the
+next day at that place has gone, and until the day has a place of its own
+there is no way to ask when that is."
+  :type '(alist :key-type integer :value-type symbol)
+  :group 'org-foresight)
+
 (defcustom org-foresight-private-categories nil
   "CATEGORY values whose entries are private commitments, not work.
 They occupy the day but never count against work capacity."
@@ -937,15 +1123,17 @@ times per render; without this each call would search the whole file again.")
 (defun org-foresight--max-time (a b) (if (time-less-p a b) b a))
 
 (defun org-foresight-day-shape (day)
-  "Return DAY's shape as a plist (:awake (S . E) :work LIST-OF-(S . E)).
+  "Return DAY's shape as a plist (:awake (S . E) :work LIST-OF-(S . E) :place P).
 
 `:work' is nil on a day with no working hours -- which an empty list also is,
-so a caller may test it either way.
+so a caller may test it either way.  `:place' is where the day is worked
+from, and is never nil: a day nobody has said anything about is worked from
+`org-foresight-home-place'.
 
-Resolution order is the day's own `WAKE' / `SLEEP' / `WORK' properties, then
-the configured defaults.  `WORK' may be \"09:00-17:30\" to move the hours,
-\"09:00-12:00 13:00-17:30\" to break them up, or \"none\" to declare the day
-free of work entirely."
+Resolution order is the day's own `WAKE' / `SLEEP' / `WORK' / `PLACE'
+properties, then the configured defaults.  `WORK' may be \"09:00-17:30\" to
+move the hours, \"09:00-12:00 13:00-17:30\" to break them up, or \"none\" to
+declare the day free of work entirely."
   (let ((key (format-time-string "%Y-%m-%d" day))
         (table (org-foresight--shape-table)))
     (or (gethash key table)
@@ -977,12 +1165,17 @@ be declared free of work by saying so."
            ((memq (nth 6 (decode-time day)) org-foresight-workdays)
             org-foresight-work)
            (t nil)))
+         (place (or (org-foresight--day-property day "PLACE")
+                    (cdr (assq (nth 6 (decode-time day))
+                               org-foresight-day-places))
+                    org-foresight-home-place))
          (wake-t (org-foresight--hhmm-on day wake))
          (sleep-t (org-foresight--hhmm-on day sleep)))
     ;; A bedtime at or before waking means the small hours of the next day.
     (unless (time-less-p wake-t sleep-t)
       (setq sleep-t (time-add sleep-t (days-to-time 1))))
     (list :awake (cons wake-t sleep-t)
+          :place (if (stringp place) (intern place) place)
           ;; Normalized, so everything downstream may assume the intervals are
           ;; in order and do not touch: two that overlap are one stretch of
           ;; work however they were written, and a caller that had to check
@@ -1140,11 +1333,20 @@ dentist appointment lives where every other appointment lives."
                  "Until: "
                  (format-time-string "%H:%M" (cdr (plist-get shape :awake)))))
          (span (read-string
-                "Work span (HH:MM-HH:MM, or \"none\"): "
+                "Work hours (HH:MM-HH:MM …, or \"none\"): "
                 (if work
-                    (concat (format-time-string "%H:%M" (car work)) "-"
-                            (format-time-string "%H:%M" (cdr work)))
-                  "none"))))
+                    (mapconcat (lambda (iv)
+                                 (concat (format-time-string "%H:%M" (car iv))
+                                         "-"
+                                         (format-time-string "%H:%M" (cdr iv))))
+                               work " ")
+                  "none")))
+         ;; Where the body is that day.  Asked here rather than left to be
+         ;; typed into a drawer, because a day worked from somewhere else is
+         ;; exactly the day somebody is in a hurry on.
+         (place (read-string
+                 "Worked from: "
+                 (symbol-name (plist-get shape :place)))))
     (unless file (user-error "Set `org-foresight-day-file' first"))
     (with-current-buffer (find-file-noselect file)
       (org-with-wide-buffer
@@ -1153,10 +1355,13 @@ dentist appointment lives where every other appointment lives."
        (org-entry-put (point) "WAKE" wake)
        (org-entry-put (point) "SLEEP" sleep)
        (org-entry-put (point) "WORK" span)
+       (if (string-empty-p (string-trim place))
+           (org-entry-delete (point) "PLACE")
+         (org-entry-put (point) "PLACE" (string-trim place)))
        (save-buffer)))
     (setq org-foresight--shape-cache nil)
-    (message "%s: awake %s–%s, work %s"
-             (format-time-string "%Y-%m-%d %a" day) wake sleep span)))
+    (message "%s: awake %s–%s, work %s, from %s"
+             (format-time-string "%Y-%m-%d %a" day) wake sleep span place)))
 
 ;;;; Capacity
 ;; Supply and demand for one day.  Supply is the working hours minus what is
@@ -1249,6 +1454,31 @@ load and placement all follow the same answer.
 A list, not a window: the day may break, and code that took the first start
 and the last end would quietly hand back the break as working time."
   (plist-get (org-foresight-day-shape day) :work))
+
+(defun org-foresight-day-place (day)
+  "Return the place DAY is worked from.
+
+Never nil: a day nobody has declared is worked from
+`org-foresight-home-place'.  What this answers is the question no entry can
+-- where the body is that day -- which is what makes \"I am here now and will
+not be again until Wednesday\" a thing the day can say."
+  (plist-get (org-foresight-day-shape day) :place))
+
+(defun org-foresight-next-day-at (place &optional from horizon)
+  "Return the next day at PLACE after FROM, or nil within HORIZON days.
+
+FROM defaults to today and is excluded: the question is always \"when am I
+next there\", asked by somebody who is there now.  Past
+`org-foresight-horizon-days' the honest answer is \"not soon\" rather than a
+date nobody will keep."
+  (let* ((from (or from (org-foresight--day-start 0)))
+         (horizon (or horizon org-foresight-horizon-days))
+         (found nil))
+    (cl-loop for i from 1 to horizon
+             for day = (time-add from (days-to-time i))
+             when (eq place (org-foresight-day-place day))
+             return (setq found day))
+    found))
 
 (defun org-foresight-work-ends (day)
   "Return when DAY's work is meant to be over, or nil if it has none.

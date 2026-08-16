@@ -313,6 +313,22 @@ example of every situation the signals look for."
      "**** NEXT Tidy the shared drive\n"
      ":PROPERTIES:\n:EFFORT:   0:30\n:CATEGORY: admin\n:END:\n"
 
+     ;; --- work the place decides ------------------------------------------
+     ;; Most work goes anywhere; these do not, which is the whole reason the
+     ;; board asks about them at the door.  One is a thing to pick up, one is
+     ;; a conversation that would go wrong in writing, and one is a message
+     ;; that only looks like the second until you notice it has no place.
+     "**** NEXT Get the contract stamped\n"
+     "DEADLINE: " (org-foresight-demo--stamp d1) "\n"
+     ":PROPERTIES:\n:EFFORT:   0:15\n:PLACE: office\n:CATEGORY: admin\n:END:\n"
+
+     "**** NEXT Talk to Sato about the review\n"
+     ":PROPERTIES:\n:EFFORT:   0:30\n:PLACE: office\n:PEOPLE: Sato\n"
+     ":CATEGORY: team\n:END:\n"
+
+     "**** NEXT Ask Sato how the migration went\n"
+     ":PROPERTIES:\n:EFFORT:   0:10\n:PEOPLE: Sato\n:CATEGORY: team\n:END:\n"
+
      ;; Started but unfinished, several at once: the switching cost is what
      ;; makes a day that looks reasonable run long.
      "**** ONGO Refactor the import pipeline\n"
@@ -434,6 +450,7 @@ from, and there is no undo for that."
                     :day-file (bound-and-true-p org-foresight-day-file)
                     :workdays org-foresight-workdays
                     :work org-foresight-work
+                    :day-places org-foresight-day-places
                     :surge-cache org-foresight-surge-cache-file
                     :leak-cache org-foresight-leak-cache-file
                     :bias-cache org-foresight-bias-cache-file))
@@ -457,6 +474,12 @@ from, and there is no undo for that."
         ;; it.  A demo of an unbroken nine-to-five would show none of that.
         (setq org-foresight-work '(("09:00" . "12:00")
                                    ("13:00" . "17:30")))
+        ;; Today at the office and the rest of the week from home, which is
+        ;; the arrangement the board exists for: what only being here can
+        ;; settle is only a question when here is not where you will be.
+        (setq org-foresight-day-places
+              (list (cons (nth 6 (decode-time (org-foresight--day-start 0)))
+                          'office)))
         ;; Learned figures are redirected too: a reserve, a leak or a
         ;; multiplier taken from real history would describe a different life
         ;; than the demo's.
@@ -479,7 +502,8 @@ from, and there is no undo for that."
             (plist-get org-foresight-demo--saved :day-file)))
     (setq org-foresight-workdays
           (plist-get org-foresight-demo--saved :workdays)
-          org-foresight-work (plist-get org-foresight-demo--saved :work))
+          org-foresight-work (plist-get org-foresight-demo--saved :work)
+          org-foresight-day-places (plist-get org-foresight-demo--saved :day-places))
     (setq org-foresight-surge-cache-file
           (plist-get org-foresight-demo--saved :surge-cache)
           org-foresight-leak-cache-file

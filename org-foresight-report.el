@@ -817,6 +817,79 @@ have to say so."
                    (and off (org-foresight-report--off-key cap))))
        "\n"))))
 
+;;;; Forward load
+
+(defcustom org-foresight-load-rows 5
+  "How many working days the forward-load block shows.
+
+Enough to answer \"then when?\", and no more.  A fortnight of rows is a
+fortnight of scrolling for a question that is nearly always settled by the
+first day with room in it."
+  :type 'integer
+  :group 'org-foresight)
+
+(defun org-foresight-report-load (&optional days scan now)
+  "Return the coming days drawn as today is, so that they can be compared.
+
+This is the block that turns \"I'm busy\" into a date.  Each row is one
+working day: what may still be promised on it, and the same stacked bar the
+capacity block draws above -- same segments, same colours, same scale.  The
+point of a forward view is to hold it against today, and two pictures of the
+same thing drawn differently cannot be held against each other.
+
+The figure is `:headroom-min': free time less what is already promised and
+the reserve held back for interruptions.  Positive is what may still be taken
+on, negative is what would have to come off first.  It is the number the
+verdict states for today, asked of each day in turn -- one definition, not a
+second one that happens to live in a table.
+
+Capacity is worked out only for the days that will be drawn.  Costing out a
+fortnight to print five rows is the sort of expense that never shows in a
+benchmark and always shows in a keystroke."
+  (let* ((days (or days org-foresight-horizon-days))
+         (today (org-foresight--day-start 0))
+         (scan (or scan (org-foresight-scan days today)))
+         today-cap rows)
+    (catch 'enough
+      (dotimes (i days)
+        (let ((day (time-add today (days-to-time i))))
+          (when (org-foresight-work-intervals day)
+            (let ((cap (org-foresight-capacity day scan now)))
+              (when (zerop i) (setq today-cap cap))
+              (when (plist-get cap :work)
+                (push (cons day cap) rows)
+                (when (>= (length rows) org-foresight-load-rows)
+                  (throw 'enough nil))))))))
+    (setq rows (nreverse rows))
+    (if (null rows)
+        (propertize "(no working days in the horizon)" 'face 'org-table)
+      ;; One scale for every row, and the same one the block above used, so a
+      ;; day appearing in both is drawn at the same length in both.
+      (let ((per-column
+             (max (/ (apply #'max 1.0
+                            (mapcar (lambda (r) (plist-get (cdr r) :span-min))
+                                    rows))
+                     (float org-foresight-bar-width))
+                  (if today-cap
+                      (org-foresight-report--bar-scale today-cap)
+                    0.0))))
+        (mapconcat
+         (lambda (r)
+           (let ((head (plist-get (cdr r) :headroom-min)))
+             (concat
+              (format " %-9s %15s  "
+                      (format-time-string "%a %m-%d" (car r))
+                      (if (>= head 0)
+                          (format "%s to promise" (org-duration-from-minutes head))
+                        (propertize
+                         (format "OVER by %s"
+                                 (org-duration-from-minutes (- head)))
+                         'face 'org-foresight-report-overcommitted)))
+              (org-foresight-report--draw-bar
+               (cdr r) org-foresight-report--bar-segments per-column
+               (plist-get (cdr r) :span-min)))))
+         rows "\n")))))
+
 (defun org-foresight-report-capacity-line (&optional day scan now)
   "Return DAY's capacity verdict as one line, or nil on a non-working day.
 This is the line that goes at the very top of the agenda: a number you should
@@ -1142,6 +1215,14 @@ Scans the clock once and hands the result on, rather than each part of the
 block scanning again for itself."
   (let ((clock (org-foresight-clock-scan 7)))
     (concat "\n"
+            ;; Forward first.  The verdict above has just said "OVER by 3:45",
+            ;; and the next question is where the rest goes -- which should not
+            ;; be on the far side of a block of sparklines about what already
+            ;; happened.  What is done with is read last, and least often.
+            (org-foresight-report--badge "Load" "when I could take this on")
+            "\n"
+            (org-foresight-report-load)
+            "\n\n"
             (org-foresight-report--badge "Spent" "where the hours actually went")
             "\n"
             (org-foresight-report--indent (org-foresight-report-spent clock))

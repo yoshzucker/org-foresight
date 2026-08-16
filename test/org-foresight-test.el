@@ -1147,22 +1147,26 @@ last; moving point here strands the cursor -- and the window -- at the end."
                          before)))))))
 
 (ert-deftest org-foresight-test-render-places-by-style ()
-  "Both styles lead with the verdict and follow the listing with their tail:
-the day is the agenda, and everything else is commentary on it."
+  "The verdict leads and the tail follows the listing, in either view.
+
+And within the daily tail, forward before backward: the verdict has just
+said how far over the day is, and where the rest goes must not sit on the far
+side of a block about what already happened."
   (org-foresight-test--with-day "* NEXT something\nSCHEDULED: <2026-08-10 Mon>\n"
-    (org-foresight-test--in-agenda
-      (let ((org-foresight-report-style 'plan))
-        (org-foresight-report-render)
-        (let ((text (substring-no-properties (buffer-string))))
-          (should (< (string-search "Day-agenda" text)
-                     (string-search "Signals" text))))))
     (org-foresight-test--in-agenda
       (let ((org-foresight-report-style 'daily))
         (org-foresight-report-render)
         (let ((text (substring-no-properties (buffer-string))))
-          ;; the verdict still leads, but the tables follow the listing
           (should (< (string-search "Capacity" text)
                      (string-search "Day-agenda" text)))
+          (should (< (string-search "Day-agenda" text)
+                     (string-search "Load" text)))
+          (should (< (string-search "Load" text)
+                     (string-search "Spent" text))))))
+    (org-foresight-test--in-agenda
+      (let ((org-foresight-report-style 'review))
+        (org-foresight-report-render)
+        (let ((text (substring-no-properties (buffer-string))))
           (should (< (string-search "Day-agenda" text)
                      (string-search "Clocked" text))))))))
 
@@ -1170,7 +1174,7 @@ the day is the agenda, and everything else is commentary on it."
   "Rendering twice must replace, not accumulate."
   (org-foresight-test--with-day "* NEXT something\nSCHEDULED: <2026-08-10 Mon>\n"
     (org-foresight-test--in-agenda
-      (let ((org-foresight-report-style 'plan))
+      (let ((org-foresight-report-style 'daily))
         (org-foresight-report-render)
         (let ((once (buffer-string)))
           (org-foresight-report-render)
@@ -1490,7 +1494,10 @@ one test that turns on a day not being one."
        ,@body)))
 
 (ert-deftest org-foresight-test-travel-out-and-back ()
-  "One office meeting costs the hour plus both journeys."
+  "One office meeting costs the hour plus both journeys.
+
+Out arrives just in time, and back leaves as soon as the meeting is over --
+nothing keeps you there once the thing that took you there has finished."
   (org-foresight-test--with-travel
       "* Project review
 :PROPERTIES:
@@ -1499,10 +1506,9 @@ one test that turns on a day not being one."
 <2026-08-10 Mon 14:00-15:00>
 "
     (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
-      ;; out arrives just in time; home lands exactly when work ends
       (should (member "travel 13:00-14:00" bands))
       (should (member "meeting 14:00-15:00" bands))
-      (should (member "travel 16:30-17:30" bands)))))
+      (should (member "travel 15:00-16:00" bands)))))
 
 (ert-deftest org-foresight-test-travel-chains-places ()
   "home → office → client → home produces three journeys, not two."
@@ -1521,7 +1527,7 @@ one test that turns on a day not being one."
     (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
       (should (member "travel 09:00-10:00" bands))   ; home → office, 60
       (should (member "travel 12:30-13:00" bands))   ; office → client, 30
-      (should (member "travel 16:00-17:30" bands))))) ; client → home, 90
+      (should (member "travel 14:00-15:30" bands))))) ; client → home, 90
 
 (ert-deftest org-foresight-test-travel-not-invented-by-a-call-link ()
   "A meeting whose only location is a video link must not move anyone."
@@ -2431,16 +2437,18 @@ SCHEDULED: " (org-foresight-test--stamp 0) "
       (let ((s (org-foresight-report-load 14 nil (org-foresight-test--ts 6 0 10))))
         (should (org-foresight-test--within-80 s))))))
 
-(ert-deftest org-foresight-test-plan-style-is-registered ()
-  "org-foresight-plan.el must register itself with the report dispatcher.
-The day being rearranged is the agenda itself, so what this style adds --
-where else the work could go, and what has not been asked about -- follows
-the listing rather than splitting it from the verdict above."
-  (let ((entry (cdr (assq 'plan org-foresight-report-renderers))))
-    (should (eq (plist-get entry :body) 'org-foresight-plan-report))
-    (should (eq (plist-get entry :place) 'bottom))
-    (should (eq (org-foresight-report--place 'plan) 'bottom))
-    (should (eq (org-foresight-report--place 'daily) 'bottom))))
+(ert-deftest org-foresight-test-styles-are-the-two-that-are-left ()
+  "Two agenda views, and both put their tail after the listing.
+
+There used to be a third that drew the same agenda with a different tail
+underneath, and it was never opened: a view whose top half is identical to
+another is not a place, it is a toggle.  What it had to say now lives on the
+board, which is not an agenda view at all."
+  (should (assq 'daily org-foresight-report-renderers))
+  (should (assq 'review org-foresight-report-renderers))
+  (should-not (assq 'plan org-foresight-report-renderers))
+  (should (eq (org-foresight-report--place 'daily) 'bottom))
+  (should (eq (org-foresight-report--place 'review) 'bottom)))
 
 (ert-deftest org-foresight-test-signal-rows-are-actionable ()
   "A signal must be fixable from where it is reported.
@@ -4734,6 +4742,395 @@ above seen from the outside -- and the way it was actually noticed."
           (beginning-of-line)
           (org-agenda-log-mode)
           (should (= 1 (funcall states))))))))
+
+;;;; Where the day is worked from
+;; The one thing no entry can say.  Work that needs a place is not late until
+;; the next day at that place has gone, and asking when that is needs the day
+;; to have a place of its own.
+
+(ert-deftest org-foresight-test-day-place-falls-back-to-home ()
+  "A day nobody has said anything about is worked from home.
+
+Never nil: every caller asks \"is this entry bound to where I am\", and a nil
+there would make every placeless entry look bound."
+  (org-foresight-test--with-day "* nothing\n"
+    (let ((org-foresight-day-places nil)
+          (org-foresight-home-place 'home)
+          (org-foresight--shape-cache nil))
+      (should (eq 'home (org-foresight-day-place (org-foresight-test--ts 0 0 10)))))))
+
+(ert-deftest org-foresight-test-day-place-comes-from-the-weekday-then-the-heading ()
+  "A week with a shape needs no daily input; a day that breaks it says so."
+  (let ((file (make-temp-file
+               "org-foresight-day" nil ".org"
+               "* 2026\n** 2026-08 August\n*** 2026-08-11 Tue\n:PROPERTIES:\n:PLACE: client\n:END:\n")))
+    (unwind-protect
+        (let ((org-foresight-day-file file)
+              (org-foresight-home-place 'home)
+              (org-foresight-day-places '((1 . office) (2 . office)))
+              (org-foresight--shape-cache nil))
+          ;; 2026-08-10 is a Monday, 08-11 a Tuesday, 08-12 a Wednesday
+          (should (eq 'office (org-foresight-day-place (org-foresight-test--ts 0 0 10))))
+          ;; the heading beats the weekday
+          (should (eq 'client (org-foresight-day-place (org-foresight-test--ts 0 0 11))))
+          ;; and an unlisted weekday is home
+          (should (eq 'home (org-foresight-day-place (org-foresight-test--ts 0 0 12)))))
+      (delete-file file))))
+
+(ert-deftest org-foresight-test-next-day-at-skips-today ()
+  "\"When am I next there\" is asked by somebody who is there now.
+
+So today never answers it, and a place that does not come round inside the
+horizon answers nil rather than a date nobody will keep."
+  (org-foresight-test--with-day "* nothing\n"
+    (let ((org-foresight-home-place 'home)
+          (org-foresight-day-places '((1 . office) (3 . office)))
+          (org-foresight--shape-cache nil)
+          (monday (org-foresight-test--ts 0 0 10)))
+      ;; Monday is an office day; the next one is Wednesday, not today
+      (should (equal "2026-08-12"
+                     (format-time-string
+                      "%Y-%m-%d" (org-foresight-next-day-at 'office monday))))
+      ;; nowhere in the horizon is nil, not an invention
+      (should-not (org-foresight-next-day-at 'client monday)))))
+
+(defun org-foresight-test--legs (day)
+  "Return DAY's journeys as \"HH:MM-HH:MM\" strings, borrowed ones marked."
+  (let ((org-foresight--shape-cache nil))
+    (mapcar (lambda (b)
+              (format "%s-%s%s"
+                      (format-time-string "%H:%M" (plist-get b :start))
+                      (format-time-string "%H:%M" (plist-get b :end))
+                      (if (plist-get b :borrowed) " borrowed" "")))
+            (seq-filter (lambda (b) (eq (plist-get b :kind) 'travel))
+                        (org-foresight-day-blocks day)))))
+
+(defmacro org-foresight-test--with-commute (text &rest body)
+  "Run BODY over TEXT with the office an hour away."
+  (declare (indent 1))
+  `(org-foresight-test--with-day ,text
+     (let ((org-foresight-places '((office . "本社")))
+           (org-foresight-home-place 'home)
+           (org-foresight-travel-matrix '(((home . office) . 60)))
+           (org-foresight-travel-default 60))
+       ,@body)))
+
+(ert-deftest org-foresight-test-a-journey-is-pinned-by-what-needs-you-there ()
+  "One rule, and it decides where every journey sits.
+
+A journey is placed as close as it can be to the moment that pins it.
+Usually what is pinned is the arrival -- something needs you there -- so the
+journey is the last slot that gets you there in time.  A day worked from
+somewhere else is the case that shows the rule has two ends: nothing needs
+you at nine o'clock in particular, what needs you is the day, so what is
+pinned is the departure and the journey is the first thing the day does."
+  (let ((day (org-foresight-test--ts 0 0 10)))
+    ;; nowhere to be: no journey at all
+    (org-foresight-test--with-commute "* nothing dated\n"
+      (let ((org-foresight-day-places nil))
+        (should (null (org-foresight-test--legs day)))))
+    ;; a day worked from the office, with nothing in the calendar: the
+    ;; departure is pinned, so the journey opens the working day
+    (org-foresight-test--with-commute "* nothing dated\n"
+      (let ((org-foresight-day-places '((1 . office))))
+        (should (equal '("09:00-10:00" "16:30-17:30")
+                       (org-foresight-test--legs day)))))
+    ;; a meeting there, early enough that leaving at nine would be too late:
+    ;; the arrival is pinned instead, and the journey starts before the day
+    (org-foresight-test--with-commute
+        (concat "* Standup\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+                "<2026-08-10 Mon 09:30-09:45>\n")
+      (let ((org-foresight-day-places '((1 . office))))
+        (should (equal '("08:30-09:30 borrowed" "16:30-17:30")
+                       (org-foresight-test--legs day)))))
+    ;; a meeting there later on does not change it: you go in for the day,
+    ;; not for the meeting
+    (org-foresight-test--with-commute
+        (concat "* Review\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+                "<2026-08-10 Mon 15:00-16:00>\n")
+      (let ((org-foresight-day-places '((1 . office))))
+        (should (equal '("09:00-10:00" "16:30-17:30")
+                       (org-foresight-test--legs day)))))
+    ;; and from home, the way out is unchanged: as late as it can be while
+    ;; still arriving in time
+    (org-foresight-test--with-commute
+        (concat "* Review\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+                "<2026-08-10 Mon 11:00-12:00>\n")
+      (let ((org-foresight-day-places nil))
+        (should (equal "10:00-11:00" (car (org-foresight-test--legs day))))))))
+
+(ert-deftest org-foresight-test-the-way-back-is-the-same-rule-mirrored ()
+  "Coming back is the way in read from the other end.
+
+Normally the arrival is what is pinned -- the day ends at half five and you
+are home then -- so the journey is the last slot that manages it and sits
+inside the hours.  When something holds you there past that point the
+departure is pinned instead, exactly as a meeting early enough to matter pins
+the arrival on the way in, and the journey runs into the evening as borrowed.
+
+Both halves of that were wrong before this: the journey home was placed by
+arrival alone, so a meeting running to six put you home at half five and at
+the office at six, and on a day out from home it sent you home in the middle
+of the meeting."
+  (let ((day (org-foresight-test--ts 0 0 10)))
+    ;; held past the end of the day, from a day worked at the office
+    (org-foresight-test--with-commute
+        (concat "* Late review\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+                "<2026-08-10 Mon 17:00-18:00>\n")
+      (let ((org-foresight-day-places '((1 . office))))
+        (should (equal '("09:00-10:00" "18:00-19:00 borrowed")
+                       (org-foresight-test--legs day)))))
+    ;; and from home, where the way in is pinned by the meeting instead
+    (org-foresight-test--with-commute
+        (concat "* Late review\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+                "<2026-08-10 Mon 17:00-18:00>\n")
+      (let ((org-foresight-day-places nil))
+        (should (equal '("16:00-17:00" "18:00-19:00 borrowed")
+                       (org-foresight-test--legs day)))))))
+
+(ert-deftest org-foresight-test-you-come-back-when-the-errand-ends ()
+  "Nothing keeps you somewhere once the thing that took you there is over.
+
+Waiting until the day closed put you at the office from noon until half four
+with nothing to be there for -- and offered those hours as though they could
+be worked, which is the part that actually costs something."
+  (let ((day (org-foresight-test--ts 0 0 10)))
+    ;; an unbroken day: back as soon as the meeting ends
+    (org-foresight-test--with-commute
+        (concat "* Review\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+                "<2026-08-10 Mon 11:00-12:00>\n")
+      (let ((org-foresight-day-places nil))
+        (should (equal '("10:00-11:00" "12:00-13:00")
+                       (org-foresight-test--legs day)))))
+    ;; a day that breaks for lunch: the way back cannot be planned into the
+    ;; break any more than the way out could, so it waits for the afternoon
+    (org-foresight-test--with-commute
+        (concat "* Review\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+                "<2026-08-10 Mon 11:00-12:00>\n")
+      (let ((org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:30")))
+            (org-foresight-day-places nil))
+        (should (equal '("10:00-11:00" "13:00-14:00")
+                       (org-foresight-test--legs day)))))))
+
+(ert-deftest org-foresight-test-an-excursion-returns-to-where-the-day-is-worked ()
+  "On a day worked from the office, an errand elsewhere is an excursion.
+
+You go back, because the rest of the day still happens there -- unless
+getting back would land after the moment you would have to set off home, in
+which case going back is a journey to nowhere and you go straight home."
+  (let ((day (org-foresight-test--ts 0 0 10)))
+    (org-foresight-test--with-commute
+        (concat "* On site\n:PROPERTIES:\n:LOCATION: 顧客先\n:END:\n"
+                "<2026-08-10 Mon 10:00-11:00>\n")
+      (let ((org-foresight-places '((office . "本社") (client . "顧客")))
+            (org-foresight-travel-matrix '(((home . office) . 60)
+                                           ((office . client) . 45)
+                                           ((home . client) . 75)))
+            (org-foresight-day-places '((1 . office))))
+        ;; in, out to the client, back to the office, home at the end
+        (should (equal '("09:00-10:00" "11:00-11:45" "16:30-17:30")
+                       (org-foresight-test--legs day)))))
+    ;; the same errand at the end of the day: no point going back
+    (org-foresight-test--with-commute
+        (concat "* On site\n:PROPERTIES:\n:LOCATION: 顧客先\n:END:\n"
+                "<2026-08-10 Mon 15:00-16:00>\n")
+      (let ((org-foresight-places '((office . "本社") (client . "顧客")))
+            (org-foresight-travel-matrix '(((home . office) . 60)
+                                           ((office . client) . 45)
+                                           ((home . client) . 75)))
+            (org-foresight-day-places '((1 . office))))
+        (should (equal '("09:00-10:00" "14:15-15:00" "16:15-17:30")
+                       (org-foresight-test--legs day)))))))
+
+(ert-deftest org-foresight-test-the-journey-home-waits-for-the-meeting ()
+  "You cannot be at home and in the meeting, and the day must not say you are.
+
+The bands partition the day, so an impossible pair does not merely look odd:
+one of them is trimmed to make room, and the meeting came out shorter than it
+is.  A day that quietly shortens a meeting to fit a journey is a day that
+cannot be trusted about either."
+  (org-foresight-test--with-commute
+      (concat "* Late review\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+              "<2026-08-10 Mon 17:00-18:00>\n")
+    (let* ((org-foresight-day-places '((1 . office)))
+           (org-foresight--shape-cache nil)
+           (day (org-foresight-test--ts 0 0 10))
+           (meeting (seq-find (lambda (b) (eq (plist-get b :kind) 'meeting))
+                              (org-foresight-day-blocks day))))
+      ;; the meeting keeps its full hour ...
+      (should (equal "17:00" (format-time-string "%H:%M" (plist-get meeting :start))))
+      (should (equal "18:00" (format-time-string "%H:%M" (plist-get meeting :end))))
+      ;; ... and nothing else is drawn over it
+      (should-not (seq-find (lambda (b)
+                              (and (eq (plist-get b :kind) 'travel)
+                                   (time-less-p (plist-get b :start)
+                                                (plist-get meeting :end))
+                                   (time-less-p (plist-get meeting :start)
+                                                (plist-get b :end))))
+                            (org-foresight-day-blocks day))))))
+
+(ert-deftest org-foresight-test-going-in-costs-the-working-day ()
+  "Travel is work, so an office day is two hours shorter for work.
+
+Placed outside the hours instead, the journey would come out of the morning,
+and going in would leave the same working day as staying home -- which is the
+arithmetic that makes a token appearance at the office look free.  The whole
+reason the day has a place of its own is to stop that being true."
+  (let ((day (org-foresight-test--ts 0 0 10)))
+    (org-foresight-test--with-commute "* nothing dated\n"
+      (let* ((cap (lambda ()
+                    (let ((org-foresight--shape-cache nil))
+                      (org-foresight-capacity
+                       day nil (org-foresight-test--ts 6 0 10)))))
+             (home (let ((org-foresight-day-places nil)) (funcall cap)))
+             (office (let ((org-foresight-day-places '((1 . office)))) (funcall cap))))
+        ;; the span is the same declaration on both days
+        (should (= (plist-get home :span-min) (plist-get office :span-min)))
+        ;; but two hours of the office one are spent getting there and back
+        (should (= 0.0 (plist-get home :travel-min)))
+        (should (= 120.0 (plist-get office :travel-min)))
+        (should (= (- (plist-get home :spare-min) 120.0)
+                   (plist-get office :spare-min)))
+        ;; and none of it is quietly taken out of the time off
+        (should (= 0.0 (plist-get office :borrowed-min)))))))
+
+(ert-deftest org-foresight-test-being-there-already-is-not-another-journey ()
+  "The commute is made once, whatever is in the calendar that day.
+
+A meeting at the place the day is already worked from adds nothing: the
+journey in covers it, which is the difference between costing a day and
+costing every entry in it."
+  (org-foresight-test--with-commute
+      (concat "* Office meeting\n:PROPERTIES:\n:LOCATION: 本社\n:END:\n"
+              "<2026-08-10 Mon 11:00-12:00>\n")
+    (let ((day (org-foresight-test--ts 0 0 10)))
+      (let ((org-foresight-day-places nil))
+        (should (= 2 (length (org-foresight-test--legs day)))))
+      (let ((org-foresight-day-places '((1 . office))))
+        (should (= 2 (length (org-foresight-test--legs day))))))))
+
+;;;; What only being here can do
+
+(defmacro org-foresight-test--with-places (text &rest body)
+  "Run BODY over TEXT with today at the office and tomorrow at home."
+  (declare (indent 1))
+  `(org-foresight-test--with-signals ,text
+     (let ((org-foresight-places '((office . "本社") (client . "顧客")))
+           (org-foresight-home-place 'home)
+           ;; today is whatever day the test runs on, so both are named
+           (org-foresight-day-places
+            (list (cons (nth 6 (decode-time (org-foresight--day-start 0))) 'office)))
+           (org-foresight--shape-cache nil)
+           (org-foresight--signals-cache nil))
+       ,@body)))
+
+(ert-deftest org-foresight-test-here-is-what-this-place-can-do ()
+  "Bound to where you are, and nothing else.
+
+Most work goes anywhere; what lands here is the little that does not, which
+is the only reason the list is worth reading at the door."
+  (org-foresight-test--with-places
+      "* NEXT stamp the form
+:PROPERTIES:
+:PLACE: office
+:END:
+* NEXT ask about the spec
+:PROPERTIES:
+:PEOPLE: 佐藤
+:END:
+* NEXT measure on site
+:PROPERTIES:
+:PLACE: client
+:END:
+* NEXT write the report
+"
+    (let ((titles (mapcar (lambda (r) (plist-get r :title)) (org-foresight-here))))
+      (should (member "stamp the form" titles))
+      ;; a person is not a place: this one is a message, and messages travel
+      (should-not (member "ask about the spec" titles))
+      ;; somewhere else is not here
+      (should-not (member "measure on site" titles))
+      ;; and work that needs nowhere in particular is not the door's business
+      (should-not (member "write the report" titles)))))
+
+(ert-deftest org-foresight-test-here-puts-the-soonest-need-first ()
+  "Deadlines first and earliest first; the rest keep their order.
+
+Sorted rather than filtered by deadline: a file that does not use them would
+show nothing at all under a filter, and \"what can only be done here\" is
+worth answering either way."
+  (org-foresight-test--with-places
+      (concat "* NEXT no date\n:PROPERTIES:\n:PLACE: office\n:END:\n"
+              "* NEXT later\nDEADLINE: " (org-foresight-test--stamp 9) "\n"
+              ":PROPERTIES:\n:PLACE: office\n:END:\n"
+              "* NEXT sooner\nDEADLINE: " (org-foresight-test--stamp 2) "\n"
+              ":PROPERTIES:\n:PLACE: office\n:END:\n")
+    (should (equal '("sooner" "later" "no date")
+                   (mapcar (lambda (r) (plist-get r :title)) (org-foresight-here))))))
+
+(ert-deftest org-foresight-test-here-marks-what-the-next-visit-is-too-late-for ()
+  "The mark is about the place running out, not the clock.
+
+A deadline that falls before you are next here is one this visit has to
+settle; one that falls after it can wait for the next."
+  (org-foresight-test--with-places
+      (concat "* NEXT before I am back\nDEADLINE: " (org-foresight-test--stamp 1) "\n"
+              ":PROPERTIES:\n:PLACE: office\n:END:\n")
+    (let* ((rendered (substring-no-properties (org-foresight-report-here)))
+           (next (org-foresight-next-day-at 'office)))
+      ;; only one office day a week, so tomorrow's deadline cannot wait
+      (should (or (null next) (string-match-p "⚠" rendered)))
+      (should (string-match-p "next office day\\|not office again" rendered)))))
+
+(ert-deftest org-foresight-test-here-names-who-it-needs ()
+  "Who the conversation is with is part of deciding whether to have it now."
+  (org-foresight-test--with-places
+      "* NEXT talk about the review
+:PROPERTIES:
+:PLACE: office
+:PEOPLE: 佐藤 田中
+:END:
+"
+    (should (equal '("佐藤" "田中")
+                   (plist-get (car (org-foresight-here)) :people)))
+    (should (string-match-p "佐藤, 田中"
+                            (substring-no-properties (org-foresight-report-here))))))
+
+(ert-deftest org-foresight-test-work-that-today-cannot-do-is-a-signal ()
+  "Work planned for today that today's place cannot do will not happen.
+
+A home day with an office errand on it is a plan that does not survive
+contact with the morning, and the morning is too late to find out."
+  (org-foresight-test--with-places
+      (concat "* NEXT measure on site\nSCHEDULED: " (org-foresight-test--stamp 0) "\n"
+              ":PROPERTIES:\n:PLACE: client\n:END:\n")
+    (let ((found (org-foresight-test--signal "Cannot be done from here")))
+      (should found)
+      (should (equal "measure on site" (plist-get (car found) :title)))
+      (should (string-match-p "needs client" (plist-get (car found) :note))))))
+
+(ert-deftest org-foresight-test-board-holds-both-questions ()
+  "One buffer: what only here can do, and what is not planned at all."
+  (org-foresight-test--with-places
+      "* NEXT stamp the form
+:PROPERTIES:
+:PLACE: office
+:END:
+"
+    (unwind-protect
+        (progn
+          (org-foresight-board)
+          (with-current-buffer "*Org Foresight Board*"
+            (let ((text (substring-no-properties (buffer-string))))
+              (should (string-match-p "Here" text))
+              (should (string-match-p "stamp the form" text))
+              (should (string-match-p "Signals" text))
+              ;; the rows answer to the agenda's own commands
+              (goto-char (point-min))
+              (should (re-search-forward "stamp the form" nil t))
+              (should (get-text-property (line-beginning-position) 'org-marker)))))
+      (when (get-buffer "*Org Foresight Board*")
+        (kill-buffer "*Org Foresight Board*")))))
 
 (provide 'org-foresight-test)
 
