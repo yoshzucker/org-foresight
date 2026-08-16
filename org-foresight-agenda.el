@@ -1014,6 +1014,35 @@ rather than as a setting that has not been turned on."
                          'org-foresight-spine t)))))
             (forward-line 1)))))))
 
+(defun org-foresight-agenda--prefix-blanks ()
+  "Return how many blank columns the agenda's prefix begins with, or nil.
+
+Nil where the answer cannot be had by looking: a prefix may be a function,
+and one that is has no leading blanks to count."
+  (let ((prefix (if (stringp org-agenda-prefix-format)
+                    org-agenda-prefix-format
+                  (cdr (assq 'agenda org-agenda-prefix-format)))))
+    (when (stringp prefix)
+      (or (string-match "[^ ]" prefix) (length prefix)))))
+
+(defun org-foresight-agenda--diagnose-gutter ()
+  "Say when the page has no room for the second bracket, or nothing.
+
+The one thing about this layer that fails silently.  Everything else either
+appears or errors; a place spine with nowhere to go is simply not drawn --
+deliberately, since a partial one reads as a fault -- and there is otherwise
+no way to tell that apart from having nothing to draw."
+  (when org-foresight-agenda-place-spine
+    (let ((blanks (org-foresight-agenda--prefix-blanks))
+          (needed (+ 2 org-foresight-agenda--place-column)))
+      (when (and blanks (< blanks needed))
+        (format (concat "`org-agenda-prefix-format' begins with %d space%s; "
+                        "the hours away from home need %d to be bracketed")
+                blanks (if (= blanks 1) "" "s") needed)))))
+
+(add-to-list 'org-foresight-diagnose-extras
+             #'org-foresight-agenda--diagnose-gutter t)
+
 (defconst org-foresight-agenda-attentions
   '(("blocking" . "needs all of you")
     ("background" . "costs the hour but shares it")

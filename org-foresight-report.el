@@ -1373,6 +1373,18 @@ a signal and acting on it is not interrupted by the display jumping."
       (widen)
       (org-foresight-report-render))))
 
+;; Installed by loading, like the rest of what this package does to the agenda:
+;; the rows are added by an advice on Org's own grid function and the spine is
+;; drawn from this same hook, both from `org-foresight-agenda', and a report
+;; that alone had to be wired up by hand was the odd one out.  Nothing here is
+;; conditional on it having been asked for -- `org-foresight-report-render'
+;; declines unless it is in an agenda buffer and a style is set, and
+;; `org-foresight-report-style' set to nil is how somebody turns it off.
+;;
+;; Appended, so it runs after the spine: `org-foresight-agenda' is loaded after
+;; this file and adds its own hook at the front.
+(add-hook 'org-agenda-finalize-hook #'org-foresight-report-render t)
+
 ;; Everything that can change what a day costs.  The time commands are on the
 ;; list for the same reason as the rest: they edit the entry and leave the
 ;; agenda buffer alone, so without this the row moves while the figure above
@@ -1459,6 +1471,13 @@ itself."
                    (length org-foresight-travel-matrix)
                    (length placed) (length timed))))))
 
+(defvar org-foresight-diagnose-extras nil
+  "Functions contributing extra lines to what `org-foresight-diagnose' advises.
+Each is called with no arguments and returns a line, or nil to add nothing.
+A registry rather than a fixed call, so a file loaded later can report a
+precondition of its own -- the layout the agenda's brackets need, say --
+without this one having to know what that file draws.")
+
 (defun org-foresight--diagnose-advice (day)
   "Return what to do next, given DAY's configuration.
 Looks past whether options are set to whether they are doing anything: a
@@ -1468,9 +1487,6 @@ is what lets a whole feature quietly not run."
          (timed (org-foresight--diagnose-timed scan))
          (unplaced (seq-filter (lambda (e) (null (plist-get e :place))) timed))
          out)
-    (unless (memq 'org-foresight-report-render org-agenda-finalize-hook)
-      (push "add `org-foresight-report-render' to `org-agenda-finalize-hook'"
-            out))
     (when (null org-agenda-files)
       (push "`org-agenda-files' is empty; nothing can be seen" out))
     (when (null org-foresight-places)
@@ -1507,6 +1523,9 @@ is what lets a whole feature quietly not run."
     (unless (bound-and-true-p org-foresight-meeting-categories)
       (push "`org-foresight-meeting-categories' is unset; no meeting implies prep"
             out))
+    (dolist (fn org-foresight-diagnose-extras)
+      (when-let ((line (org-foresight-report--guarded fn)))
+        (push line out)))
     (nreverse out)))
 
 ;;;###autoload

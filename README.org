@@ -85,13 +85,9 @@ records the value and loses the reason.
   ;; Meetings from this category imply preparation and follow-up.
   (setq org-foresight-meeting-categories '("work"))
 
-  ;; Where generated tasks and per-day declarations are written.
-  (setq org-foresight-task-file (expand-file-name "journal.org" org-directory)
-        org-foresight-day-file  (expand-file-name "journal.org" org-directory))
-
   ;; Work that arrives rather than is planned carries `SURGE', and the value
   ;; is when it arrived.  Nothing writes it for you -- add it to whatever
-  ;; captures an interruption, or use `M-x org-foresight-mark-surge'.
+  ;; captures an interruption, or use `M-x org-foresight-mark-surge':
   ;;
   ;; (add-to-list
   ;;  'org-capture-templates
@@ -100,12 +96,24 @@ records the value and loses the reason.
   ;;    :clock-in t :clock-resume t)
   ;;  t)
 
-  (add-hook 'org-agenda-finalize-hook #'org-foresight-report-render))
+  ;; Where generated tasks and per-day declarations are written.
+  (setq org-foresight-task-file (expand-file-name "journal.org" org-directory)
+        org-foresight-day-file  (expand-file-name "journal.org" org-directory)))
 #+end_src
 
-That is the whole of it: with the hook in place the agenda gains the verdict,
-the bars, and the derived rows. Everything else is optional. When the verdict
-says something is outstanding, =M-x org-foresight-board= shows it.
+That is the whole of it: values, and nothing to wire. Loading the package is
+the installation — the derived rows, the brackets and the report block all
+attach themselves to the agenda, and =org-foresight-report-style= set to nil
+is how the last of them is turned off again. When the verdict says something
+is outstanding, =M-x org-foresight-board= shows it.
+
+The board can be reached from the dispatcher as well, since it takes the
+match string every custom command is handed and ignores it:
+
+#+begin_src emacs-lisp
+(add-to-list 'org-agenda-custom-commands
+             '("b" "Board" org-foresight-board ""))
+#+end_src
 
 There are two views and one board, and they ask different questions: the day
 (=C-c a a=), the week just gone, and what has not been settled. A view that
@@ -191,18 +199,18 @@ Thursday   13 August 2026
           08:00...... ----------------
           09:00...... work starts ────────────
           09:00-09:30 0:30 free · 0:26 usable
-  outlook 09:30-09:45 Morning standup
+  meeting 09:30-09:45 Morning standup
           09:45-12:00 2:15 free · 1:59 usable
   procure 09:45...... ↳ NEXT Write the vendor comparison 2:00→2:48
           10:00...... ----------------
           12:00...... ----------------
   travel  12:00-13:00 → office
-  outlook 13:00-14:00 All-hands
+  meeting 13:00-14:00 All-hands
           14:00...... ----------------
-  outlook 14:00-15:30 Project review
+  meeting 14:00-15:30 Project review
   travel  15:00-15:45 ⨯ → client
           15:29...... ← now ──────────────────────────
-  outlook 15:45-16:30 Client review
+  meeting 15:45-16:30 Client review
   travel  16:15-17:30 ⨯ → home
           17:30...... work ends ──────────────
   family  19:00-20:30 ╰ Dinner with the family

@@ -1248,16 +1248,38 @@ all: the numbers look right, and the commute is simply missing from them."
       (should (seq-find (lambda (s) (string-match-p "name no place" s))
                         advice)))))
 
-(ert-deftest org-foresight-test-diagnose-reports-missing-wiring ()
+(ert-deftest org-foresight-test-the-report-wires-itself-in ()
+  "Loading the package is the whole installation.
+
+The derived rows arrive by an advice on Org's own grid function and the spine
+is drawn from this very hook, both installed by loading.  A report that alone
+had to be added by hand was the odd one out -- and the one thing a second
+machine would be set up without."
+  (should (memq 'org-foresight-report-render org-agenda-finalize-hook))
+  ;; Loading again adds nothing: the file is read twice on any upgrade.
+  (add-hook 'org-agenda-finalize-hook #'org-foresight-report-render t)
+  (should (= 1 (seq-count (lambda (f) (eq f 'org-foresight-report-render))
+                          org-agenda-finalize-hook))))
+
+(ert-deftest org-foresight-test-diagnose-says-when-the-gutter-is-too-narrow ()
+  "The one thing this layer does silently is the one thing diagnose must say.
+
+A place spine with nowhere to go is not drawn -- deliberately, since half of
+one reads as a fault -- and nothing else distinguishes that from a day spent
+at home."
   (org-foresight-test--with-day "* nothing\n"
-    (let ((org-agenda-finalize-hook nil))
-      (should (seq-find (lambda (s) (string-match-p "finalize-hook" s))
-                        (org-foresight--diagnose-advice
-                         (org-foresight--day-start 0)))))
-    (let ((org-agenda-finalize-hook '(org-foresight-report-render)))
-      (should-not (seq-find (lambda (s) (string-match-p "finalize-hook" s))
-                            (org-foresight--diagnose-advice
-                             (org-foresight--day-start 0)))))))
+    (let ((day (org-foresight--day-start 0)))
+      (let ((org-agenda-prefix-format '((agenda . "  %-8.8c%?-12t% s"))))
+        (should (seq-find (lambda (s) (string-match-p "away from home" s))
+                          (org-foresight--diagnose-advice day))))
+      (let ((org-agenda-prefix-format '((agenda . "     %-8.8c%?-12t% s"))))
+        (should-not (seq-find (lambda (s) (string-match-p "away from home" s))
+                              (org-foresight--diagnose-advice day))))
+      ;; and nothing at all where the brackets are not wanted
+      (let ((org-foresight-agenda-place-spine nil)
+            (org-agenda-prefix-format '((agenda . "  %-8.8c%?-12t% s"))))
+        (should-not (seq-find (lambda (s) (string-match-p "away from home" s))
+                              (org-foresight--diagnose-advice day)))))))
 
 (ert-deftest org-foresight-test-report-guarded-surfaces-errors ()
   "A failing block complains in place instead of disappearing silently."
@@ -2999,8 +3021,12 @@ SCHEDULED: <2026-08-10 Mon>
                 ;; nothing is lost by it.
                 (org-foresight-workdays '(0 1 2 3 4 5 6))
                 (org-foresight-followup-keywords '("WAIT" "DELEG"))
-                (org-foresight-meeting-categories '("outlook"))
-                (org-foresight-private-categories '("family" "club"))
+                ;; The same three `org-foresight-demo-mode' declares, because
+                ;; the corpus is written for them: a category names what a
+                ;; thing is, not which calendar it was read out of.
+                (org-foresight-meeting-categories '("meeting"))
+                (org-foresight-private-categories '("family" "personal"))
+                (org-foresight-informational-categories '("club"))
                 (org-foresight-places '((office . "本社\\|会議室")
                                         (client . "様")))
                 (org-foresight-travel-matrix '(((home . office) . 60)
@@ -5472,6 +5498,20 @@ contact with the morning, and the morning is too late to find out."
       (should found)
       (should (equal "measure on site" (plist-get (car found) :title)))
       (should (string-match-p "needs client" (plist-get (car found) :note))))))
+
+(ert-deftest org-foresight-test-the-board-answers-the-dispatcher ()
+  "It can be the FUNCTION of a custom agenda command, which hands it a match.
+
+A command that refused the argument would need a wrapper in every config that
+did nothing but drop it -- and taking one is not a personal setting, it is
+the dispatcher's own contract."
+  (unwind-protect
+      (progn
+        (should (commandp 'org-foresight-board))
+        (org-foresight-board "")
+        (should (get-buffer "*Org Foresight Board*")))
+    (when (get-buffer "*Org Foresight Board*")
+      (kill-buffer "*Org Foresight Board*"))))
 
 (ert-deftest org-foresight-test-board-holds-both-questions ()
   "One buffer: what only here can do, and what is not planned at all."

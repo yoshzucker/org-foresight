@@ -33,6 +33,9 @@
 
 (require 'org)
 (require 'org-foresight-core)
+;; For `org-foresight-meeting-categories', which the demo declares along with
+;; the other two: the signal it feeds is one of the things being demonstrated.
+(require 'org-foresight-plan)
 
 (defgroup org-foresight-demo nil
   "Generated data for developing org-foresight."
@@ -99,7 +102,9 @@ FROM and TO are \"HH:MM\" strings; REPEATER is e.g. \"+1w\"."
 (defun org-foresight-demo--calendar ()
   "Return the contents of the demo calendar.
 Shaped like the output of an ics import: every event carries a UID and a
-CATEGORY, because that is what the meeting signal keys on."
+CATEGORY, because that is what the meeting signal keys on -- and the category
+says what a thing *is* rather than which product it was read out of, which is
+what the importer writes and what a reader of the agenda can use."
   (let ((d1 (org-foresight-demo--weekday 1))
         (d2 (org-foresight-demo--weekday 2))
         (d3 (org-foresight-demo--weekday 3))
@@ -112,16 +117,16 @@ CATEGORY, because that is what the meeting signal keys on."
      ;; A call: its location says where to dial in, not where to be, so it
      ;; must not produce a journey.
      "* Morning standup\n:PROPERTIES:\n:UID: demo-standup\n"
-     ":CATEGORY: outlook\n:LOCATION: https://teams.microsoft.com/l/demo\n:END:\n"
+     ":CATEGORY: meeting\n:LOCATION: https://teams.microsoft.com/l/demo\n:END:\n"
      (org-foresight-demo--stamp 0 "09:30" "09:45") "\n\n"
 
      ;; The expensive one: an hour at the office, plus the journey either way.
      "* Project review\n:PROPERTIES:\n:UID: demo-review\n"
-     ":CATEGORY: outlook\n:LOCATION: 本社 会議室A\n:END:\n"
+     ":CATEGORY: meeting\n:LOCATION: 本社 会議室A\n:END:\n"
      (org-foresight-demo--stamp 0 "14:00" "15:30") "\n\n"
 
      "* Vendor workshop\n:PROPERTIES:\n:UID: demo-workshop\n"
-     ":CATEGORY: outlook\n:LOCATION: 顧客様先\n:END:\n"
+     ":CATEGORY: meeting\n:LOCATION: 顧客様先\n:END:\n"
      (org-foresight-demo--stamp d1 "09:00" "12:00") "\n\n"
 
      ;; A private commitment outside the working hours: it fills the time but
@@ -132,18 +137,18 @@ CATEGORY, because that is what the meeting signal keys on."
 
      ;; A repeater: proves the scan projects it across the whole horizon.
      "* Weekly sync\n:PROPERTIES:\n:UID: demo-sync\n"
-     ":CATEGORY: outlook\n:END:\n"
+     ":CATEGORY: meeting\n:END:\n"
      (org-foresight-demo--stamp d2 "16:00" "17:00" "+1w") "\n\n"
 
      ;; Outside the working hours: subtracted from nothing, warned about by
      ;; nothing -- which is why the Outside work hours signal exists.
      "* Overseas call\n:PROPERTIES:\n:UID: demo-overseas\n"
-     ":CATEGORY: outlook\n:END:\n"
+     ":CATEGORY: meeting\n:END:\n"
      (org-foresight-demo--stamp d3 "19:00" "20:00") "\n\n"
 
      ;; Already handled: must NOT appear in the meeting signal.
      "* Budget meeting\n:PROPERTIES:\n:UID: demo-budget\n"
-     ":CATEGORY: outlook\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp d5 "11:00" "12:00") "\n\n"
 
      ;; A different category, and all-day: implies no preparation, and must not
@@ -160,7 +165,7 @@ CATEGORY, because that is what the meeting signal keys on."
 
      ;; An hour of yours, but one that will share itself with the commute.
      "* All-hands\n:PROPERTIES:\n:UID: demo-allhands\n"
-     ":CATEGORY: outlook\n:ATTENTION: background\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:ATTENTION: background\n:PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp 0 "13:00" "14:00") "\n\n"
 
      ;; A day that cannot be worked as written: this starts fifteen minutes
@@ -168,25 +173,25 @@ CATEGORY, because that is what the meeting signal keys on."
      ;; away.  Nothing about the entries looks wrong on its own, which is
      ;; exactly why a clash is worth being told about.
      "* Client review\n:PROPERTIES:\n:UID: demo-client\n"
-     ":CATEGORY: outlook\n:LOCATION: 顧客様先\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:LOCATION: 顧客様先\n:PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp 0 "15:45" "16:30") "\n\n"
 
      ;; Work put in the lunch break: with work declared as two intervals this
      ;; is outside the working hours as surely as an evening call, which is
      ;; the whole reason that signal stopped being called "after hours".
      "* Lunchtime vendor call\n:PROPERTIES:\n:UID: demo-lunchcall\n"
-     ":CATEGORY: outlook\n:END:\n"
+     ":CATEGORY: meeting\n:END:\n"
      (org-foresight-demo--stamp d1 "12:15" "12:45") "\n\n"
 
      ;; An event that runs past midnight, and one that covers whole days:
      ;; both are clipped to the day being drawn rather than swallowing it.
      "* Overnight deployment window\n:PROPERTIES:\n:UID: demo-overnight\n"
-     ":CATEGORY: outlook\n:END:\n"
+     ":CATEGORY: meeting\n:END:\n"
      "<" (org-foresight-demo--date d2) " 22:00>--<"
      (org-foresight-demo--date d3) " 02:00>\n\n"
 
      "* Company offsite\n:PROPERTIES:\n:UID: demo-offsite\n"
-     ":CATEGORY: outlook\n:END:\n"
+     ":CATEGORY: meeting\n:END:\n"
      "<" (org-foresight-demo--date d5) ">--<" (org-foresight-demo--date d6) ">\n")))
 
 (defun org-foresight-demo--datetree (blocks)
@@ -453,6 +458,9 @@ from, and there is no undo for that."
                     :day-places org-foresight-day-places
                     :check-in org-foresight-check-in
                     :check-out org-foresight-check-out
+                    :meeting-categories org-foresight-meeting-categories
+                    :private-categories org-foresight-private-categories
+                    :informational-categories org-foresight-informational-categories
                     :surge-cache org-foresight-surge-cache-file
                     :leak-cache org-foresight-leak-cache-file
                     :bias-cache org-foresight-bias-cache-file))
@@ -482,6 +490,18 @@ from, and there is no undo for that."
         (setq org-foresight-day-places
               (list (cons (nth 6 (decode-time (org-foresight--day-start 0)))
                           'office)))
+        ;; What the generated categories mean, since the demo is meant to be
+        ;; looked at before anything has been configured.  Without these the
+        ;; club fixtures would eat the evening they are supposed to leave
+        ;; alone, dinner would count as work escaping the day, and no meeting
+        ;; would imply the preparation the board is supposed to ask about --
+        ;; a demo of the mechanism with the mechanism switched off.
+        ;;
+        ;; They are the categories an import writes, which say what a thing is
+        ;; rather than which calendar product it was read out of.
+        (setq org-foresight-meeting-categories '("meeting")
+              org-foresight-private-categories '("family" "personal")
+              org-foresight-informational-categories '("club"))
         ;; And both ends of the day are booked, since a demo that left them
         ;; out would be a demo of a day nobody actually has: the twenty
         ;; minutes are spent whether or not anything counts them.
@@ -514,7 +534,13 @@ from, and there is no undo for that."
           org-foresight-work (plist-get org-foresight-demo--saved :work)
           org-foresight-day-places (plist-get org-foresight-demo--saved :day-places)
           org-foresight-check-in (plist-get org-foresight-demo--saved :check-in)
-          org-foresight-check-out (plist-get org-foresight-demo--saved :check-out))
+          org-foresight-check-out (plist-get org-foresight-demo--saved :check-out)
+          org-foresight-meeting-categories
+          (plist-get org-foresight-demo--saved :meeting-categories)
+          org-foresight-private-categories
+          (plist-get org-foresight-demo--saved :private-categories)
+          org-foresight-informational-categories
+          (plist-get org-foresight-demo--saved :informational-categories))
     (setq org-foresight-surge-cache-file
           (plist-get org-foresight-demo--saved :surge-cache)
           org-foresight-leak-cache-file
