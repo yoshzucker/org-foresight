@@ -26,8 +26,8 @@ M-x org-foresight-demo-mode
 
 Generates a week of tasks, meetings, travel, clock history and one example of
 every signal; points the agenda at it; and puts everything back when switched
-off. Real files are never touched. Then =C-c a a= for the day, =C-c a p= for
-the plan board.
+off. Real files are never touched. Then =C-c a a= for the day, and
+=M-x org-foresight-board= for what has not been settled.
 
 =M-x org-foresight-demo-regenerate= returns the demo to a clean slate after
 experimenting.
@@ -90,9 +90,12 @@ records the value and loses the reason.
 
 That is the whole of it: with the hook in place the agenda gains the verdict,
 the bars, and the derived rows. Everything else is optional. When the verdict
-says work is outstanding, =M-x org-foresight-signals-list= shows it; the
-=plan= report style puts the same list under an agenda for anyone who would
-rather have it there.
+says something is outstanding, =M-x org-foresight-board= shows it.
+
+There are two views and one board, and they ask different questions: the day
+(=C-c a a=), the week just gone, and what has not been settled. A view that
+draws the same agenda with a different block underneath is not a third place
+— it is a toggle, and it will not be opened.
 
 =M-x org-foresight-diagnose= then reports what is set, what is having no
 effect, and what to do next. Worth running once after the above and again
@@ -599,6 +602,71 @@ look workable is the one that is not.
 "I stop at 17:30" is therefore not the end of a window. It is that the hours
 after it are already spoken for.
 
+*** Where the day is worked from
+
+A day has a place as well as hours, and it is the one thing no entry can say:
+
+#+begin_src emacs-lisp
+(setq org-foresight-day-places '((1 . office) (3 . office))  ; Mon and Wed
+      org-foresight-home-place 'home)                        ; the rest
+#+end_src
+
+A day that goes differently says so on its own heading, next to =WORK=:
+
+#+begin_example
+*** 2026-08-17 Mon
+:PROPERTIES:
+:WORK:  09:00-12:00 13:00-17:30
+:PLACE: office
+:END:
+#+end_example
+
+Two things follow.
+
+The commute becomes a cost of the day that has it, *inside the working
+hours*. Where the work happens is not where the body starts — an office day
+is still begun and ended at home — so the day carries a journey each way:
+
+#+begin_example
+office day, nothing in the calendar:
+  travel  09:00-10:00  → office
+  travel  16:30-17:30  → home
+  span 8:30 · travel 2:00 · spare 6:30      (a home day: spare 8:30)
+#+end_example
+
+Two hours, whether or not anything is in the calendar. That is the number
+worth having before agreeing to go in for its own sake — and it only appears
+if the journeys are counted as work. Put them outside the hours and going in
+leaves the same working day as staying home, while quietly eating the
+morning: the one arrangement that hides the cost entirely.
+
+And work that needs a place stops being merely late: it is not late until the
+next day at that place has gone, which is what =Here= on the board is able to
+say.
+
+*** People, and what actually binds you
+
+=:PEOPLE:= names who a piece of work involves, as a multi-valued property
+(=:PEOPLE: 佐藤 田中=, and =:PEOPLE+:= to add). The relation comes from the
+entry's own state: =WAIT= and =DELEG= are /with/ them, anything else /needs/
+them.
+
+It deliberately does not bind a place. Most work involving somebody can be
+done by message, and what makes a conversation need a room is a judgement
+about that conversation — that it would go wrong in writing — which nothing
+here can infer. When it does need a room, say so the way anything else does:
+
+#+begin_example
+* NEXT ask about the spec          * NEXT talk about the review
+:PROPERTIES:                       :PROPERTIES:
+:PEOPLE: 佐藤                      :PEOPLE: 佐藤
+:END:                              :PLACE:  office
+                                   :END:
+#+end_example
+
+The first is a message and goes anywhere. Only the second appears under
+=Here=.
+
 The hours are *declared*, never inferred. Measuring when work actually stopped
 and calling that the working day would teach the system to plan around the
 overruns it exists to prevent. =M-x org-foresight-shape-day= declares an
@@ -635,6 +703,45 @@ breaks, the search steps past the break exactly as it steps past a meeting: an
 hour's drive to a one o'clock meeting is taken out of the working hour before
 lunch, not out of lunch. What cannot fit — the drive that has to begin before
 work starts — is still drawn, and counted as =borrowed=.
+
+*** Where a journey sits
+
+One rule: *a journey is placed as close as it can be to the moment that pins
+it.* Usually what is pinned is the arrival — something needs you there — so
+the journey is the last slot that still gets you there in time, sliding
+earlier past whatever is already booked.
+
+A day worked from somewhere else is the case that shows the rule has two
+ends. Nothing needs you at nine o'clock in particular; what needs you is the
+day. So the *departure* is what is pinned, and the journey is the first thing
+the working day does:
+
+| The day (work 09:00–17:30, an hour away) | Out           | Back                |
+|------------------------------------------+---------------+---------------------|
+| office day, nothing booked               | 09:00–10:00   | 16:30–17:30         |
+| office day, meeting there 15:00          | 09:00–10:00   | 16:30–17:30         |
+| office day, meeting there 09:30          | 08:30–09:30 /borrowed/ | 16:30–17:30 |
+| office day, meeting there 17:00–18:00    | 09:00–10:00   | 18:00–19:00 /borrowed/ |
+| home day, meeting there 11:00–12:00      | 10:00–11:00   | 12:00–13:00         |
+| the same, with lunch declared 12:00–13:00 | 10:00–11:00  | 13:00–14:00         |
+
+Rows three and four are the rule choosing its other end: something needs you
+there before you could arrive, or holds you past the point where being home
+in time is possible. In both the journey spills out of the declared day and
+is shown as =borrowed=, because that is what it is.
+
+The last two rows are the other half of it. On a day worked from home, going
+to the office is an excursion: *nothing keeps you there once the thing that
+took you there is over*, so you leave at noon rather than sitting at a desk
+you have no reason to be at until half four. And the way back is no more
+allowed into the declared lunch hour than the way out was — it waits for the
+afternoon, and the cost lands on working time, where it belongs.
+
+On a day worked *from* the office the same errand behaves the other way
+round: you go back to the office, because the rest of the day still happens
+there — unless getting back would land after the moment you would have to set
+off home anyway, in which case going back is a journey to nowhere and you go
+straight home.
 
 Only a place someone wrote down counts. Every imported invitation carries a
 video link, and a link says nothing about where the body has to be — so an
@@ -738,9 +845,39 @@ That small estimates run over and large ones barely do is not a fact about the
 tool. It is a fact about how small things get estimated, and it is actionable
 on the very next one.
 
-* Signals
+* The board
 
-Work that exists but has not been planned for. Shown on the plan board.
+Two questions the day cannot answer from inside itself, in one buffer
+(=M-x org-foresight-board=). Every row carries its entry's marker, so the
+agenda's own commands work on them.
+
+** Here — what only this place can do
+
+#+begin_example
+[Here] what only this place can do
+
+ office · next office day is Wed 08-19
+  ⚠ stamp the form                     due Tue 08-18
+    check the warehouse stock
+    talk about the review              (佐藤)
+#+end_example
+
+Most work goes anywhere. What lands here is the little that does not — a
+thing to pick up, a conversation that would go wrong in writing — and it is
+the question worth asking at the door, because being here is the part that
+runs out.
+
+The heading is what makes it a decision rather than a list: /next office day
+is Wednesday/ says what the alternative to doing it now actually costs. =⚠=
+marks the ones whose deadline falls before that day.
+
+Sorted by deadline rather than filtered by it: a file that does not use
+deadlines would show nothing at all under a filter, and the question is worth
+answering either way.
+
+** Signals
+
+Work that exists but has not been planned for.
 
 | Signal              | What it catches                                          |
 |---------------------+----------------------------------------------------------|
@@ -751,6 +888,8 @@ Work that exists but has not been planned for. Shown on the plan board.
 |                     | subtracted from nothing and warns about nothing           |
 | Unreadable estimate | an =EFFORT= Org itself cannot parse, which breaks the      |
 |                     | agenda outright (see below)                              |
+| Cannot be done here | planned for today, but today is worked from somewhere    |
+|                     | that cannot do it                                        |
 | Won't fit today     | promised for today, and longer than any gap that remains  |
 | Meetings, unprepared| an invitation implies preparation and follow-up that no    |
 |                     | one has budgeted for                                      |
@@ -772,7 +911,7 @@ heading with =:EFFORT: whenever= takes down the whole of =C-c a a= with a
 message naming neither the file nor the heading. The board is built by walking
 the files rather than by building an agenda, so it still works when the agenda
 does not: when =C-c a a= dies with /Invalid duration format/, =M-x
-org-foresight-signals-list= is what tells you which heading to go and fix.
+org-foresight-board= is what tells you which heading to go and fix.
 (=2h=, =90= and =0:30= are all fine; it is words and stray punctuation that are
 not.)
 
