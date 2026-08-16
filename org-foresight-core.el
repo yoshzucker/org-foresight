@@ -745,7 +745,7 @@ time.  The title is passed through `substitute-command-keys'; see
   :type '(choice (const :tag "None" nil) plist)
   :group 'org-foresight)
 
-(defun org-foresight--check-block (spec anchor forward taken off earliest)
+(defun org-foresight--check-block (spec anchor forward taken off bound)
   "Return the block SPEC asks for, placed against ANCHOR, or nil.
 
 FORWARD means the check begins at ANCHOR and slides later when something is
@@ -754,20 +754,44 @@ same rule the journeys are placed by, and for the same reason: what is fixed
 is the moment being sat against, and the search goes away from it only as far
 as it must.
 
+BOUND is how far that may go -- the other end of the working day.  A journey
+is allowed past it, because a drive that runs into the evening is a drive
+that happens; a check is not, because a look at the day taken after the day
+is over is not a look at the day.
+
 TAKEN and OFF are what may not be written over -- what is already booked, and
 the breaks the day declared.  A check is work, so an hour set aside for lunch
-is no more available to it than it is to a journey."
+is no more available to it than it is to a journey.
+
+A day with nowhere to put one gets it anyway, sitting on whatever is in the
+way and marked as not fitting.  That is the same answer a journey that cannot
+be made gets, and for the stronger reason: the day this happens on is the day
+the check would have caught something, and a package that quietly dropped it
+would be silent exactly when it was needed."
   (when-let* ((spec)
               (mins (or (plist-get spec :minutes) 0))
               ((> mins 0)))
-    (let ((slot (if forward
-                    (org-foresight--travel-slot-from anchor mins taken off)
-                  (org-foresight--travel-slot anchor mins taken earliest off))))
+    (let* ((slot (if forward
+                     (org-foresight--travel-slot-from anchor mins taken off)
+                   (org-foresight--travel-slot anchor mins taken bound off)))
+           ;; The forward search slides until it finds room and would happily
+           ;; leave the day to do it.  Past the bound there is nothing left to
+           ;; look at, so it goes back to sitting against the anchor and says
+           ;; it does not fit -- which is what the backward search already
+           ;; does when it runs out of day.
+           (slot (if (and forward bound (time-less-p bound (cdr slot)))
+                     (cons anchor (time-add anchor (* 60 mins)))
+                   slot))
+           (clash (seq-some (lambda (iv)
+                              (and (time-less-p (car slot) (cdr iv))
+                                   (time-less-p (car iv) (cdr slot))))
+                            (append taken off))))
       (list :kind 'check
             :title (or (plist-get spec :title) "check")
             :marker nil
             :effort (float mins)
             :start (car slot) :end (cdr slot)
+            :wont-fit (and clash t)
             :place nil :location nil :category nil))))
 
 (defun org-foresight--check-blocks (day legs ledger)
@@ -794,16 +818,20 @@ the order -- the journeys are settled first, and the checks take what is left
                         (list (cons opens closes)) work)))
              out)
         (when-let ((b (org-foresight--check-block
-                       org-foresight-check-in opens t taken off nil)))
+                       org-foresight-check-in opens t taken off closes)))
           (push b out)
           (push (cons (plist-get b :start) (plist-get b :end)) taken))
         (when-let ((b (org-foresight--check-block
                        org-foresight-check-out closes nil taken off
-                       ;; Not before the last stretch of work began: a day
-                       ;; whose afternoon is full is a day with no room for
-                       ;; this, and saying so is better than moving it to the
-                       ;; morning, where it would be a check on nothing.
-                       (car (car (last work))))))
+                       ;; Not before the working day began, and no nearer than
+                       ;; that.  A day solid from one o'clock has its last
+                       ;; free ten minutes at ten to twelve, and that is worth
+                       ;; being told: after noon you are gone.  Stopping at
+                       ;; the last stretch of work instead would have said it
+                       ;; on a day that breaks for lunch and not on the same
+                       ;; day undeclared, which is a rule about the setting
+                       ;; rather than about the day.
+                       opens)))
           (push b out))
         (nreverse out)))))
 

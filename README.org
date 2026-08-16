@@ -72,10 +72,11 @@ records the value and loses the reason.
         org-foresight-check-out
         '(:minutes 10 :title "before you leave \\[org-foresight-board]"))
 
-  ;; The agenda's left gutter carries two brackets -- the working hours and
-  ;; the hours away from home -- so the prefix needs four leading spaces.
+  ;; The agenda's left gutter carries the margin and two brackets -- the
+  ;; working hours and the hours away from home -- so the prefix needs five
+  ;; leading spaces.
   (setq org-agenda-prefix-format
-        '((agenda . "    %-8.8c%?-12t% s%?-5e")))
+        '((agenda . "     %-8.8c%?-12t% s%?-5e")))
 
   ;; Categories that are life rather than work.  They fill the day but never
   ;; count against capacity, and are never reported as work that escaped.
@@ -591,19 +592,20 @@ not absorbed silently — it appears as =borrowed=, and says so.
 
 *** The spine
 
-The working hours are bracketed down the agenda's left edge, in the column
-every prefix already begins with:
+The working hours are bracketed down the agenda's left edge, one column in —
+the margin every block's body starts at, because the listing is a body like
+any other and the frame edge belongs to the badges:
 
 #+begin_example
-┌          9:00...... work starts ────────────
-│          9:00-9:30  0:30 free · 0:29 usable
-│ meeting  9:30-9:45  Standup
-└         12:00...... work pauses ────────────
-          12:15-12:45 Vendor call            ← outside the bracket
-┌         13:00...... work resumes ────────────
-│         13:00-17:30 4:30 free · 4:25 usable
-└         17:30...... work ends ────────────
-          19:00-20:30 Dinner
+ ┌          9:00...... work starts ────────────
+ │          9:00-9:30  0:30 free · 0:29 usable
+ │ meeting  9:30-9:45  Standup
+ └         12:00...... work pauses ────────────
+           12:15-12:45 Vendor call            ← outside the bracket
+ ┌         13:00...... work resumes ────────────
+ │         13:00-17:30 4:30 free · 4:25 usable
+ └         17:30...... work ends ────────────
+           19:00-20:30 Dinner
 #+end_example
 
 A day in pieces reads as pieces: two stretches of work are two brackets, and
@@ -611,7 +613,7 @@ what falls in the declared break sits visibly outside them. The corners are
 what make that work — a plain bar would say only that some rows are work,
 without saying where a stretch begins.
 
-The glyph *replaces* the first column rather than being inserted into it, so
+The glyph *replaces* the blank in that column rather than being inserted, so
 no column moves; where that column is not blank, the line is left alone.
 =org-foresight-agenda-spine= turns it off.
 
@@ -622,14 +624,14 @@ unmarked: it is the state the day returns to, and marking it would mark most
 of every day.
 
 #+begin_example
-┌            9:00...... work starts ────────────
-│   travel   9:00-10:00 → office        ← the road belongs to neither end
-│ ┌ check   10:00-10:10 look at the day
-│ │ meeting 11:00-11:30 Standup
-│ │        12:00...... work pauses ────────────
-│ └ check   16:20-16:30 before you leave
-│   travel  16:30-17:30 → home
-└           17:30...... work ends ────────────
+ ┌            9:00...... work starts ────────────
+ │   travel   9:00-10:00 → office       ← the road belongs to neither end
+ │ ┌ check   10:00-10:10 look at the day
+ │ │ meeting 11:00-11:30 Standup
+ │ │        12:00...... work pauses ────────────
+ │ └ check   16:20-16:30 before you leave
+ │   travel  16:30-17:30 → home
+ └           17:30...... work ends ────────────
 #+end_example
 
 Both journeys fall outside it, and that is the point: an hour spent getting
@@ -637,10 +639,12 @@ somewhere is not an hour spent there, and a bracket drawn around the drive
 would offer those minutes for work that needs the place. An errand covering a
 single row is drawn =├=, a bracket with both corners in one cell.
 
-It needs a column of its own, so the prefix wants four leading spaces:
+It needs a column of its own and a blank after it, so the prefix wants five
+leading spaces — the margin, two brackets, the blank between them, and the
+usual gap before the text:
 
 #+begin_src emacs-lisp
-(setq org-agenda-prefix-format '((agenda . "    %-8.8c%?-12t% s%?-5e")))
+(setq org-agenda-prefix-format '((agenda . "     %-8.8c%?-12t% s%?-5e")))
 #+end_src
 
 Without them nothing is drawn — all or nothing, decided once from the
@@ -648,6 +652,9 @@ formatter rather than line by line, because a bracket that appeared on a day
 of hour lines and vanished on a day with entries in it would read as a fault
 rather than as a setting nobody turned on.
 =org-foresight-agenda-place-spine= turns it off outright.
+
+The first bracket asks less: any prefix leaves its column blank, and three
+leading spaces are enough to keep it clear of the text.
 
 An overcommitted day is drawn past the width with =┃= where the span actually
 ended, rather than being scaled back until it fits. The one day that must not
@@ -833,6 +840,7 @@ and a check takes the first or last ten minutes the day has left:
 | home day                                 | 09:00–09:10   | 17:20–17:30         |
 | office day                               | 10:00–10:10   | 16:20–16:30         |
 | office day, meeting there 17:00–18:00    | 10:00–10:10   | 16:50–17:00         |
+| office day, solid from 13:00             | 10:00–10:10   | 11:50–12:00         |
 
 There is no rule about arrivals and departures in that: the journeys are
 simply among the things a check may not be drawn over, so on an office day the
@@ -842,8 +850,19 @@ first, travel fitted around them, and the check before leaving sits in the
 last minutes of the day and pushes the journey home past the end of it. Every
 office day would borrow an hour of the evening for a commute that used to fit.
 
-A declared break is no more available to a check than to a drive, and where
-nothing is free the check is shown clashing rather than quietly dropped.
+The last row is the same rule on a day with nothing spare in its afternoon,
+and the answer is worth having: *ten to twelve is your last chance*, because
+after noon you are in meetings and then on the way home. The search runs back
+only as far as the working day began — and lands in the same place whether or
+not the day happens to declare a lunch break, which was not true when it
+stopped at the last stretch of work.
+
+A declared break is no more available to a check than to a drive. A day with
+no ten free minutes anywhere gets its check anyway, sitting on whatever is in
+the way and marked =⨯=: that day is the one the check would have caught
+something on, and it used to disappear from it silently — a band lying
+entirely under another is dropped when the day is made into a partition, so
+the row went missing from exactly the days that needed it.
 
 * The reserve, and the estimates
 

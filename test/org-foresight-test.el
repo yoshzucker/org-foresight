@@ -1069,14 +1069,17 @@ U+2718, which is why the mark for what will not fit is U+2A2F."
 The key is what the hand needs and is read from the keymap, so it stays true
 when the binding moves.  The name is what the sentence needs: a line ending
 in a bare `B' says nothing about what pressing it would get you, and this one
-exists to make somebody press it."
+exists to make somebody press it.
+
+The key goes in front, so the tail of the line reads the same whether or not
+anything is bound -- only the shortcut has appeared."
   (should (equal "M-x org-foresight-board"
                  (org-foresight-plan--command-hint 'org-foresight-board)))
   (with-temp-buffer
     (let ((map (make-sparse-keymap)))
       (define-key map "B" #'org-foresight-board)
       (use-local-map map)
-      (should (equal "B (org-foresight-board)"
+      (should (equal "B M-x org-foresight-board"
                      (org-foresight-plan--command-hint 'org-foresight-board))))))
 
 (ert-deftest org-foresight-test-verdict-extras ()
@@ -4610,12 +4613,12 @@ Read from the display property rather than from the text: the spine is drawn
 by showing a glyph in the space that is already there, so the buffer's own
 characters are unchanged -- which is the point of drawing it that way.
 
-COLUMN defaults to the first, where the working hours are bracketed; the
-hours away from home are bracketed two to the right of it."
+COLUMN defaults to the column the working hours are bracketed in; the hours
+away from home are bracketed two to the right of it."
   (with-current-buffer (or buffer org-agenda-buffer-name)
     (save-excursion
       (goto-char (point-min))
-      (let ((column (or column 0)) out)
+      (let ((column (or column org-foresight-agenda--spine-column)) out)
         (while (not (eobp))
           (let* ((cell (+ (line-beginning-position) column))
                  (shown (and (< cell (line-end-position))
@@ -4630,7 +4633,8 @@ hours away from home are bracketed two to the right of it."
     (save-excursion
       (goto-char (point-min))
       (when (re-search-forward regexp nil t)
-        (let* ((cell (+ (line-beginning-position) (or column 0)))
+        (let* ((cell (+ (line-beginning-position)
+                        (or column org-foresight-agenda--spine-column)))
                (shown (and (< cell (line-end-position))
                            (get-text-property cell 'display))))
           (if (stringp shown) shown " "))))))
@@ -4731,7 +4735,7 @@ often than it appears to."
   (declare (indent 1))
   `(org-foresight-test--with-agenda ,text
      (let ((org-agenda-prefix-format
-            '((agenda . "    %-8.8c%?-12t% s%?-5e") (todo . "  %-8c %-7e")
+            '((agenda . "     %-8.8c%?-12t% s%?-5e") (todo . "  %-8c %-7e")
               (tags . "  %i %-5c %-7e") (search . " %i %-12c")))
            (org-foresight-places '((office . "本社")))
            (org-foresight-home-place 'home)
@@ -4751,12 +4755,12 @@ work that needs the place."
            (list (cons (nth 6 (decode-time (org-foresight--day-start 0)))
                        'office))))
       (org-foresight-test--agenda)
-      (let ((place (org-foresight-test--spine-of nil 2)))
+      (let ((place (org-foresight-test--spine-of nil org-foresight-agenda--place-column)))
         (should (= 1 (seq-count (lambda (c) (= c ?┌)) place)))
         (should (= 1 (seq-count (lambda (c) (= c ?└)) place))))
       ;; the journeys themselves are outside it, at either end
-      (should (equal " " (org-foresight-test--shown-at "→ office" 2)))
-      (should (equal " " (org-foresight-test--shown-at "→ home" 2)))
+      (should (equal " " (org-foresight-test--shown-at "→ office" org-foresight-agenda--place-column)))
+      (should (equal " " (org-foresight-test--shown-at "→ home" org-foresight-agenda--place-column)))
       ;; and the working hours are still bracketed in the first column
       (should (string-match-p "┌" (org-foresight-test--spine-of))))))
 
@@ -4770,8 +4774,8 @@ the one thing a single errand does not do."
               (org-foresight-test--stamp 0 "15:00" "16:00") "\n")
     (let ((org-foresight-day-places nil))
       (org-foresight-test--agenda)
-      (should (equal "├" (org-foresight-test--shown-at "Review" 2)))
-      (should (equal " " (org-foresight-test--shown-at "→ office" 2))))))
+      (should (equal "├" (org-foresight-test--shown-at "Review" org-foresight-agenda--place-column)))
+      (should (equal " " (org-foresight-test--shown-at "→ office" org-foresight-agenda--place-column))))))
 
 (ert-deftest org-foresight-test-place-spine-needs-a-column-of-its-own ()
   "A prefix with no room for it loses the whole bracket, not part of one.
@@ -4789,7 +4793,7 @@ bracket with holes in it rather than as a setting nobody turned on."
                        'office))))
       (org-foresight-test--agenda)
       (should (string-match-p "\\`[[:space:]]*\\'"
-                              (org-foresight-test--spine-of nil 2)))
+                              (org-foresight-test--spine-of nil org-foresight-agenda--place-column)))
       ;; and the first bracket is untouched by its absence
       (should (string-match-p "┌" (org-foresight-test--spine-of))))))
 
@@ -4808,13 +4812,14 @@ about every day but one."
                           "%A" (time-add (current-time) (days-to-time 1)))))
           (ignore lines)
           ;; today is worked from the office and says so ...
-          (should (string-match-p "┌" (org-foresight-test--spine-of nil 2)))
+          (should (string-match-p "┌" (org-foresight-test--spine-of nil org-foresight-agenda--place-column)))
           ;; ... and tomorrow, worked from home, carries no bracket at all
           (with-current-buffer org-agenda-buffer-name
             (goto-char (point-min))
             (should (re-search-forward (concat "^" tomorrow) nil t))
             (let ((rest (org-foresight-test--spine-of
-                         (current-buffer) 2)))
+                         (current-buffer)
+                         org-foresight-agenda--place-column)))
               (should (string-match-p
                        "\\`[[:space:]]*\\'"
                        (substring rest (line-number-at-pos)))))))))))
@@ -4828,7 +4833,7 @@ about every day but one."
                        'office))))
       (org-foresight-test--agenda)
       (should (string-match-p "\\`[[:space:]]*\\'"
-                              (org-foresight-test--spine-of nil 2))))))
+                              (org-foresight-test--spine-of nil org-foresight-agenda--place-column))))))
 
 (ert-deftest org-foresight-test-e2e-redo-works-wherever-the-cursor-is ()
   "Every line must answer to `r', including the ones this package drew.
@@ -5165,15 +5170,22 @@ costing every entry in it."
        ,@body)))
 
 (defun org-foresight-test--checks (day)
-  "Return DAY's checks as \"HH:MM-HH:MM TITLE\" strings."
+  "Return DAY's checks as \"HH:MM-HH:MM TITLE\" strings, clashes marked.
+
+Read from the ledger, which is where the agenda reads them: a band lying
+under something else is dropped when the day is made a partition, and a check
+that will not fit is precisely the one worth asserting on."
   (let ((org-foresight--shape-cache nil))
     (mapcar (lambda (b)
-              (format "%s-%s %s"
+              (format "%s-%s %s%s"
                       (format-time-string "%H:%M" (plist-get b :start))
                       (format-time-string "%H:%M" (plist-get b :end))
-                      (plist-get b :title)))
+                      (plist-get b :title)
+                      (if (plist-get b :wont-fit) " wont-fit" "")))
             (seq-filter (lambda (b) (eq (plist-get b :kind) 'check))
-                        (org-foresight-day-blocks day)))))
+                        (append (aref (plist-get (org-foresight-scan 1 day) :ledger)
+                                      0)
+                                nil)))))
 
 (ert-deftest org-foresight-test-checks-sit-inside-the-journeys ()
   "Arrive, look at the day; look at it again, then set off back.
@@ -5229,6 +5241,54 @@ rather than dropped."
       (should (equal '("09:00-09:10 look at the day"
                        "17:20-17:30 before you leave")
                      (org-foresight-test--checks day))))))
+
+(ert-deftest org-foresight-test-the-last-free-ten-minutes-are-the-check ()
+  "An afternoon with nothing spare in it moves the check, and says when to.
+
+\"Ten to twelve\" is the answer worth having on a day like this: after noon
+you are in meetings and then on the way home, so that is the last moment
+there is.  Searched back only as far as the working day began -- and to the
+same place whether or not the day declares a lunch break, which was not true
+when it stopped at the last stretch of work."
+  (pcase-dolist (`(,hours . ,expected)
+                 '(((("09:00" . "17:30")) . "12:50-13:00 before you leave")
+                   ((("09:00" . "12:00") ("13:00" . "17:30"))
+                    . "11:50-12:00 before you leave")))
+    (org-foresight-test--with-checks
+        (concat "* All-hands\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                "<2026-08-10 Mon 13:00-15:30>\n"
+                "* Client review\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                "<2026-08-10 Mon 15:30-17:30>\n")
+      (let ((day (org-foresight-test--ts 0 0 10))
+            (org-foresight-work hours)
+            (org-foresight-day-places nil))
+        ;; The two answers differ by exactly the declared break, which is the
+        ;; rule working rather than failing: an hour set aside for lunch is
+        ;; not ten free minutes, so the day that declares one has its last
+        ;; chance an hour earlier.
+        (should (equal expected (cadr (org-foresight-test--checks day))))))))
+
+(ert-deftest org-foresight-test-a-check-with-nowhere-to-go-is-still-shown ()
+  "A day without ten free minutes anywhere is the day this must not go quiet.
+
+It went quiet: the check landed on top of what filled the day, and a band
+lying entirely under another is dropped when the day is made into a partition
+-- so the row vanished from exactly the day worth telling about.  It comes
+from the ledger now, drawn at its full length and marked like a journey that
+cannot be made."
+  (org-foresight-test--with-checks
+      (concat "* Marathon\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              "<2026-08-10 Mon 09:00-17:30>\n")
+    (let ((day (org-foresight-test--ts 0 0 10))
+          (org-foresight-day-places nil))
+      (should (equal '("09:00-09:10 look at the day wont-fit"
+                       "17:20-17:30 before you leave wont-fit")
+                     (org-foresight-test--checks day)))
+      ;; and the row reaches the agenda, which is where it went missing
+      (should (seq-find (lambda (r) (string-match-p "before you leave" r))
+                        (org-foresight-agenda--checks
+                         (aref (plist-get (org-foresight-scan 1 day) :ledger)
+                               0)))))))
 
 (ert-deftest org-foresight-test-checks-are-off-until-they-are-asked-for ()
   "Nothing is booked by default.
