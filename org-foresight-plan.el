@@ -672,12 +672,14 @@ binding changes.  The name is what the sentence needs: a command called
 and a bare `B\=' tells them nothing at all.
 
 Where nothing is bound, `substitute-command-keys\=' already answers with
-\\[execute-extended-command] and the name, so that answer is used as it
-stands rather than having the name appended to it twice."
+\\[execute-extended-command] and the name, and that answer is used as it
+stands.  Where something is, the key goes in front of it rather than the name
+into brackets behind: what follows is then the same words in the same order
+either way, and only the shortcut has appeared."
   (let ((keys (substitute-command-keys (format "\\[%s]" command))))
     (if (string-prefix-p "M-x " keys)
         keys
-      (format "%s (%s)" keys command))))
+      (format "%s M-x %s" keys command))))
 
 (defun org-foresight-plan--verdict-line ()
   "Return a one-line summary of what is unsettled, or nil when nothing is.

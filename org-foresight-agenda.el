@@ -199,12 +199,23 @@ A call you only have to hear, or somebody else\'s fixture: both sit in the
 day without competing for it, and a clash reported between them and real work
 is a clash nobody has to resolve.")
 
-(defconst org-foresight-agenda--place-column 2
+(defconst org-foresight-agenda--spine-column 1
+  "The column the working hours are bracketed in.
+
+One, not zero, and for the same reason every block this package draws starts
+there: the frame edge belongs to the badges, and an eye running down it
+should meet section headings and nothing else.  The listing is content, so it
+begins where content begins.
+
+Every ordinary agenda prefix leaves this column blank -- Org's own default
+starts with two spaces -- so the first bracket costs a reader nothing.")
+
+(defconst org-foresight-agenda--place-column 3
   "The column the hours away from home are bracketed in.
 
-Two, not one: the working hours have the first, and a blank between the two
-brackets keeps them readable as two.  A prefix therefore needs four leading
-spaces for both of them and the usual gap before the text.")
+Two to the right of the first, with a blank between them so the two read as
+two.  A prefix therefore needs five leading spaces: one for the margin, two
+brackets, the blank between them, and the usual gap before the text.")
 
 (defvar-local org-foresight-agenda--gutter nil
   "Whether this buffer's prefix leaves room for the second bracket.
@@ -300,8 +311,15 @@ longer than it is."
           (and trimmed org-foresight-agenda-wont-fit)))))
    bands))
 
-(defun org-foresight-agenda--checks (bands)
-  "Return the rows for the two ends of the day among BANDS.
+(defun org-foresight-agenda--checks (ledger)
+  "Return the rows for the two ends of the day among LEDGER.
+
+Read from the ledger rather than from the day's bands, because a band is
+trimmed to keep the day a partition and one lying entirely under something
+else is dropped altogether.  That is right for a picture of the day and wrong
+for this: a check with nowhere to go is the one a day most needs to be told
+about, and it would have gone missing on exactly the days it mattered.  Drawn
+at its full length and marked, like a journey that cannot be made.
 
 The title goes through `substitute-command-keys', so a check can name the key
 that performs it and go on naming the right one after the key has moved.  It
@@ -314,8 +332,9 @@ day, and this one row is an instruction."
         (substitute-command-keys (or (plist-get b :title) "check"))
         "check"
         (org-foresight-agenda--span (plist-get b :start) (plist-get b :end))
-        'org-foresight-agenda-derived)))
-   bands))
+        'org-foresight-agenda-derived nil nil
+        (and (plist-get b :wont-fit) org-foresight-agenda-wont-fit))))
+   ledger))
 
 (defun org-foresight-agenda--keep (cap)
   "Return the fraction of a gap that survives the reserve, given CAP.
@@ -699,7 +718,7 @@ is what puts a gap above the candidates hanging off it."
                 (append (org-foresight-agenda--mark-rows list bands cap ledger)
                         (org-foresight-agenda--edges cap day)
                         (org-foresight-agenda--travel bands)
-                        (org-foresight-agenda--checks bands)
+                        (org-foresight-agenda--checks ledger)
                         (org-foresight-agenda--gaps bands cap ledger)))
                ledger)))
     ;; Where the body is, kept for the spine to draw when the buffer is
@@ -708,13 +727,14 @@ is what puts a gap above the candidates hanging off it."
     ;; a fresh scan of every file for every day on the page.
     (setf (alist-get (time-to-days day) org-foresight-agenda--places nil nil #'=)
           (org-foresight-day-place-spans day bands))
-    ;; And whether the page has a column to draw it in, asked of the formatter
-    ;; while it is still compiled for this block rather than of the finished
-    ;; lines, where a day of nothing but hour lines would answer yes.
+    ;; And whether the page has a column to draw it in -- its own, and a blank
+    ;; after it.  Asked of the formatter while it is still compiled for this
+    ;; block rather than of the finished lines, where a day of nothing but
+    ;; hour lines would answer yes.
     (setq org-foresight-agenda--gutter
           (let ((probe (org-foresight-agenda--item "x" "c" "00:00")))
             (and probe (> (or (string-match "[^ ]" probe) 0)
-                          org-foresight-agenda--place-column))))
+                          (1+ org-foresight-agenda--place-column)))))
     ;; Read back off the finished rows rather than tracked while building
     ;; them: what the key has to explain is what ended up on the page, and
     ;; this cannot drift from it.  One day's worth -- the views that show a
@@ -814,12 +834,12 @@ not to see empty days does not get them back full of derived rows."
   "When non-nil, bracket the hours spent away from home beside the first.
 
 Drawn two columns to the right of the working hours, so the agenda's prefix
-needs four leading spaces for it to have anywhere to go:
+needs five leading spaces for it to have anywhere to go:
 
-    (setq org-agenda-prefix-format \\='((agenda . \"    %-8.8c%?-12t% s%?-5e\")))
+    (setq org-agenda-prefix-format \\='((agenda . \"     %-8.8c%?-12t% s%?-5e\")))
 
-Where that column is not blank nothing is drawn, so a narrower prefix loses
-the second bracket and keeps everything else."
+Where there is no room nothing is drawn, so a narrower prefix loses the
+second bracket and keeps everything else."
   :type 'boolean
   :group 'org-foresight)
 
@@ -855,16 +875,16 @@ depends on the order Org put them in, and that is not known until it has.
 The state is taken from the `org-foresight-edge' property the rules carry --
 not from their text, which is a label and may be reworded.
 
-The glyph is *shown* in the first column rather than written there: the space
-keeps its place in the buffer and only its appearance changes.  Nothing about
+The glyph is *shown* in its column rather than written there: the space keeps
+its place in the buffer and only its appearance changes.  Nothing about
 the text moves, which matters twice over.  Every column in this package -- the
 mark column above all -- is counted from the line\='s start, so an insertion
 would leave the marks a column adrift.  And Org stamps the whole buffer with
 the properties `org-agenda-redo\=' reads from under the cursor *before* this
 hook runs; text put in afterwards has none of them, and a cursor resting on
 such a character makes `r\=', `g\=' and every mode toggle quietly do nothing.
-Where the first column is not a blank, the line is left alone: something else
-is using it, and this is only decoration.
+Where the column is not a blank, the line is left alone: something else is
+using it, and this is only decoration.
 
 The second bracket is drawn in the same pass, from the spans handed over by
 `org-foresight-agenda--augment' and the time each line carries, rather than
@@ -962,8 +982,9 @@ argument: by then you are on it."
 (defun org-foresight-agenda--spine-region (open close &optional column)
   "Draw the bracket from the line at OPEN down to the line at CLOSE.
 
-COLUMN defaults to the first, which every agenda prefix leaves blank; a line
-using it anyway is skipped, since this is only decoration.
+COLUMN defaults to `org-foresight-agenda--spine-column', which every agenda
+prefix leaves blank; a line using it anyway is skipped, since this is only
+decoration.
 
 Any other column belongs to a page laid out for it, and there the bracket is
 drawn only where the whole of it fits.  All or nothing: a prefix with no room
@@ -971,8 +992,8 @@ should lose the second bracket outright rather than show it on the few rows
 whose text happens to start late, which reads as a bracket with holes in it
 rather than as a setting that has not been turned on."
   (save-excursion
-    (let ((column (or column 0)))
-      (when (or (zerop column)
+    (let ((column (or column org-foresight-agenda--spine-column)))
+      (when (or (= column org-foresight-agenda--spine-column)
                 (org-foresight-agenda--spine-room-p open close column))
         (goto-char open)
         (let ((done nil))
