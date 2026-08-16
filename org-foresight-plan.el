@@ -624,7 +624,7 @@ what the alternative to doing it now actually costs."
           #'org-foresight--invalidate-signals)
 
 ;;;###autoload
-(defun org-foresight-board ()
+(defun org-foresight-board (&optional _match)
   "Show what has not been settled: what only here can do, and what is unplanned.
 
 Not an agenda view.  The day has one of those and it is the day; this is the
@@ -637,7 +637,17 @@ round again.  The second is everything that exists and has not been planned
 for.
 
 Every row carries its entry\'s marker, so \\[org-agenda-schedule] and the rest
-of the agenda\'s vocabulary work here as they do in the agenda itself."
+of the agenda\'s vocabulary work here as they do in the agenda itself.
+
+MATCH is taken and ignored, so this can be given to
+`org-agenda-custom-commands\=' as the FUNCTION of an entry and reached from
+the dispatcher:
+
+    (\"b\" \"Board\" org-foresight-board \"\")
+
+The dispatcher calls its function with the entry\='s match string, and a
+command that refused one would need a wrapper in everybody\='s config that did
+nothing but drop it."
   (interactive)
   (let ((buffer (get-buffer-create "*Org Foresight Board*")))
     (with-current-buffer buffer
