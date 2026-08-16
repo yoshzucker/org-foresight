@@ -1393,10 +1393,14 @@ a signal and acting on it is not interrupted by the display jumping."
   (advice-add cmd :after #'org-foresight-report-refresh))
 
 (defun org-foresight--diagnose-timed (scan)
-  "Return the entries of SCAN's first day that sit at a time of their own."
+  "Return the entries of SCAN's first day that sit at a time of their own.
+
+Derived blocks are left out: what this answers is whether the files say what
+you think they say, and a journey or a check is this package talking to
+itself."
   (seq-filter (lambda (e)
                 (and (plist-get e :start)
-                     (not (eq (plist-get e :kind) 'travel))))
+                     (not (memq (plist-get e :kind) '(travel check)))))
               (and scan (aref (plist-get scan :ledger) 0))))
 
 (defun org-foresight--diagnose-state (day)

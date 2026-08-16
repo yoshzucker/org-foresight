@@ -700,6 +700,113 @@ is counted as borrowed rather than being forced into hours it cannot fit."
           (setq found (cons start end)))))
     (or found latest)))
 
+;;;; The two ends of the day
+;; Looking at the day when you arrive, and looking at it again before you go,
+;; are not overhead: they are the two moments the rest of this package is for.
+;; They take ten minutes each and appear nowhere, which means those twenty
+;; minutes are taken from something else every single day, silently -- the same
+;; arithmetic that makes an unbooked commute turn into a day that overruns.
+;;
+;; Where they go follows from the journeys rather than competing with them: the
+;; journeys are settled first, and a check takes the first or last ten minutes
+;; the day has left.  That is all the rule there is, and it lands them where a
+;; person would put them -- after arriving, and before setting off back -- for
+;; the plain reason that the drive is one of the things they cannot be drawn
+;; over.
+;;
+;; The other order was tried and is wrong.  Checks first, travel fitted around
+;; them, and the check before leaving sits in the last minutes of the day and
+;; pushes the journey home past the end of it: every office day would borrow an
+;; hour of the evening for a commute that used to fit.
+
+(defcustom org-foresight-check-in nil
+  "The look at the day taken once you are where the day is worked from.
+A plist of :minutes and :title, or nil -- the default -- to book no such
+time.
+
+    (setq org-foresight-check-in
+          \\='(:minutes 10 :title \"look at the day \\\\[org-agenda-list]\"))
+
+Off unless asked for, because unlike a journey this is not derived from
+anything written down: whether the day opens with a ritual, and how long it
+takes, is a fact about a person and not about their calendar.
+
+The title is passed through `substitute-command-keys', so it can name the way
+to do the thing rather than only the thing -- and go on naming the right key
+after the key has moved."
+  :type '(choice (const :tag "None" nil) plist)
+  :group 'org-foresight)
+
+(defcustom org-foresight-check-out nil
+  "The look at the day taken in the last minutes before you go.
+A plist of :minutes and :title, or nil -- the default -- to book no such
+time.  The title is passed through `substitute-command-keys'; see
+`org-foresight-check-in'."
+  :type '(choice (const :tag "None" nil) plist)
+  :group 'org-foresight)
+
+(defun org-foresight--check-block (spec anchor forward taken off earliest)
+  "Return the block SPEC asks for, placed against ANCHOR, or nil.
+
+FORWARD means the check begins at ANCHOR and slides later when something is
+in the way; otherwise it ends at ANCHOR and slides earlier.  Which is the
+same rule the journeys are placed by, and for the same reason: what is fixed
+is the moment being sat against, and the search goes away from it only as far
+as it must.
+
+TAKEN and OFF are what may not be written over -- what is already booked, and
+the breaks the day declared.  A check is work, so an hour set aside for lunch
+is no more available to it than it is to a journey."
+  (when-let* ((spec)
+              (mins (or (plist-get spec :minutes) 0))
+              ((> mins 0)))
+    (let ((slot (if forward
+                    (org-foresight--travel-slot-from anchor mins taken off)
+                  (org-foresight--travel-slot anchor mins taken earliest off))))
+      (list :kind 'check
+            :title (or (plist-get spec :title) "check")
+            :marker nil
+            :effort (float mins)
+            :start (car slot) :end (cdr slot)
+            :place nil :location nil :category nil))))
+
+(defun org-foresight--check-blocks (day legs ledger)
+  "Return DAY's two checks, given its journeys LEGS and its LEDGER.
+
+The first ten minutes of the working day that are free, and the last ten that
+are.  Nothing needs to know about arrivals and departures: the journeys are
+already among the things a check may not be drawn over, so on a day worked
+from the office the first free minutes are the ones after you get there and
+the last are the ones before you set off back.  What has to be true is only
+the order -- the journeys are settled first, and the checks take what is left
+-- and that is a fact about when this is called."
+  (let* ((work (org-foresight-work-intervals day)))
+    (when work
+      (let* ((opens (car (car work)))
+             (closes (cdr (car (last work))))
+             (taken (seq-keep (lambda (e)
+                                (and (plist-get e :start)
+                                     (cons (plist-get e :start)
+                                           (plist-get e :end))))
+                              (append ledger legs)))
+             (off (and (cdr work)
+                       (org-foresight--intervals-subtract
+                        (list (cons opens closes)) work)))
+             out)
+        (when-let ((b (org-foresight--check-block
+                       org-foresight-check-in opens t taken off nil)))
+          (push b out)
+          (push (cons (plist-get b :start) (plist-get b :end)) taken))
+        (when-let ((b (org-foresight--check-block
+                       org-foresight-check-out closes nil taken off
+                       ;; Not before the last stretch of work began: a day
+                       ;; whose afternoon is full is a day with no room for
+                       ;; this, and saying so is better than moving it to the
+                       ;; morning, where it would be a check on nothing.
+                       (car (car (last work))))))
+          (push b out))
+        (nreverse out)))))
+
 ;;;; Attention
 ;; Occupying time and demanding all of it are not the same thing, and treating
 ;; them as one is what makes a day look impossible when it is merely full.
@@ -965,14 +1072,19 @@ a done-type keyword such as DELEG drops out too."
       ;; Journeys are derived last, from the placed entries of the day, and
       ;; then booked like anything else -- so free time, capacity and
       ;; placement all account for the commute without knowing about it.
-      (let ((day-time (time-add from0 (days-to-time i))))
-        (dolist (tb (org-foresight--travel-blocks
-                     day-time
-                     (sort (copy-sequence (aref ledger i))
-                           (lambda (a b)
-                             (let ((sa (plist-get a :start))
-                                   (sb (plist-get b :start)))
-                               (and sa sb (time-less-p sa sb)))))))
+      ;;
+      ;; The checks come after the journeys and from them, because where they
+      ;; belong is the inner end of each: you look at the day once you have
+      ;; arrived, and again before you set off back.
+      (let* ((day-time (time-add from0 (days-to-time i)))
+             (entries (sort (copy-sequence (aref ledger i))
+                            (lambda (a b)
+                              (let ((sa (plist-get a :start))
+                                    (sb (plist-get b :start)))
+                                (and sa sb (time-less-p sa sb))))))
+             (legs (org-foresight--travel-blocks day-time entries)))
+        (dolist (tb (append legs (org-foresight--check-blocks
+                                  day-time legs entries)))
           (push (cons (plist-get tb :start) (plist-get tb :end)) (aref busy i))
           (push tb (aref ledger i))))
       (aset busy i (org-foresight--intervals-normalize (aref busy i)))
@@ -1290,7 +1402,8 @@ any total taken over them is guaranteed to add up to the day."
                                        ;; time outside the span is just life.
                                        (list :borrowed
                                              (and (memq (plist-get occ :kind)
-                                                        '(meeting task travel))
+                                                        '(meeting task travel
+                                                                  check))
                                                   (not (org-foresight--within-p
                                                         trimmed n work)))
                                              ;; A band cut short to keep the
@@ -1463,6 +1576,52 @@ Never nil: a day nobody has declared is worked from
 -- where the body is that day -- which is what makes \"I am here now and will
 not be again until Wednesday\" a thing the day can say."
   (plist-get (org-foresight-day-shape day) :place))
+
+(defun org-foresight-day-place-spans (day &optional bands)
+  "Return when DAY is spent away from home, as ((START END . PLACE) ...).
+
+Where the body is, minute by minute, rather than where the day is worked
+from: the two differ on any day with a journey in it, and it is the first
+that answers \"can I do this now\".  Home is left out -- it is the state the
+day returns to, and marking it would mark most of every day.
+
+Read off the journeys, which is what makes the answer exact: a span runs from
+one arrival to the next departure, so the hours in transit belong to neither
+end.  An hour on a train is not an hour at the office, and a bracket drawn
+around both would say you could have done something there that you could not.
+
+BANDS default to DAY's, which costs a scan; pass them when they are already
+to hand."
+  (let* ((bands (or bands (org-foresight-day-blocks day)))
+         (legs (seq-sort-by (lambda (b) (float-time (plist-get b :start))) #'<
+                            (seq-filter (lambda (b)
+                                          (eq (plist-get b :kind) 'travel))
+                                        bands)))
+         (work (org-foresight-work-intervals day))
+         (base (org-foresight-day-place day))
+         (home org-foresight-home-place)
+         ;; Where the day begins.  Away from home it begins at home, because
+         ;; that is where the body slept -- but only if the journey in was
+         ;; actually made: where getting there costs nothing there is no leg
+         ;; to wait for, and the day is spent at its own place throughout.
+         (here (if (and legs (eq (plist-get (car legs) :place) base)
+                        (not (eq base home)))
+                   home
+                 base))
+         (from (if work (car (car work)) (car (plist-get (org-foresight-day-shape day)
+                                                         :awake))))
+         (until (if work (cdr (car (last work)))
+                  (cdr (plist-get (org-foresight-day-shape day) :awake))))
+         out)
+    (dolist (leg legs)
+      (let ((off (plist-get leg :start)))
+        (unless (or (eq here home) (not (time-less-p from off)))
+          (push (cons from (cons off here)) out))
+        (setq here (plist-get leg :place)
+              from (plist-get leg :end))))
+    (unless (or (eq here home) (not (time-less-p from until)))
+      (push (cons from (cons until here)) out))
+    (nreverse out)))
 
 (defun org-foresight-next-day-at (place &optional from horizon)
   "Return the next day at PLACE after FROM, or nil within HORIZON days.
@@ -2305,7 +2464,10 @@ reproducible, which is what lets this be tested at all."
           ('travel (if (plist-get b :borrowed)
                        (setq borrowed (+ borrowed mins))
                      (setq travel (+ travel mins))))
-          ((or 'meeting 'task)
+          ;; A check is booked work like any other: it is ten minutes of the
+          ;; day that cannot be spent twice, and the whole reason to derive it
+          ;; is that nothing was counting it.
+          ((or 'meeting 'task 'check)
            (if (plist-get b :borrowed)
                (setq borrowed (+ borrowed mins))
              (setq booked (+ booked mins))))

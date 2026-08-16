@@ -199,6 +199,33 @@ A call you only have to hear, or somebody else\'s fixture: both sit in the
 day without competing for it, and a clash reported between them and real work
 is a clash nobody has to resolve.")
 
+(defconst org-foresight-agenda--place-column 2
+  "The column the hours away from home are bracketed in.
+
+Two, not one: the working hours have the first, and a blank between the two
+brackets keeps them readable as two.  A prefix therefore needs four leading
+spaces for both of them and the usual gap before the text.")
+
+(defvar-local org-foresight-agenda--gutter nil
+  "Whether this buffer's prefix leaves room for the second bracket.
+
+Measured by formatting a row rather than by reading
+`org-agenda-prefix-format', which may be a function, differ per block, and in
+any case says nothing about where the text lands.  Measured once for the
+buffer rather than line by line, so the answer cannot be yes on a day of hour
+lines and no on a day with entries on it -- a bracket that comes and goes
+with what the day happened to contain reads as a fault rather than a
+setting.")
+
+(defvar-local org-foresight-agenda--places nil
+  "Alist of (ABSOLUTE-DAY . SPANS) for the days drawn in this buffer.
+
+Filled as each day is built and read once the buffer is finished, because
+those are two different passes over two different things -- the rows Org is
+about to sort, and the lines it ended up with.  Keyed by the day rather than
+kept as one list, so a view of a week draws each of its days from its own
+journeys.")
+
 (defvar org-foresight-agenda--marks nil
   "The marks the day last drawn actually used.
 
@@ -271,6 +298,23 @@ longer than it is."
           (plist-get b :marker)
           (plist-get b :stamp)
           (and trimmed org-foresight-agenda-wont-fit)))))
+   bands))
+
+(defun org-foresight-agenda--checks (bands)
+  "Return the rows for the two ends of the day among BANDS.
+
+The title goes through `substitute-command-keys', so a check can name the key
+that performs it and go on naming the right one after the key has moved.  It
+is the only text in this file that does: everything else here describes the
+day, and this one row is an instruction."
+  (seq-keep
+   (lambda (b)
+     (when (eq (plist-get b :kind) 'check)
+       (org-foresight-agenda--item
+        (substitute-command-keys (or (plist-get b :title) "check"))
+        "check"
+        (org-foresight-agenda--span (plist-get b :start) (plist-get b :end))
+        'org-foresight-agenda-derived)))
    bands))
 
 (defun org-foresight-agenda--keep (cap)
@@ -655,8 +699,22 @@ is what puts a gap above the candidates hanging off it."
                 (append (org-foresight-agenda--mark-rows list bands cap ledger)
                         (org-foresight-agenda--edges cap day)
                         (org-foresight-agenda--travel bands)
+                        (org-foresight-agenda--checks bands)
                         (org-foresight-agenda--gaps bands cap ledger)))
                ledger)))
+    ;; Where the body is, kept for the spine to draw when the buffer is
+    ;; finished.  Handed over rather than recomputed there: this is the one
+    ;; place the day's bands are already in hand, and asking again would mean
+    ;; a fresh scan of every file for every day on the page.
+    (setf (alist-get (time-to-days day) org-foresight-agenda--places nil nil #'=)
+          (org-foresight-day-place-spans day bands))
+    ;; And whether the page has a column to draw it in, asked of the formatter
+    ;; while it is still compiled for this block rather than of the finished
+    ;; lines, where a day of nothing but hour lines would answer yes.
+    (setq org-foresight-agenda--gutter
+          (let ((probe (org-foresight-agenda--item "x" "c" "00:00")))
+            (and probe (> (or (string-match "[^ ]" probe) 0)
+                          org-foresight-agenda--place-column))))
     ;; Read back off the finished rows rather than tracked while building
     ;; them: what the key has to explain is what ended up on the page, and
     ;; this cannot drift from it.  One day's worth -- the views that show a
@@ -740,19 +798,44 @@ not to see empty days does not get them back full of derived rows."
 ;; down the page.  A day that breaks has its working hours in two or three
 ;; pieces now, and "am I inside them" stopped being answerable from where a
 ;; row sits.
+;;
+;; Two brackets, side by side, answering the two questions a day of mixed
+;; places raises: am I working, and am I there.  The second is drawn from the
+;; journeys, so the hours in transit fall outside both ends of it -- being on
+;; the way to the office is not being at the office, and a bracket that
+;; included the journey would offer those hours for work that needs the place.
 
 (defcustom org-foresight-agenda-spine t
   "When non-nil, bracket the working hours down the agenda's left edge."
   :type 'boolean
   :group 'org-foresight)
 
-(defconst org-foresight-agenda-spine-glyphs '((open . ?┌) (mid . ?│) (close . ?└))
-  "The three characters the spine is drawn with.
+(defcustom org-foresight-agenda-place-spine t
+  "When non-nil, bracket the hours spent away from home beside the first.
+
+Drawn two columns to the right of the working hours, so the agenda's prefix
+needs four leading spaces for it to have anywhere to go:
+
+    (setq org-agenda-prefix-format \\='((agenda . \"    %-8.8c%?-12t% s%?-5e\")))
+
+Where that column is not blank nothing is drawn, so a narrower prefix loses
+the second bracket and keeps everything else."
+  :type 'boolean
+  :group 'org-foresight)
+
+(defconst org-foresight-agenda-spine-glyphs
+  '((open . ?┌) (mid . ?│) (close . ?└) (only . ?├))
+  "The characters the spine is drawn with.
 
 Box drawing rather than a block or a bar: the corners say where a stretch
 begins and ends, so two stretches read as two brackets instead of as one
-interrupted line.  All three are one cell wide in the fonts this is meant
-for, which the mark glyphs are chosen for too.")
+interrupted line.  All of them are one cell wide in the fonts this is meant
+for, which the mark glyphs are chosen for too.
+
+`only' is a stretch that begins and ends on the same row -- an hour somewhere
+else, with nothing above or below it there.  A bracket cannot have both
+corners in one cell, and `open' alone would say the stretch carries on down
+the page, which is the one thing it does not do.")
 
 (defface org-foresight-agenda-spine '((t :inherit shadow))
   "The bracket down the left edge marking the working hours.
@@ -781,19 +864,32 @@ the properties `org-agenda-redo\=' reads from under the cursor *before* this
 hook runs; text put in afterwards has none of them, and a cursor resting on
 such a character makes `r\=', `g\=' and every mode toggle quietly do nothing.
 Where the first column is not a blank, the line is left alone: something else
-is using it, and this is only decoration."
+is using it, and this is only decoration.
+
+The second bracket is drawn in the same pass, from the spans handed over by
+`org-foresight-agenda--augment' and the time each line carries, rather than
+from a property: which place a row belongs to is a question about when it is,
+and the rows that most need answering -- the grid's own hour lines -- are
+Org\='s and carry nothing of ours."
   (when (and org-foresight-agenda-spine
              org-foresight-agenda-inject
              (derived-mode-p 'org-agenda-mode))
     (let ((inhibit-read-only t)
           (open nil)                    ; row that began the current stretch
-          (last nil))                   ; last row seen inside it
+          (last nil)                    ; last row seen inside it
+          (spans nil)                   ; the day's time away from home
+          (span nil)                    ; the one the last row was inside
+          (pfrom nil) (plast nil))      ; and the rows it has covered
       (save-excursion
         (goto-char (point-min))
         (while (not (eobp))
-          (let ((edge (get-text-property (point) 'org-foresight-edge))
-                (ours (get-text-property (point) 'org-foresight-report))
-                (header (get-text-property (point) 'org-agenda-date-header)))
+          (let* ((edge (get-text-property (point) 'org-foresight-edge))
+                 (ours (get-text-property (point) 'org-foresight-report))
+                 (header (get-text-property (point) 'org-agenda-date-header))
+                 (day (and header (get-text-property (point) 'day)))
+                 (at (and (not ours)
+                          (get-text-property (point) 'time-of-day)))
+                 (now (and at spans (org-foresight-agenda--span-at at spans))))
             (cond
              ;; The report's own blocks are not part of the day's grid, and a
              ;; date line belongs to no stretch: either one ends whatever was
@@ -804,33 +900,98 @@ is using it, and this is only decoration."
               (when open
                 (org-foresight-agenda--spine-region open (point))
                 (setq open nil last nil)))
-             (open (setq last (point)))))
+             (open (setq last (point))))
+            ;; The place bracket runs while consecutive rows answer to the
+            ;; same span, so a journey -- which belongs to none -- closes the
+            ;; one before it and the arrival opens the next.
+            (unless (eq now span)
+              (when (and span pfrom)
+                (org-foresight-agenda--spine-region
+                 pfrom plast org-foresight-agenda--place-column))
+              (setq span now pfrom (and now (point))))
+            (when now (setq plast (point)))
+            ;; A new day brings its own spans.  Read here rather than tracked
+            ;; from the top, so a view of several days draws each from what
+            ;; that day's journeys were, not from the first day's.
+            (when header
+              (setq spans (and day (alist-get day org-foresight-agenda--places
+                                              nil nil #'=)))))
           (forward-line 1))
         ;; A stretch left open -- the day ended mid-bracket, which happens when
         ;; a filter hid the closing rule -- is still drawn, down to the last
         ;; row it reached.
-        (when (and open last) (org-foresight-agenda--spine-region open last))))))
+        (when (and open last) (org-foresight-agenda--spine-region open last))
+        (when (and span pfrom)
+          (org-foresight-agenda--spine-region
+           pfrom plast org-foresight-agenda--place-column))))))
 
 (add-hook 'org-agenda-finalize-hook #'org-foresight-agenda--draw-spine)
 
-(defun org-foresight-agenda--spine-region (open close)
-  "Draw the bracket from the line at OPEN down to the line at CLOSE."
+(defun org-foresight-agenda--span-at (at spans)
+  "Return the span among SPANS holding AT, the HHMM a row carries, or nil.
+
+Closed at the start and open at the end, so a row at the minute a journey
+leaves belongs to the road rather than to the place being left.  That is the
+minute the two would otherwise both claim, and the road has the better
+argument: by then you are on it."
+  (when (and org-foresight-agenda-place-spine org-foresight-agenda--gutter)
+    (seq-find (lambda (s)
+                (let ((from (org-foresight-agenda--minutes-of (car s)))
+                      (to (org-foresight-agenda--minutes-of (cadr s))))
+                  (and (<= from at) (< at to))))
+              spans)))
+
+(defun org-foresight-agenda--minutes-of (time)
+  "Return TIME as the HHMM integer Org files its rows under."
+  (string-to-number (format-time-string "%H%M" time)))
+
+(defun org-foresight-agenda--spine-room-p (open close column)
+  "Return non-nil when every line from OPEN to CLOSE is blank at COLUMN."
   (save-excursion
     (goto-char open)
-    (let ((done nil))
-      (while (not done)
+    (let ((room t) (done nil))
+      (while (and room (not done))
         (setq done (>= (point) close))
-        (when (eq (char-after) ?\s)
-          (let ((glyph (org-foresight-agenda--spine-glyph
-                        (cond ((= (point) open) 'open)
-                              (done 'close)
-                              (t 'mid)))))
-            (add-text-properties
-             (point) (1+ (point))
-             (list 'display (propertize (string glyph)
-                                        'face 'org-foresight-agenda-spine)
-                   'org-foresight-spine t))))
-        (forward-line 1)))))
+        (let ((cell (+ (point) column)))
+          (unless (and (< cell (line-end-position))
+                       (eq (char-after cell) ?\s))
+            (setq room nil)))
+        (forward-line 1))
+      room)))
+
+(defun org-foresight-agenda--spine-region (open close &optional column)
+  "Draw the bracket from the line at OPEN down to the line at CLOSE.
+
+COLUMN defaults to the first, which every agenda prefix leaves blank; a line
+using it anyway is skipped, since this is only decoration.
+
+Any other column belongs to a page laid out for it, and there the bracket is
+drawn only where the whole of it fits.  All or nothing: a prefix with no room
+should lose the second bracket outright rather than show it on the few rows
+whose text happens to start late, which reads as a bracket with holes in it
+rather than as a setting that has not been turned on."
+  (save-excursion
+    (let ((column (or column 0)))
+      (when (or (zerop column)
+                (org-foresight-agenda--spine-room-p open close column))
+        (goto-char open)
+        (let ((done nil))
+          (while (not done)
+            (setq done (>= (point) close))
+            (let ((cell (+ (point) column)))
+              (when (and (< cell (line-end-position))
+                         (eq (char-after cell) ?\s))
+                (let ((glyph (org-foresight-agenda--spine-glyph
+                              (cond ((and (= (point) open) done) 'only)
+                                    ((= (point) open) 'open)
+                                    (done 'close)
+                                    (t 'mid)))))
+                  (add-text-properties
+                   cell (1+ cell)
+                   (list 'display (propertize (string glyph)
+                                              'face 'org-foresight-agenda-spine)
+                         'org-foresight-spine t)))))
+            (forward-line 1)))))))
 
 (defconst org-foresight-agenda-attentions
   '(("blocking" . "needs all of you")
