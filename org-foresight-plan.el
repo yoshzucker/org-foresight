@@ -662,13 +662,29 @@ of the agenda\'s vocabulary work here as they do in the agenda itself."
 (define-obsolete-function-alias 'org-foresight-signals-list
   'org-foresight-board "0.2")
 
+(defun org-foresight-plan--command-hint (command)
+  "Return how to run COMMAND: the key it is bound to, and its name.
+
+Both, because they say different things.  The key is what the hand needs and
+is read from the keymap rather than written down, so it stays true when the
+binding changes.  The name is what the sentence needs: a command called
+`org-foresight-board\=' tells a reader what pressing the key will get them,
+and a bare `B\=' tells them nothing at all.
+
+Where nothing is bound, `substitute-command-keys\=' already answers with
+\\[execute-extended-command] and the name, so that answer is used as it
+stands rather than having the name appended to it twice."
+  (let ((keys (substitute-command-keys (format "\\[%s]" command))))
+    (if (string-prefix-p "M-x " keys)
+        keys
+      (format "%s (%s)" keys command))))
+
 (defun org-foresight-plan--verdict-line ()
   "Return a one-line summary of what is unsettled, or nil when nothing is.
 
 The daily agenda otherwise gives no hint that anything is outstanding, and a
 signal nobody is prompted to look at is not really being caught -- so the
-line names the way to look, resolved from the keymap rather than written
-down, and falls back to the command name where nothing is bound to it.
+line names the way to look.
 
 Work bound to where you are is counted separately even though the board holds
 both.  It is the one kind that stops being possible when you stand up, so a
@@ -685,7 +701,7 @@ thing at half past nine and at half past five."
        (when (> here 0)
          (format "%d need%s you here" here (if (= here 1) "s" "")))
        " · "
-       (substitute-command-keys "\\[org-foresight-board]")))))
+       (org-foresight-plan--command-hint 'org-foresight-board)))))
 
 (add-to-list 'org-foresight-verdict-extras #'org-foresight-plan--verdict-line)
 

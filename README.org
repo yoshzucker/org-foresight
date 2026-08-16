@@ -63,6 +63,20 @@ records the value and loses the reason.
                                       ((office . client) . 45))
         org-foresight-travel-default 45)
 
+  ;; The two ends of the day, off by default because they are a habit rather
+  ;; than something the calendar knows.  Ten minutes on arrival to see what
+  ;; the day is, and ten before leaving to see what only being here can
+  ;; settle.  The keys are resolved when the row is drawn.
+  (setq org-foresight-check-in
+        '(:minutes 10 :title "look at the day \\[org-agenda-list]")
+        org-foresight-check-out
+        '(:minutes 10 :title "before you leave \\[org-foresight-board]"))
+
+  ;; The agenda's left gutter carries two brackets -- the working hours and
+  ;; the hours away from home -- so the prefix needs four leading spaces.
+  (setq org-agenda-prefix-format
+        '((agenda . "    %-8.8c%?-12t% s%?-5e")))
+
   ;; Categories that are life rather than work.  They fill the day but never
   ;; count against capacity, and are never reported as work that escaped.
   (setq org-foresight-private-categories '("family" "personal"))
@@ -341,8 +355,14 @@ listing:
 A badge is read by *scanning* rather than by reading, so it gets the frame
 edge to itself: an eye running down the left of the buffer hits section
 headings and nothing else. Everything a section contains starts one column
-in, which is also where Org's agenda puts its lines. Depth past that means
-one thing only: this line belongs to the one above it.
+in. Depth past that means one thing only: this line belongs to the one above
+it.
+
+These are the blocks' own columns and are not tied to the agenda's prefix,
+which is the reader's to set and carries the two brackets besides. A page
+whose listing begins further in is not a page whose headings should move: the
+badges are a column down the frame, and a frame that shifted with a setting
+would stop being one.
 
 That is why the bars are not flush left. A bar is not a label; it is the
 picture of the numbers beside it, and it belongs at the same margin as the
@@ -595,6 +615,40 @@ The glyph *replaces* the first column rather than being inserted into it, so
 no column moves; where that column is not blank, the line is left alone.
 =org-foresight-agenda-spine= turns it off.
 
+*** The second bracket — where the body is
+
+Beside it, two columns to the right, the hours spent away from home. Home is
+unmarked: it is the state the day returns to, and marking it would mark most
+of every day.
+
+#+begin_example
+┌            9:00...... work starts ────────────
+│   travel   9:00-10:00 → office        ← the road belongs to neither end
+│ ┌ check   10:00-10:10 look at the day
+│ │ meeting 11:00-11:30 Standup
+│ │        12:00...... work pauses ────────────
+│ └ check   16:20-16:30 before you leave
+│   travel  16:30-17:30 → home
+└           17:30...... work ends ────────────
+#+end_example
+
+Both journeys fall outside it, and that is the point: an hour spent getting
+somewhere is not an hour spent there, and a bracket drawn around the drive
+would offer those minutes for work that needs the place. An errand covering a
+single row is drawn =├=, a bracket with both corners in one cell.
+
+It needs a column of its own, so the prefix wants four leading spaces:
+
+#+begin_src emacs-lisp
+(setq org-agenda-prefix-format '((agenda . "    %-8.8c%?-12t% s%?-5e")))
+#+end_src
+
+Without them nothing is drawn — all or nothing, decided once from the
+formatter rather than line by line, because a bracket that appeared on a day
+of hour lines and vanished on a day with entries in it would read as a fault
+rather than as a setting nobody turned on.
+=org-foresight-agenda-place-spine= turns it off outright.
+
 An overcommitted day is drawn past the width with =┃= where the span actually
 ended, rather than being scaled back until it fits. The one day that must not
 look workable is the one that is not.
@@ -748,6 +802,48 @@ video link, and a link says nothing about where the body has to be — so an
 unhelpful =LOCATION= leaves you where you already were rather than inventing a
 journey. Set =org-foresight-places= to map locations onto places, and
 =org-foresight-travel-matrix= to say what moving between them costs.
+
+*** The two ends of the day
+
+Looking at the day when you arrive, and looking at it again before you go, are
+not overhead — they are the two moments the rest of this package is for. They
+take ten minutes each and appear nowhere, which means those twenty minutes
+come out of something else every single day, silently. The same arithmetic as
+an unbooked commute.
+
+#+begin_src emacs-lisp
+(setq org-foresight-check-in
+      '(:minutes 10 :title "look at the day \\[org-agenda-list]")
+      org-foresight-check-out
+      '(:minutes 10 :title "before you leave \\[org-foresight-board]"))
+#+end_src
+
+Both are nil by default. Unlike a journey this is not derived from anything
+written down: whether a day opens with a ritual, and how long it takes, is a
+fact about a person rather than about their calendar.
+
+The title is passed through =substitute-command-keys=, so it can name the way
+to do the thing and go on naming the right key after the key has moved.
+
+*Where they go is the whole of the design.* The journeys are settled first,
+and a check takes the first or last ten minutes the day has left:
+
+| The day (work 09:00–17:30, an hour away) | In            | Out                 |
+|------------------------------------------+---------------+---------------------|
+| home day                                 | 09:00–09:10   | 17:20–17:30         |
+| office day                               | 10:00–10:10   | 16:20–16:30         |
+| office day, meeting there 17:00–18:00    | 10:00–10:10   | 16:50–17:00         |
+
+There is no rule about arrivals and departures in that: the journeys are
+simply among the things a check may not be drawn over, so on an office day the
+first free minutes are the ones after you get there and the last are the ones
+before you set off back. The other order was tried and is wrong — checks
+first, travel fitted around them, and the check before leaving sits in the
+last minutes of the day and pushes the journey home past the end of it. Every
+office day would borrow an hour of the evening for a commute that used to fit.
+
+A declared break is no more available to a check than to a drive, and where
+nothing is free the check is shown clashing rather than quietly dropped.
 
 * The reserve, and the estimates
 
