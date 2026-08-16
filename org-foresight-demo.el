@@ -451,6 +451,8 @@ from, and there is no undo for that."
                     :workdays org-foresight-workdays
                     :work org-foresight-work
                     :day-places org-foresight-day-places
+                    :check-in org-foresight-check-in
+                    :check-out org-foresight-check-out
                     :surge-cache org-foresight-surge-cache-file
                     :leak-cache org-foresight-leak-cache-file
                     :bias-cache org-foresight-bias-cache-file))
@@ -480,6 +482,13 @@ from, and there is no undo for that."
         (setq org-foresight-day-places
               (list (cons (nth 6 (decode-time (org-foresight--day-start 0)))
                           'office)))
+        ;; And both ends of the day are booked, since a demo that left them
+        ;; out would be a demo of a day nobody actually has: the twenty
+        ;; minutes are spent whether or not anything counts them.
+        (setq org-foresight-check-in
+              '(:minutes 10 :title "look at the day \\[org-agenda-list]")
+              org-foresight-check-out
+              '(:minutes 10 :title "before you leave \\[org-foresight-board]"))
         ;; Learned figures are redirected too: a reserve, a leak or a
         ;; multiplier taken from real history would describe a different life
         ;; than the demo's.
@@ -503,7 +512,9 @@ from, and there is no undo for that."
     (setq org-foresight-workdays
           (plist-get org-foresight-demo--saved :workdays)
           org-foresight-work (plist-get org-foresight-demo--saved :work)
-          org-foresight-day-places (plist-get org-foresight-demo--saved :day-places))
+          org-foresight-day-places (plist-get org-foresight-demo--saved :day-places)
+          org-foresight-check-in (plist-get org-foresight-demo--saved :check-in)
+          org-foresight-check-out (plist-get org-foresight-demo--saved :check-out))
     (setq org-foresight-surge-cache-file
           (plist-get org-foresight-demo--saved :surge-cache)
           org-foresight-leak-cache-file
