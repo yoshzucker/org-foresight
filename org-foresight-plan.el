@@ -51,11 +51,6 @@ not being made, and that is what this number is meant to catch."
   :type 'integer
   :group 'org-foresight)
 
-(defcustom org-foresight-horizon-days 14
-  "How far ahead the plan board looks."
-  :type 'integer
-  :group 'org-foresight)
-
 (defcustom org-foresight-followup-keywords '("WAIT")
   "TODO keywords whose SCHEDULED date is a check-in, not a start date.
 An entry in one of these states whose date has passed is someone else's work
@@ -187,6 +182,20 @@ of."
             (throw 'found occ)))))
     nil))
 
+(defun org-foresight--here-sort (rows)
+  "Return ROWS ordered by how soon each is needed.
+
+Deadlines first and earliest first; everything else after, in the order the
+files gave it.  Sorted rather than filtered by deadline: a file that does not
+use deadlines would show nothing at all under a filter, and the question
+\"what can only be done here\" is worth answering whether or not anybody has
+written a date on it."
+  (let ((dated (seq-filter (lambda (r) (plist-get r :deadline)) rows))
+        (undated (seq-remove (lambda (r) (plist-get r :deadline)) rows)))
+    (append (sort dated (lambda (a b) (time-less-p (plist-get a :deadline)
+                                                   (plist-get b :deadline))))
+            undated)))
+
 (defun org-foresight--finding (title note)
   "Build a finding for the entry at point, described by TITLE and NOTE."
   (list :file (buffer-file-name)
@@ -223,8 +232,25 @@ board describing the other corpus is worse than a slow one."
         (plist-get org-foresight--signals-cache :signals)
       (let ((result (org-foresight--signals-compute)))
         (setq org-foresight--signals-cache
-              (list :time (current-time) :files files :signals result))
-        result))))
+              (append (list :time (current-time) :files files) result))
+        (plist-get result :signals)))))
+
+(defun org-foresight-here (&optional force)
+  "Return the work that only where you are today can do, nearest need first.
+
+Read off the same walk as `org-foresight-signals\=' and cached with it: they
+are two questions about one pass over the files, and asking both should cost
+what asking one costs."
+  (let ((files (org-agenda-files)))
+    (unless (and (not force)
+                 org-foresight--signals-cache
+                 (equal files (plist-get org-foresight--signals-cache :files))
+                 (< (float-time
+                     (time-subtract (current-time)
+                                    (plist-get org-foresight--signals-cache :time)))
+                    org-foresight-signals-cache-ttl))
+      (org-foresight-signals force))
+    (plist-get org-foresight--signals-cache :here)))
 
 (defun org-foresight--signals-compute ()
   "Walk the agenda files and return the signals.
@@ -237,6 +263,8 @@ than asking for one."
          (horizon (time-add today (days-to-time org-foresight-horizon-days)))
          (uids (make-hash-table :test 'equal))
          (scan (org-foresight-scan 1 today))
+         (base (org-foresight-day-place today))
+         here elsewhere
          meetings procrastinated unplannable followups outside-work
          orphan-candidates undecided in-flight unreadable)
     (dolist (file (org-agenda-files))
@@ -303,6 +331,26 @@ than asking for one."
                          title (format "%S is not a duration Org can read"
                                        effort))
                         unreadable))
+                ;; (h) Work the place decides.  Most work goes anywhere, so
+                ;; what lands here is the little that does not: a thing to
+                ;; pick up, a conversation that would go wrong in writing.
+                ;; Being here is the scarce part, and the question at the door
+                ;; is what only being here can settle.
+                (when (and todo (not done))
+                  (let ((place (org-foresight--entry-place)))
+                    (cond
+                     ((and place (eq place base))
+                      (push (list :title title :marker (point-marker)
+                                  :deadline dead :people (org-foresight--entry-people))
+                            here))
+                     ;; The mirror image: work put on today that today cannot
+                     ;; do.  A home day with an office errand on it is a plan
+                     ;; that will not survive contact with the morning.
+                     ((and place sched
+                           (= 0 (org-foresight--day-of sched today)))
+                      (push (org-foresight--finding
+                             title (format "needs %s; today is %s" place base))
+                            elsewhere)))))
                 ;; (b) A decision that keeps not being made.
                 (when (and todo (not done))
                   (let ((n (org-foresight--reschedule-count)))
@@ -346,7 +394,10 @@ than asking for one."
     (let ((orphans (seq-keep (lambda (c)
                                (unless (gethash (car c) uids) (cdr c)))
                              orphan-candidates)))
-      (seq-filter
+      (list
+       :here (org-foresight--here-sort (nreverse here))
+       :signals
+       (seq-filter
        #'cdr
        (list (cons "Impossible (travel clashes with a meeting)"
                    (org-foresight--clash-findings scan))
@@ -365,8 +416,9 @@ than asking for one."
                      nil))
              (cons "Borrowed from private time" (org-foresight--borrow-findings))
              (cons "Leaking (unclocked work)" (org-foresight--leak-findings))
+             (cons "Cannot be done from here" (nreverse elsewhere))
              (cons "Undecided (captured, not decided)" (nreverse undecided))
-             (cons "Orphaned prep" orphans))))))
+             (cons "Orphaned prep" orphans)))))))
 
 (defun org-foresight--undecided-p (todo stamps)
   "Non-nil when the entry at point was captured but never decided about.
@@ -480,80 +532,7 @@ drawn, and reaching for the network there would stall the display."
                   :note (format "%s/day goes unrecorded"
                                 (org-duration-from-minutes leak)))))))
 
-;;;; Forward load
-
-(defcustom org-foresight-load-rows 5
-  "How many working days the forward-load block shows.
-
-Enough to answer \"then when?\", and no more.  A fortnight of rows is a
-fortnight of scrolling for a question that is nearly always settled by the
-first day with room in it."
-  :type 'integer
-  :group 'org-foresight)
-
-(defun org-foresight-report-load (&optional days scan now)
-  "Return the coming days drawn as today is, so that they can be compared.
-
-This is the block that turns \"I'm busy\" into a date.  Each row is one
-working day: what may still be promised on it, and the same stacked bar the
-capacity block draws above -- same segments, same colours, same scale.  The
-point of a forward view is to hold it against today, and two pictures of the
-same thing drawn differently cannot be held against each other.
-
-The figure is `:headroom-min': free time less what is already promised and
-the reserve held back for interruptions.  Positive is what may still be taken
-on, negative is what would have to come off first.  It is the number the
-verdict states for today, asked of each day in turn -- one definition, not a
-second one that happens to live in a table.
-
-Capacity is worked out only for the days that will be drawn.  Costing out a
-fortnight to print five rows is the sort of expense that never shows in a
-benchmark and always shows in a keystroke."
-  (let* ((days (or days org-foresight-horizon-days))
-         (today (org-foresight--day-start 0))
-         (scan (or scan (org-foresight-scan days today)))
-         today-cap rows)
-    (catch 'enough
-      (dotimes (i days)
-        (let ((day (time-add today (days-to-time i))))
-          (when (org-foresight-work-intervals day)
-            (let ((cap (org-foresight-capacity day scan now)))
-              (when (zerop i) (setq today-cap cap))
-              (when (plist-get cap :work)
-                (push (cons day cap) rows)
-                (when (>= (length rows) org-foresight-load-rows)
-                  (throw 'enough nil))))))))
-    (setq rows (nreverse rows))
-    (if (null rows)
-        (propertize "(no working days in the horizon)" 'face 'org-table)
-      ;; One scale for every row, and the same one the block above used, so a
-      ;; day appearing in both is drawn at the same length in both.
-      (let ((per-column
-             (max (/ (apply #'max 1.0
-                            (mapcar (lambda (r) (plist-get (cdr r) :span-min))
-                                    rows))
-                     (float org-foresight-bar-width))
-                  (if today-cap
-                      (org-foresight-report--bar-scale today-cap)
-                    0.0))))
-        (mapconcat
-         (lambda (r)
-           (let ((head (plist-get (cdr r) :headroom-min)))
-             (concat
-              (format " %-9s %15s  "
-                      (format-time-string "%a %m-%d" (car r))
-                      (if (>= head 0)
-                          (format "%s to promise" (org-duration-from-minutes head))
-                        (propertize
-                         (format "OVER by %s"
-                                 (org-duration-from-minutes (- head)))
-                         'face 'org-foresight-report-overcommitted)))
-              (org-foresight-report--draw-bar
-               (cdr r) org-foresight-report--bar-segments per-column
-               (plist-get (cdr r) :span-min)))))
-         rows "\n")))))
-
-;;;; The plan board
+;;;; The board
 
 (defun org-foresight-report-signals (&optional signals)
   "Return the signal blocks, or a note when nothing is outstanding."
@@ -588,47 +567,90 @@ benchmark and always shows in a keystroke."
            (cdr group) "\n")))
        signals "\n\n"))))
 
-(defun org-foresight-plan-report ()
-  "Return the plan board's tail: where else work could go, and what nothing
-has been decided about at all.
+(defconst org-foresight-here-urgent "⚠"
+  "The mark for work whose need falls before you are next in this place.")
 
-The day itself is the agenda above -- that is what gets rearranged, and it is
-Org's to draw.  What this adds is the two questions the day cannot answer
-from inside itself: if it will not fit here, when will it, and what is
-waiting that has not been asked about yet."
-  (concat "\n"
-          (org-foresight-report--badge "Load" "when I could take this on")
-          "\n"
-          (org-foresight-report-load)
-          "\n\n"
-          (org-foresight-report--badge "Signals"
-                                       "work that exists but is not planned")
-          "\n"
-          (org-foresight-report-signals)
-          "\n"))
+(defun org-foresight-report-here (&optional rows day)
+  "Return the work only DAY's place can do, and when that place comes again.
 
-(add-to-list 'org-foresight-report-renderers
-             '(plan :body org-foresight-plan-report :place bottom))
+The heading is the whole point of the section: \"next at the office on
+Wednesday\" is what turns a list of errands into a decision, because it says
+what the alternative to doing it now actually costs."
+  (let* ((day (or day (org-foresight--day-start 0)))
+         (rows (or rows (org-foresight-here)))
+         (base (org-foresight-day-place day))
+         (next (org-foresight-next-day-at base day)))
+    (if (null rows)
+        (propertize (format "(nothing that only %s can do)" base) 'face 'org-table)
+      (concat
+       (org-foresight-report--indent
+        (propertize
+         (if next
+             (format "%s · next %s day is %s" base base
+                     (format-time-string "%a %m-%d" next))
+           (format "%s · not %s again within the horizon" base base))
+         'face 'org-agenda-structure))
+       "\n"
+       (mapconcat
+        (lambda (r)
+          (let* ((dead (plist-get r :deadline))
+                 ;; Urgent means the deadline lands before you are next here:
+                 ;; the place, not the clock, is what runs out.
+                 (urgent (and dead (or (null next) (time-less-p dead next))))
+                 (people (plist-get r :people)))
+            (org-foresight-report--actionable
+             (format "  %s %s  %s"
+                     (if urgent
+                         (propertize org-foresight-here-urgent
+                                     'face 'org-foresight-report-overcommitted)
+                       " ")
+                     (truncate-string-to-width
+                      (replace-regexp-in-string "[\n\r]" " "
+                                                (or (plist-get r :title) "?"))
+                      40 0 ?\s)
+                     (propertize
+                      (concat
+                       (if dead
+                           (format "due %s" (format-time-string "%a %m-%d" dead))
+                         "")
+                       (when people
+                         (format "%s(%s)" (if dead " " "")
+                                 (string-join people ", "))))
+                      'face 'shadow))
+             (plist-get r :marker))))
+        rows "\n")))))
 
 (add-hook 'org-foresight-report-invalidate-functions
           #'org-foresight--invalidate-signals)
 
 ;;;###autoload
-(defun org-foresight-signals-list ()
-  "Show the work that exists but has not been planned for.
+(defun org-foresight-board ()
+  "Show what has not been settled: what only here can do, and what is unplanned.
 
-The same list the `plan\' report style puts under an agenda, on its own for
-anyone who has not built that view.  Every row carries its entry\'s marker, so
-\\[org-agenda-schedule] and the rest of the agenda\'s vocabulary work here as
-they do there."
+Not an agenda view.  The day has one of those and it is the day; this is the
+other question, and it is not about the timeline at all -- which is why it
+stopped being a second copy of the agenda with a different tail underneath.
+
+Two sections.  The first is the one that decides whether you can walk out:
+work this place, and only this place, can do, with the day that place comes
+round again.  The second is everything that exists and has not been planned
+for.
+
+Every row carries its entry\'s marker, so \\[org-agenda-schedule] and the rest
+of the agenda\'s vocabulary work here as they do in the agenda itself."
   (interactive)
-  (let ((buffer (get-buffer-create "*Org Foresight Signals*")))
+  (let ((buffer (get-buffer-create "*Org Foresight Board*")))
     (with-current-buffer buffer
       (let ((inhibit-read-only t))
         (erase-buffer)
         (unless (derived-mode-p 'org-agenda-mode) (org-agenda-mode))
         (setq-local org-agenda-type 'agenda)
         (insert (org-foresight-report--badge
+                 "Here" "what only this place can do")
+                "\n\n"
+                (org-foresight-report-here)
+                "\n\n"
+                (org-foresight-report--badge
                  "Signals" "work that exists but is not planned")
                 "\n\n"
                 (org-foresight-report-signals))
@@ -637,23 +659,33 @@ they do there."
         (setq buffer-read-only t)))
     (pop-to-buffer buffer)))
 
+(define-obsolete-function-alias 'org-foresight-signals-list
+  'org-foresight-board "0.2")
+
 (defun org-foresight-plan--verdict-line ()
-  "Return a one-line summary of outstanding signals, or nil when there are none.
+  "Return a one-line summary of what is unsettled, or nil when nothing is.
 
 The daily agenda otherwise gives no hint that anything is outstanding, and a
-signal nobody is prompted to look at is not really being caught -- so the line
-names the way to look, resolved from the keymap rather than written down, and
-falls back to the command name where nothing is bound to it.
+signal nobody is prompted to look at is not really being caught -- so the
+line names the way to look, resolved from the keymap rather than written
+down, and falls back to the command name where nothing is bound to it.
 
-Suppressed on the plan view itself, where the signals are listed in full a
-few lines below: pointing at what is already on screen only costs a line."
-  (unless (eq org-foresight-report-style 'plan)
-    (let ((n (apply #'+ (mapcar (lambda (g) (length (cdr g)))
-                                (org-foresight-signals)))))
-      (when (> n 0)
-        (format "%d signal%s unplanned · %s" n (if (= n 1) "" "s")
-                (substitute-command-keys
-                 "\\[org-foresight-signals-list]"))))))
+Work bound to where you are is counted separately even though the board holds
+both.  It is the one kind that stops being possible when you stand up, so a
+number that folded it into the rest would be a number that says the same
+thing at half past nine and at half past five."
+  (let ((n (apply #'+ (mapcar (lambda (g) (length (cdr g)))
+                              (org-foresight-signals))))
+        (here (length (org-foresight-here))))
+    (when (> (+ n here) 0)
+      (concat
+       (when (> n 0)
+         (format "%d signal%s unplanned" n (if (= n 1) "" "s")))
+       (when (and (> n 0) (> here 0)) " · ")
+       (when (> here 0)
+         (format "%d need%s you here" here (if (= here 1) "s" "")))
+       " · "
+       (substitute-command-keys "\\[org-foresight-board]")))))
 
 (add-to-list 'org-foresight-verdict-extras #'org-foresight-plan--verdict-line)
 
