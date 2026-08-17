@@ -38,6 +38,12 @@
 (require 'seq)
 (require 'cl-lib)
 
+;; Not required: this file is the half that reads Org and knows nothing about
+;; how a day is displayed.  The one place it calls back into the agenda is
+;; guarded by `derived-mode-p', which cannot be true unless org-agenda is
+;; already loaded.
+(declare-function org-agenda-redo "org-agenda" (&optional all))
+
 (defgroup org-foresight nil
   "Forward-looking capacity, signals and scheduling for Org."
   :group 'org
@@ -1449,19 +1455,38 @@ any total taken over them is guaranteed to add up to the day."
       (setq out (nconc out (org-foresight--gap-bands cursor (cdr awake) work))))
     out))
 
+(defun org-foresight--day-at-point ()
+  "Return the day the cursor is on, or nil where it is not on one.
+
+An agenda puts a `day' text property over the whole of each day it draws,
+date header included, so a command run from an agenda line can act on the day
+the reader is looking at.  Nowhere else is there a day under the cursor, and
+nil is the answer that lets a caller fall back to today."
+  (when-let* ((abs (org-get-at-bol 'day))
+              ((numberp abs))
+              (g (calendar-gregorian-from-absolute abs)))
+    (org-foresight--midnight
+     (encode-time 0 0 0 (nth 1 g) (nth 0 g) (nth 2 g)))))
+
 ;;;###autoload
 (defun org-foresight-shape-day (&optional day)
-  "Declare the shape of DAY (today by default) on its own heading.
+  "Declare the shape of DAY on its own heading.
 
 Asks when the day starts and ends and how much of it is work, and writes the
 answers to DAY's heading in the day tree, where they can also be edited by
 hand.  Only exceptional days need this: a day nobody has said anything about
 simply takes the defaults.
 
+DAY is the day under the cursor when run from an agenda line and today
+otherwise, which is what makes this usable in advance: the day that goes
+differently is almost never the one being lived, and a command that could
+only shape today would have to be remembered on the morning it was too late
+to plan around.
+
 Specific private commitments are not entered here -- they are ordinary Org
 entries in a category listed in `org-foresight-private-categories', so that a
 dentist appointment lives where every other appointment lives."
-  (interactive)
+  (interactive (list (org-foresight--day-at-point)))
   (require 'org-datetree)
   (let* ((day (or day (org-foresight--day-start 0)))
          (shape (org-foresight-day-shape day))
@@ -1501,6 +1526,10 @@ dentist appointment lives where every other appointment lives."
          (org-entry-put (point) "PLACE" (string-trim place)))
        (save-buffer)))
     (setq org-foresight--shape-cache nil)
+    ;; Shaping a day from the agenda is shaping the day on the screen, and the
+    ;; drawing is now wrong everywhere at once: the gaps, the commute, the
+    ;; reserve and what still fits all follow from the hours just changed.
+    (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
     (message "%s: awake %s–%s, work %s, from %s"
              (format-time-string "%Y-%m-%d %a" day) wake sleep span place)))
 
