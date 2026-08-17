@@ -608,10 +608,42 @@ day is scanned down."
     (apply #'min heads)))
 
 (defun org-foresight-agenda--heading-column (item)
-  "Return the column ITEM's heading text begins at, or nil if it has none."
-  (if (get-text-property 0 'org-heading item)
-      0
-    (next-single-property-change 0 'org-heading item)))
+  "Return the display column ITEM's heading text begins at, or nil for none.
+
+Columns, not characters, because that is the arithmetic Org itself does: a
+prefix field is padded to a width on the screen, so a category written in a
+script whose characters are two columns wide fills the same field with half
+as many of them.  `CATEGORY: 会議予定' fills eight columns with four
+characters and needs no padding at all, which puts its heading four
+characters -- and no columns -- ahead of every other row.
+
+Counting characters instead is not a rounding error: `\\='min\\=' over the
+rows then answers with that row, and every mark on the page is inserted four
+places to the left of where the headings actually are, inside the dots of the
+time field.  On a page of one language it never happens; on a mixed page it
+happens to the whole page at once, on some days and not others, which is
+exactly the shape of a bug nobody can reproduce."
+  (when-let ((at (if (get-text-property 0 'org-heading item)
+                     0
+                   (next-single-property-change 0 'org-heading item))))
+    (string-width (substring item 0 at))))
+
+(defun org-foresight-agenda--column-index (item column)
+  "Return the position in ITEM at display COLUMN.
+
+The inverse of `org-foresight-agenda--heading-column', and needed for the
+same reason: what lines up on the screen is a column, and what a string is
+cut at is a position.  Where a two-column character straddles COLUMN the
+position before it is returned -- half a character is not a place anything
+can be inserted, and stopping short leaves the mark in the padding rather
+than through the middle of a word."
+  (let ((i 0) (w 0) (n (length item)) (out nil))
+    (while (and (null out) (< i n))
+      (let ((next (+ w (char-width (aref item i)))))
+        (if (> next column)
+            (setq out i)
+          (setq w next i (1+ i)))))
+    (or out n)))
 
 (defun org-foresight-agenda--place-marks (list)
   "Return LIST with each row's recorded mark drawn into it.
@@ -632,13 +664,18 @@ the tags and defeat `org-agenda-align-tags', which looks for them there.  The
 face is applied without appending, because appended the row's own face would
 win the conflict and the mark would come out the colour of its row.  The
 inserted cell inherits the prefix's properties rather than the heading's,
-which keeps `org-heading' over the heading text and nothing else."
+which keeps `org-heading' over the heading text and nothing else.
+
+The shared column is a column on the screen; where to cut this particular row
+to reach it is a question with a different answer on every row, and
+`org-foresight-agenda--column-index' is what asks it."
   (let ((col (org-foresight-agenda--mark-column list)))
     (mapcar
      (lambda (item)
        (if-let* ((glyph (get-text-property 0 'org-foresight-mark item))
                  (own (org-foresight-agenda--heading-column item))
-                 (at (if col (min col own) own))
+                 (at (org-foresight-agenda--column-index
+                      item (if col (min col own) own)))
                  (face (nth 2 (assoc glyph
                                      org-foresight-agenda--mark-meanings)))
                  (cell (concat glyph " ")))
