@@ -240,7 +240,7 @@ that is Org. Five things are not:
 |--------------------+---------------------------------------------------|
 | =→ office=         | a journey derived from where the day happens      |
 | =0:30 free=        | a stretch nothing has claimed, in the colour of room |
-| =↳ NEXT …=         | promised work that would fit in the gap above it  |
+| =↳ NEXT …=         | promised work that would fit in the gap above it, and can be done from where that gap is |
 | =work starts ────= | the edge of the working day                       |
 | =work lands ────=  | where the day actually ends, corrections included |
 
@@ -261,17 +261,23 @@ problem the reader does not have:
 
 | Mark | Meaning                                                       |
 |------+---------------------------------------------------------------|
+| =@=  | needs a place today does not go — so it is offered in no gap  |
 | =⨯=  | will not fit — a journey that cannot have the hours it needs, or work with no gap big enough to take it |
 | =↳=  | would fit in the gap above                                    |
 | =↯=  | arrived today — it landed on the day rather than was planned into it |
 | =╰=  | shares its time — see [[*Not everything wants all of you]]             |
 
 Each is drawn in the colour of what it says, in the rows as in the key --
-except the last, which is drawn in no colour at all. The other two each carry
-a decision: the overrun's colour says this has to move, the colour of room
-says here is somewhere it could go. Sharing an hour asks for nothing, so it
-is grey, and a reader who has learnt two colours is not asked to learn a
+except the last two, which are drawn in no colour at all. The others each
+carry a decision: the overrun's colour says this has to move, the colour of
+room says here is somewhere it could go. Sharing an hour asks for nothing, so
+it is grey, and a reader who has learnt two colours is not asked to learn a
 third.
+
+The first two are the two ways a day says /not today/, and they are the two
+that survive when a row would otherwise take a quieter mark — not fitting is
+answered by moving work about, needing a place by going there or by waiting
+until you are.
 
 Every mark goes in one column: the one the grid's headings begin at, which is
 where the time field ends. That is left of a =Scheduled:= and left of an
@@ -840,6 +846,44 @@ video link, and a link says nothing about where the body has to be — so an
 unhelpful =LOCATION= leaves you where you already were rather than inventing a
 journey. Set =org-foresight-places= to map locations onto places, and
 =org-foresight-travel-matrix= to say what moving between them costs.
+
+*** A free hour in the wrong place
+
+The other half of knowing where the body is: a gap only offers the work that
+can be done in it. A task carrying =:PLACE: office= is suggested in the hours
+actually spent at the office — after the journey in and before the journey
+back — and in no others. An hour free at home is no use to it at all, and a
+suggestion that ignored that would be worse than none: it reads as an answer,
+gets acted on, and the hour goes on finding out that it was not one.
+
+Note that this is where the body is minute by minute, not where the day is
+worked from. On an office day the morning before you set off is still spent at
+home, and the evening after you get back is too.
+
+Being left out is silent, though, and silence is indistinguishable from a bug.
+So work needing a place today never reaches carries =@= in the mark column,
+and the key under the bars says what it means. On a day that does go there the
+mark is absent — the work can be done, and the board's =Here= section lists
+it:
+
+#+begin_example
+ home, office · next home day is Wed 08-19
+    pick up the signed contract           @office
+#+end_example
+
+=Here= asks the same question, so the two can never disagree: a day based at
+home with one appointment at the office is a day on which the office errands
+can, in fact, be run — and the day to be told so, since by tomorrow the answer
+is Wednesday again.
+
+What it will not do is *make* the hour by moving the commute. Journeys are
+derived from commitments that name a place, and a journey invented to fit a
+task in would mean adding a =NEXT= changed what time you left the house. Where
+the work needs a place the day does not have, the answer is the board's =Here=
+section — it lists exactly that work, says when that place comes round again,
+and marks =⚠= where a deadline falls before then. Going in is a decision, and
+=M-x org-foresight-shape-day= on the day in question is where it gets
+recorded.
 
 *** The two ends of the day
 
