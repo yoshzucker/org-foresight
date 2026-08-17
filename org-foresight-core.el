@@ -1680,6 +1680,40 @@ to hand."
       (push (cons from (cons until here)) out))
     (nreverse out)))
 
+(defun org-foresight-place-at (day time &optional bands)
+  "Return where the body is on DAY at TIME.
+
+`org-foresight-day-place' answers where the day is worked from, which is a
+different question: on a day with a journey in it the morning is still spent
+at home.  This one is what \"could I do that now\" has to ask, because work
+that needs a place cannot be done in an hour spent somewhere else -- and an
+hour that is free is not the same as an hour that is any use.
+
+Minutes in transit answer `org-foresight-home-place', since a span runs from
+one arrival to the next departure and the road belongs to neither end.  That
+is never wrong in practice: a journey is not free time, so nothing asks.
+
+BANDS default to DAY's, which costs a scan; pass them when they are to hand."
+  (or (cddr (seq-find (lambda (s)
+                        (and (not (time-less-p time (car s)))
+                             (time-less-p time (cadr s))))
+                      (org-foresight-day-place-spans day bands)))
+      org-foresight-home-place))
+
+(defun org-foresight-day-places (day &optional bands)
+  "Return every place DAY is at, the one it is worked from first.
+
+The day's own place is where it is based; a journey in it means the day is at
+somewhere else too, for the hours between arriving and setting off again.
+Both belong to the answer, because \"can this be done today\" is asked of the
+day as a whole -- a home day with an appointment at the office is a day on
+which the office errands can, in fact, be run.
+
+BANDS default to DAY's, which costs a scan; pass them when they are to hand."
+  (delete-dups
+   (cons (org-foresight-day-place day)
+         (mapcar #'cddr (org-foresight-day-place-spans day bands)))))
+
 (defun org-foresight-next-day-at (place &optional from horizon)
   "Return the next day at PLACE after FROM, or nil within HORIZON days.
 

@@ -1033,8 +1033,10 @@ the font simply lacks: what appears then comes from the fallback, at whatever
 width that font uses.  `⨯' U+2717 was one such -- absent from PlemolJP and
 rendered slightly too wide -- and PlemolJP has none of U+2715, U+2717 or
 U+2718, which is why the mark for what will not fit is U+2A2F."
-  (dolist (s (append (list (string org-foresight-block)
-                           org-foresight-agenda-wont-fit)
+  (dolist (s (append (list (string org-foresight-block))
+                     ;; Every mark, read from the key rather than listed here,
+                     ;; so a mark added later cannot skip this.
+                     (mapcar #'car org-foresight-agenda--mark-meanings)
                      (mapcar #'string
                              (append org-foresight-report--partials nil))
                      '("·" "─" "┈" "→" "┃" "↳" "⨯")))
@@ -4357,6 +4359,144 @@ two-day one.  Org's own `org-agenda-current-date' is the answer."
         ;; ... and not by today's, which starts at 9:30
         (should-not (seq-find (lambda (l) (string-match-p "9:00-9:30" l)) section))))))
 
+(ert-deftest org-foresight-test-e2e-a-gap-only-offers-what-it-can-hold ()
+  "Work that named a place is offered in the hours spent there, and nowhere else.
+
+An hour free at home is no use at all to something that can only be done at
+the office, and offering it anyway is worse than saying nothing: the row reads
+as an answer and the hour goes on finding out that it was not one.
+
+Both halves matter, and one day shows both.  Two meetings at the office keep
+you there between them, so the middle of the day is free *and* in the right
+place; the morning before you set off and the evening after you get back are
+free and in the wrong one."
+  (org-foresight-test--with-agenda
+      (concat "* 朝の打合せ\n:PROPERTIES:\n:CATEGORY: meeting\n"
+              ":LOCATION: 本社 会議室3\n:END:\n"
+              (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+              "* 午後の打合せ\n:PROPERTIES:\n:CATEGORY: meeting\n"
+              ":LOCATION: 本社 会議室3\n:END:\n"
+              (org-foresight-test--stamp 0 "14:00" "15:00") "\n"
+              "* NEXT only at the office\nSCHEDULED: "
+              (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:PLACE: office\n:END:\n"
+              "* NEXT anywhere at all\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n")
+    (let* ((org-foresight-work '(("09:00" . "17:30")))
+           (org-foresight-places '((office . "本社\\|会議室\\|オフィス")))
+           (org-foresight-home-place 'home)
+           (org-foresight-travel-matrix '(((home . office) . 60)))
+           (org-foresight--shape-cache nil)
+           (rows (seq-filter (lambda (l) (string-match-p "↳ NEXT" l))
+                             (org-foresight-test--agenda)))
+           (at (lambda (hhmm)
+                 (seq-filter (lambda (l) (string-search hhmm l)) rows))))
+      ;; The office hours hold both ...
+      (should (seq-find (lambda (l) (string-match-p "only at the office" l))
+                        (funcall at "11:00")))
+      (should (seq-find (lambda (l) (string-match-p "anywhere at all" l))
+                        (funcall at "11:00")))
+      ;; ... and the hours at home hold only the one that can be done there.
+      (should (funcall at "16:00"))
+      (should-not (seq-find (lambda (l) (string-match-p "only at the office" l))
+                            (funcall at "16:00")))
+      (should (seq-find (lambda (l) (string-match-p "anywhere at all" l))
+                        (funcall at "16:00"))))))
+
+(ert-deftest org-foresight-test-e2e-work-in-the-wrong-place-says-so ()
+  "Work left out of every gap must say why, and only where the reason holds.
+
+The suggestion is right to leave it out -- an hour at home is no use to an
+office errand -- but a row that is silently never offered looks like a row the
+tool forgot, and the reader goes hunting for the fault in the wrong place.
+
+On a day that does go there the mark is wrong and must not appear: the work
+can be done, and the board lists it."
+  (let ((body (concat "* NEXT only at the office\nSCHEDULED: "
+                      (org-foresight-test--stamp 0)
+                      "\n:PROPERTIES:\n:EFFORT: 1:00\n:PLACE: office\n:END:\n"
+                      "* NEXT anywhere at all\nSCHEDULED: "
+                      (org-foresight-test--stamp 0)
+                      "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"))
+        (trip (concat "* 朝の打合せ\n:PROPERTIES:\n:CATEGORY: meeting\n"
+                      ":LOCATION: 本社 会議室3\n:END:\n"
+                      (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+                      "* 午後の打合せ\n:PROPERTIES:\n:CATEGORY: meeting\n"
+                      ":LOCATION: 本社 会議室3\n:END:\n"
+                      (org-foresight-test--stamp 0 "14:00" "15:00") "\n")))
+    (cl-flet ((marked-p
+                (text title)
+                (org-foresight-test--with-agenda text
+                  (let ((org-foresight-work '(("09:00" . "17:30")))
+                        (org-foresight-places
+                         '((office . "本社\\|会議室\\|オフィス")))
+                        (org-foresight-home-place 'home)
+                        (org-foresight-travel-matrix '(((home . office) . 60)))
+                        (org-foresight--shape-cache nil))
+                    (seq-find
+                     (lambda (l)
+                       (and (string-match-p title l)
+                            (string-search org-foresight-agenda-elsewhere l)))
+                     (org-foresight-test--agenda))))))
+      ;; a day that goes nowhere: the office errand is marked, the other is not
+      (should (marked-p body "only at the office"))
+      (should-not (marked-p body "anywhere at all"))
+      ;; a day that goes there: nothing to explain
+      (should-not (marked-p (concat trip body) "only at the office")))))
+
+(ert-deftest org-foresight-test-the-board-asks-where-the-day-goes ()
+  "`Here' and `Cannot be done from here' read one fact, and it is not the base.
+
+A day worked from home with an appointment at the office is a day the office
+errands can be run on.  Asking `org-foresight-day-place' -- where the day is
+worked *from* -- got this wrong twice over: the work was missing from `Here',
+and the same work was reported as impossible below it."
+  (org-foresight-test--with-signals
+      (concat "* 打合せ\n:PROPERTIES:\n:CATEGORY: meeting\n"
+              ":LOCATION: 本社 会議室3\n:END:\n"
+              (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+              "* NEXT only at the office\nSCHEDULED: "
+              (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:PLACE: office\n:END:\n")
+    (let* ((org-foresight-work '(("09:00" . "17:30")))
+           (org-foresight-places '((office . "本社\\|会議室\\|オフィス")))
+           (org-foresight-home-place 'home)
+           (org-foresight-travel-matrix '(((home . office) . 60)))
+           (org-foresight--shape-cache nil)
+           (org-foresight--signals-cache nil)
+           (day (org-foresight--day-start 0)))
+      ;; the day is based at home and goes to the office
+      (should (equal '(home office) (org-foresight-day-places day)))
+      ;; Here holds the office work, and names both places
+      (let ((here (substring-no-properties (org-foresight-report-here))))
+        (should (string-match-p "only at the office" here))
+        (should (string-match-p "home, office" here)))
+      ;; and it is not also reported as impossible
+      (should-not
+       (assoc "Cannot be done from here" (org-foresight-signals t))))))
+
+(ert-deftest org-foresight-test-place-at-is-not-the-day-s-place ()
+  "Where the body is at an hour, which a day with a journey answers twice.
+`org-foresight-day-place' says where the day is worked from; this says where
+you actually are, and on an office day the morning is still spent at home."
+  (org-foresight-test--with-day
+      (concat "* 打合せ\n:PROPERTIES:\n:CATEGORY: meeting\n"
+              ":LOCATION: 本社 会議室3\n:END:\n"
+              (org-foresight-test--stamp 0 "10:00" "11:00") "\n")
+    (let* ((org-foresight-work '(("09:00" . "17:30")))
+           (org-foresight-places '((office . "本社\\|会議室\\|オフィス")))
+           (org-foresight-home-place 'home)
+           (org-foresight-travel-matrix '(((home . office) . 60)))
+           (org-foresight--shape-cache nil)
+           (day (org-foresight--day-start 0))
+           (on (lambda (h m) (org-foresight-place-at
+                              day (time-add day (seconds-to-time
+                                                 (* 60 (+ (* 60 h) m))))))))
+      ;; before setting off, on the road, there, and home again
+      (should (eq 'home (funcall on 9 30)))
+      (should (eq 'office (funcall on 10 30)))
+      (should (eq 'home (funcall on 16 0))))))
+
 (ert-deftest org-foresight-test-column-index-counts-columns ()
   "Cutting a row to reach a column is not cutting it at that position.
 Where a two-column character straddles the target the position before it is
@@ -4408,6 +4548,44 @@ in Japanese, so it looked random and survived every restart."
         (should (= 1 (length (seq-uniq (mapcar #'car marks)))))
         ;; ... and it is the padding after the clock, not a dot of it.
         (dolist (m marks) (should (eq (cdr m) ?\s)))))))
+
+(ert-deftest org-foresight-test-e2e-a-mark-never-lands-inside-a-word ()
+  "The shared column is padding only on the rows it was measured from.
+
+`%?-12t' is dropped from a row with no time rather than padded, so the column
+that is the tail of the clock on the timed rows is somewhere in the middle of
+the prefix on an undated one.  Put the effort in front of the leader and that
+somewhere is inside `Scheduled:', and the mark comes out as `Schedul⨯ed:'.
+Where the shared column is not preceded by whitespace the row falls back to
+its own heading, which always is."
+  (org-foresight-test--with-agenda
+      (concat "* NEXT far too big for the day\nSCHEDULED: "
+              (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 9:00\n:END:\n"
+              "* NEXT this one fits\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
+    ;; The effort ahead of the leader, which is what makes an estimate a column
+    ;; and is the arrangement the shared column cannot assume anything about.
+    (let ((org-agenda-prefix-format
+           '((agenda . "     %-8.8c%?-12t%?-5e% s") (todo . "  %-8c %-7e")
+             (tags . "  %i %-5c %-7e") (search . " %i %-12c"))))
+      (org-foresight-test--agenda)
+      (with-current-buffer org-agenda-buffer-name
+        (let ((seen 0))
+          (goto-char (point-min))
+          (while (not (eobp))
+            (let ((b (line-beginning-position)) (e (line-end-position)))
+              (when (text-property-any b e 'org-heading t)
+                (let ((line (buffer-substring-no-properties b e)))
+                  (dolist (glyph (mapcar #'car org-foresight-agenda--mark-meanings))
+                    (when-let ((at (string-search glyph line)))
+                      (setq seen (1+ seen))
+                      (should (> at 0))
+                      (should (eq (aref line (1- at)) ?\s)))))))
+            (forward-line 1))
+          ;; Both marks are on this page: the one that will not fit, and the
+          ;; candidate rows for the one that does.
+          (should (> seen 1)))))))
 
 (ert-deftest org-foresight-test-e2e-the-day-under-the-cursor ()
   "The day a command acts on is the day being looked at, not today.

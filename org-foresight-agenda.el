@@ -96,6 +96,15 @@ a row came from, not what to do about it.  The shape carries the difference,
 and a reader who has learnt the two coloured marks is not asked to learn a
 third colour for a fact that decides nothing on its own.")
 
+(defface org-foresight-agenda-elsewhere
+  '((t :inherit org-foresight-report-overcommitted))
+  "The mark for work that needs a place today never goes to.
+
+The overrun's colour, because it carries the same kind of news: this is not
+going to happen today, and something has to change for it to.  Its own face
+all the same -- what has to change is different.  An overrun is answered by
+moving work about, and this by going somewhere, or by waiting until you are.")
+
 (defface org-foresight-agenda-shared '((t :inherit shadow))
   "The mark for work that shares its hour without competing for it.
 
@@ -192,6 +201,24 @@ went unplanned is rarely what should be defended.
 U+21AF, an arrow struck downwards: it came down on the day.  One cell wide in
 PlemolJP, which the mark column depends on.")
 
+(defconst org-foresight-agenda-elsewhere "@"
+  "The mark for work that needs a place today never goes to.
+
+Answers a question the day would otherwise leave hanging.  Work that names a
+place is not offered in the gaps, because an hour free at home is no use to
+something that can only be done at the office -- but a row that is quietly
+never suggested looks like a row the tool forgot, and the reader goes looking
+for the fault in the wrong place.  The mark says the omission was deliberate
+and what decided it.
+
+Nothing is marked on a day that does go there: the work can be done, it is
+listed under `Here' on the board, and there is nothing to explain.
+
+An ordinary at-sign, and the only mark here that is not a drawing.  It reads
+as \"at\" in every language that has borrowed it, it is one cell wide in every
+font that exists, and this column has already been broken twice by a
+character some font was missing.")
+
 (defconst org-foresight-agenda-alongside "╰"
   "The mark for work that happens at the same time and does not mind.
 
@@ -245,7 +272,9 @@ than tracked while building them, so it cannot drift from what is on the
 page.  One day\'s worth: the views that show a key show a single day.")
 
 (defconst org-foresight-agenda--mark-meanings
-  `((,org-foresight-agenda-wont-fit "will not fit"
+  `((,org-foresight-agenda-elsewhere "needs a place today does not go"
+     org-foresight-agenda-elsewhere)
+    (,org-foresight-agenda-wont-fit "will not fit"
      org-foresight-report-overcommitted)
     ("↳" "would fit in the gap above" org-foresight-report-spare)
     (,org-foresight-agenda-arrived "arrived today"
@@ -352,13 +381,20 @@ honest statement is that every gap is a little thinner than it looks."
         1.0
       (max 0.0 (min 1.0 (- 1.0 (/ reserve span)))))))
 
-(defun org-foresight-agenda--gap (b keep ledger)
+(defun org-foresight-agenda--gap (b keep ledger &optional place)
   "Return the rows for free band B: what it holds, and what would go in it.
 
 KEEP is the fraction of it that survives the reserve.  The candidates are
 LEDGER's unplaced work that would fit in what is left, largest first -- the
 biggest thing that will go in is the one worth knowing about, since anything
 smaller still fits afterwards.
+
+PLACE is where the body is while B lasts.  Work that named a place of its own
+is offered only where that is the place: an hour at home is no use at all to
+something that can only be done at the office, and a suggestion that ignores
+this is worse than none -- it reads as an answer, gets acted on, and the hour
+is spent finding out.  Work that named no place is offered anywhere, which is
+most of it.
 
 Each candidate is its own row, carrying its own entry's marker, and shown at
 the hour the gap opens.  That is not decoration: it means the answer to
@@ -373,7 +409,10 @@ the key you would have pressed anyway."
                 (seq-filter
                  (lambda (e)
                    (and (eq (plist-get e :kind) 'promised)
-                        (<= (org-foresight-report--entry-minutes e) usable)))
+                        (<= (org-foresight-report--entry-minutes e) usable)
+                        (or (null place)
+                            (null (plist-get e :place))
+                            (eq (plist-get e :place) place))))
                  ledger))))
     (when (> mins 0)
       (cons
@@ -402,12 +441,19 @@ the key you would have pressed anyway."
             (seq-take fits org-foresight-grid-suggest)
           fits))))))
 
-(defun org-foresight-agenda--gaps (bands cap ledger)
-  "Return the rows for every free stretch among BANDS, given CAP and LEDGER."
+(defun org-foresight-agenda--gaps (bands cap ledger &optional day)
+  "Return the rows for every free stretch among BANDS, given CAP and LEDGER.
+
+DAY, where given, is what lets each gap know where the body is while it lasts,
+so work that needs a place is offered only in the hours spent there.  Omitted,
+every gap is offered everything that fits."
   (let ((keep (org-foresight-agenda--keep cap)))
     (mapcan (lambda (b)
               (when (eq (plist-get b :kind) 'available)
-                (org-foresight-agenda--gap b keep ledger)))
+                (org-foresight-agenda--gap
+                 b keep ledger
+                 (and day (org-foresight-place-at
+                           day (plist-get b :start) bands)))))
             bands)))
 
 (defcustom org-foresight-agenda-lands-minutes 5
@@ -503,10 +549,16 @@ it, which is the one place a rule was worth drawing."
                               (org-duration-from-minutes over))
                       'org-foresight-report-overcommitted)))))))))
 
-(defun org-foresight-agenda--mark-rows (list bands cap ledger)
+(defun org-foresight-agenda--mark-rows (list bands cap ledger &optional day)
   "Return LIST with LEDGER's entries marked, given BANDS and CAP.
 
 Two marks, both facts about an entry that no arrangement of the day changes.
+
+Whether the day ever goes where it has to be done.  DAY, where given, is what
+lets this be asked; without it the question goes unasked and no row is marked
+for it.  It comes first because it is the one thing rearranging the day cannot
+help with -- and because work that needs somewhere else is quietly left out of
+every suggestion, which without a mark looks like the tool having missed it.
 
 Whether a piece of work fits: if its estimate is longer than the largest gap
 there is, no ordering will find it a home.  Saying so without placing
@@ -540,6 +592,7 @@ marks go is a decision about the page as a whole and is taken once, by
                                                     (plist-get b :start)))
                                     60.0)))
                              bands))))
+         (places (and day (org-foresight-day-places day bands)))
          (marks (make-hash-table :test 'equal)))
     (dolist (e ledger)
       (when-let* ((m (plist-get e :marker))
@@ -547,6 +600,9 @@ marks go is a decision about the page as a whole and is taken once, by
                   (key (cons (marker-buffer m) (marker-position m)))
                   (glyph
                    (cond
+                    ((and places (plist-get e :place)
+                          (not (memq (plist-get e :place) places)))
+                     org-foresight-agenda-elsewhere)
                     ((and fits
                           (eq (plist-get e :kind) 'promised)
                           (> (org-foresight-report--entry-minutes e) largest))
@@ -554,11 +610,13 @@ marks go is a decision about the page as a whole and is taken once, by
                     ((plist-get e :arrived) org-foresight-agenda-arrived)
                     ((memq (plist-get e :attention) '(background informational))
                      org-foresight-agenda-alongside))))
-        ;; Not fitting is the loudest, so it is not overwritten by an entry
-        ;; that also arrived or happens to share its hour.  One column holds
-        ;; one glyph, and what has to move is worth more than where it came
-        ;; from.
-        (unless (equal (gethash key marks) org-foresight-agenda-wont-fit)
+        ;; The two kinds of "not today" are the loudest, and neither is
+        ;; overwritten by an entry that also arrived or happens to share its
+        ;; hour.  One column holds one glyph, and what cannot happen at all is
+        ;; worth more than where it came from.
+        (unless (member (gethash key marks)
+                        (list org-foresight-agenda-elsewhere
+                              org-foresight-agenda-wont-fit))
           (puthash key glyph marks))))
     (if (zerop (hash-table-count marks))
         list
@@ -645,6 +703,27 @@ than through the middle of a word."
           (setq w next i (1+ i)))))
     (or out n)))
 
+(defun org-foresight-agenda--mark-index (item column own)
+  "Return where in ITEM a mark aimed at display COLUMN should be inserted.
+
+COLUMN is the page's shared column; OWN is where this row's own heading
+begins.  The shared one is taken where the row has whitespace in front of it,
+and the row's own where it has not.
+
+Because the shared column is only known to be padding on the rows it was
+measured from.  A conditional prefix field is dropped from a row that has
+nothing to put in it rather than padded, so the column that is the tail of the
+clock on one row is the middle of `Scheduled:' on the next, and a mark
+inserted there comes out inside the word.
+
+Falling back rather than widening every row: what has to line up is the marks,
+and a row whose prefix is a different shape was never in that column to begin
+with."
+  (let ((at (org-foresight-agenda--column-index item column)))
+    (if (or (zerop at) (eq (aref item (1- at)) ?\s))
+        at
+      (org-foresight-agenda--column-index item own))))
+
 (defun org-foresight-agenda--place-marks (list)
   "Return LIST with each row's recorded mark drawn into it.
 
@@ -674,8 +753,8 @@ to reach it is a question with a different answer on every row, and
      (lambda (item)
        (if-let* ((glyph (get-text-property 0 'org-foresight-mark item))
                  (own (org-foresight-agenda--heading-column item))
-                 (at (org-foresight-agenda--column-index
-                      item (if col (min col own) own)))
+                 (at (org-foresight-agenda--mark-index
+                      item (if col (min col own) own) own))
                  (face (nth 2 (assoc glyph
                                      org-foresight-agenda--mark-meanings)))
                  (cell (concat glyph " ")))
@@ -752,11 +831,11 @@ is what puts a gap above the candidates hanging off it."
          ;; and leaves it where every other row has one.
          (all (org-foresight-agenda--annotate-efforts
                (org-foresight-agenda--place-marks
-                (append (org-foresight-agenda--mark-rows list bands cap ledger)
+                (append (org-foresight-agenda--mark-rows list bands cap ledger day)
                         (org-foresight-agenda--edges cap day)
                         (org-foresight-agenda--travel bands)
                         (org-foresight-agenda--checks ledger)
-                        (org-foresight-agenda--gaps bands cap ledger)))
+                        (org-foresight-agenda--gaps bands cap ledger day)))
                ledger)))
     ;; Where the body is, kept for the spine to draw when the buffer is
     ;; finished.  Handed over rather than recomputed there: this is the one
