@@ -690,6 +690,20 @@ A day that goes differently says so on its own heading, next to =WORK=:
 :END:
 #+end_example
 
+A place is a closed set of names, and a misspelt one is not an error
+anywhere — it simply stops matching, and the day goes on quietly being
+worked from home. So it is worth letting Org offer the names:
+
+#+begin_src emacs-lisp
+(setf (alist-get "PLACE_ALL" org-global-properties nil nil #'equal)
+      "home office client")
+#+end_src
+
+=C-c C-x p= now completes =PLACE= wherever it is typed — on a day's heading
+and on the occasional entry whose =LOCATION= does not say where the body has
+to be. Global rather than a =#+PROPERTY:= line, so it holds in an imported
+calendar too, which a sync is free to rewrite.
+
 Two things follow.
 
 The commute becomes a cost of the day that has it, *inside the working
@@ -740,6 +754,15 @@ The hours are *declared*, never inferred. Measuring when work actually stopped
 and calling that the working day would teach the system to plan around the
 overruns it exists to prevent. =M-x org-foresight-shape-day= declares an
 unusual day on its own heading; ordinary days need no input at all.
+
+Run from an agenda line it shapes *the day under the cursor*, and redraws.
+That is the case worth binding a key to: the day that goes differently is
+almost never today, and a command that could only shape today would have to
+be remembered on the morning it was too late to plan around.
+
+#+begin_src emacs-lisp
+(define-key org-agenda-mode-map "D" #'org-foresight-shape-day)
+#+end_src
 
 A day's own heading may carry =WAKE=, =SLEEP= and =WORK=:
 
@@ -1042,6 +1065,19 @@ not.)
 tasks, filed either side of the meeting. It marks each meeting it handles, so
 re-running creates nothing, and each generated task points back at its
 meeting, which is what makes the orphan signal possible later.
+
+The board says so itself, on the group heading:
+
+#+begin_example
+  Meetings without prep (2) · M-x org-foresight-prepare-meetings
+    定例レビュー                  needs 0:30 + 0:15
+    A社訪問                       needs 0:30 + 0:15
+#+end_example
+
+Only the groups a single command can settle carry one —
+=org-foresight-signal-commands= is the whole list. The rest are fixed a row at
+a time, on the entry the row points at, and a hint on every heading would
+teach the reader to stop believing the ones that mean something.
 
 * When, then
 

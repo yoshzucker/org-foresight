@@ -1082,6 +1082,28 @@ anything is bound -- only the shortcut has appeared."
       (should (equal "B M-x org-foresight-board"
                      (org-foresight-plan--command-hint 'org-foresight-board))))))
 
+(ert-deftest org-foresight-test-a-signal-names-what-settles-it ()
+  "A group a command can settle says so; one it cannot stays quiet.
+
+`org-foresight-prepare-meetings' appeared nowhere in the interface it exists
+to serve -- the board named the problem and left the reader to go and find
+the answer in the source.  The silence on the other groups is half of it: a
+hint on every heading, including the ones fixed a row at a time, teaches the
+reader to stop believing the ones that mean something."
+  (let ((rendered
+         (substring-no-properties
+          (org-foresight-report-signals
+           '(("Meetings without prep"
+              . ((:title "Review" :note "needs 0:30 + 0:15" :marker nil)))
+             ("Unplannable (deadline, no estimate)"
+              . ((:title "Report" :note "no estimate" :marker nil))))))))
+    (should (string-match-p
+             "Meetings without prep (1) · M-x org-foresight-prepare-meetings"
+             rendered))
+    (should-not (string-match-p "Unplannable[^\n]*·" rendered))
+    (dolist (line (split-string rendered "\n"))
+      (should (org-foresight-test--within-80 line)))))
+
 (ert-deftest org-foresight-test-verdict-extras ()
   "The daily line must announce outstanding signals, and stay silent without.
 A signal nobody is prompted to look at is not really being caught, but a
@@ -4334,6 +4356,46 @@ two-day one.  Org's own `org-agenda-current-date' is the answer."
         (should (seq-find (lambda (l) (string-match-p "11:00-12:00" l)) section))
         ;; ... and not by today's, which starts at 9:30
         (should-not (seq-find (lambda (l) (string-match-p "9:00-9:30" l)) section))))))
+
+(ert-deftest org-foresight-test-e2e-the-day-under-the-cursor ()
+  "The day a command acts on is the day being looked at, not today.
+
+`org-foresight-shape-day' reads it from Org's own `day' property, which
+covers the whole of each day's block, date header included.  A command that
+could only shape today would be useless for the case it exists for: the day
+that goes differently is almost never the one being lived, and by the morning
+it is, there is nothing left to plan around it."
+  (let ((org-foresight-test--e2e-span 2))
+    (org-foresight-test--with-agenda
+        (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                (org-foresight-test--stamp 1 "10:00" "11:00") "\n")
+      (org-foresight-test--agenda)
+      (with-current-buffer org-agenda-buffer-name
+        (let ((tomorrow (time-add (current-time) (days-to-time 1))))
+          (goto-char (point-min))
+          (should (re-search-forward
+                   (concat "^" (format-time-string "%A" tomorrow)) nil t))
+          ;; the date header itself
+          (should (equal (format-time-string "%Y-%m-%d"
+                                             (org-foresight--day-at-point))
+                         (format-time-string "%Y-%m-%d" tomorrow)))
+          ;; and a row inside the block
+          (forward-line 1)
+          (should (equal (format-time-string "%Y-%m-%d"
+                                             (org-foresight--day-at-point))
+                         (format-time-string "%Y-%m-%d" tomorrow)))
+          ;; The report blocks belong to no day.  Nil there is what sends the
+          ;; command back to today, rather than to whichever day happened to
+          ;; be drawn nearest.
+          (goto-char (point-min))
+          (should-not (org-foresight--day-at-point)))))))
+
+(ert-deftest org-foresight-test-no-day-outside-an-agenda ()
+  "An ordinary buffer has no day under the cursor, and says so with nil."
+  (with-temp-buffer
+    (insert "not an agenda\n")
+    (goto-char (point-min))
+    (should-not (org-foresight--day-at-point))))
 
 (ert-deftest org-foresight-test-e2e-clockcheck-keeps-the-day ()
   "Clock-check mode lists clock lines and nothing else, and that is a day too.
