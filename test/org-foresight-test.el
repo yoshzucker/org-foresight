@@ -4357,6 +4357,58 @@ two-day one.  Org's own `org-agenda-current-date' is the answer."
         ;; ... and not by today's, which starts at 9:30
         (should-not (seq-find (lambda (l) (string-match-p "9:00-9:30" l)) section))))))
 
+(ert-deftest org-foresight-test-column-index-counts-columns ()
+  "Cutting a row to reach a column is not cutting it at that position.
+Where a two-column character straddles the target the position before it is
+the answer: half a character is not a place anything can be inserted."
+  (should (= 3 (org-foresight-agenda--column-index "abcdef" 3)))
+  ;; 5 spaces, then two characters four columns wide
+  (should (= 5 (org-foresight-agenda--column-index "     会議 x" 5)))
+  (should (= 6 (org-foresight-agenda--column-index "     会議 x" 7)))
+  (should (= 7 (org-foresight-agenda--column-index "     会議 x" 9)))
+  ;; straddling: column 6 falls inside the first wide character
+  (should (= 5 (org-foresight-agenda--column-index "     会議 x" 6)))
+  ;; past the end is the end
+  (should (= 6 (org-foresight-agenda--column-index "abcdef" 99))))
+
+(ert-deftest org-foresight-test-e2e-marks-line-up-in-columns-not-characters ()
+  "A category in a two-column script must not drag the marks left.
+
+Org pads a prefix field to a width on the screen, so `CATEGORY: 会議予定'
+fills eight columns with four characters and takes no padding at all.  Its
+heading then begins four *characters* -- and no columns -- ahead of every
+other row, and a `min' taken over character positions answers with that row:
+every mark on the page is then inserted four places to the left of where the
+headings are, through the middle of the time field's dots.
+
+Which day it happened on was decided by whether anyone had written a category
+in Japanese, so it looked random and survived every restart."
+  (org-foresight-test--with-agenda
+      (concat "* 会議\n:PROPERTIES:\n:CATEGORY: 会議予定\n:END:\n"
+              (org-foresight-test--stamp 0 "15:30" "16:30") "\n"
+              "* NEXT すぐやる\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 0:45\n:CATEGORY: office\n:END:\n")
+    (org-foresight-test--agenda)
+    (with-current-buffer org-agenda-buffer-name
+      (let (marks)
+        (goto-char (point-min))
+        (while (not (eobp))
+          (let ((b (line-beginning-position)) (e (line-end-position)))
+            ;; Agenda rows only.  The report's own blocks explain the mark in
+            ;; a legend and carry no heading, and a legend is not a column.
+            (when (text-property-any b e 'org-heading t)
+              (let ((line (buffer-substring-no-properties b e)))
+                (when-let ((at (string-match "↳" line)))
+                  (push (cons (string-width (substring line 0 at))
+                              (aref line (1- at)))
+                        marks)))))
+          (forward-line 1))
+        (should marks)
+        ;; One column for the whole page ...
+        (should (= 1 (length (seq-uniq (mapcar #'car marks)))))
+        ;; ... and it is the padding after the clock, not a dot of it.
+        (dolist (m marks) (should (eq (cdr m) ?\s)))))))
+
 (ert-deftest org-foresight-test-e2e-the-day-under-the-cursor ()
   "The day a command acts on is the day being looked at, not today.
 
