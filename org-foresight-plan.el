@@ -534,6 +534,16 @@ drawn, and reaching for the network there would stall the display."
 
 ;;;; The board
 
+(defconst org-foresight-signal-commands
+  '(("Meetings without prep" . org-foresight-prepare-meetings))
+  "Signal groups a single command can settle, and which command that is.
+
+Most groups are fixed one row at a time, on the entry the row points at: an
+estimate is typed where the work is, and a task that keeps moving is a
+decision nobody else can make.  The few that are not have to be said out
+loud -- a board that names a problem and not the thing that answers it sends
+its reader off to find one, and a reader who has to go looking stops reading.")
+
 (defun org-foresight-report-signals (&optional signals)
   "Return the signal blocks, or a note when nothing is outstanding."
   (let ((signals (or signals (org-foresight-signals))))
@@ -546,8 +556,14 @@ drawn, and reaching for the network there would stall the display."
           ;; margin rather than at the frame edge: only a badge is outdented,
           ;; or an eye running down the left edge stops finding sections.
           (org-foresight-report--indent
-           (propertize (format "%s (%d)" (car group) (length (cdr group)))
-                       'face 'org-agenda-structure))
+           (concat
+            (propertize (format "%s (%d)" (car group) (length (cdr group)))
+                        'face 'org-agenda-structure)
+            (when-let ((command (cdr (assoc (car group)
+                                            org-foresight-signal-commands))))
+              (propertize
+               (concat " · " (org-foresight-plan--command-hint command))
+               'face 'shadow))))
           "\n"
           (mapconcat
            (lambda (f)
