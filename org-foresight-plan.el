@@ -263,7 +263,8 @@ than asking for one."
          (horizon (time-add today (days-to-time org-foresight-horizon-days)))
          (uids (make-hash-table :test 'equal))
          (scan (org-foresight-scan 1 today))
-         (base (org-foresight-day-place today))
+         (places (org-foresight-day-places
+                  today (org-foresight-day-blocks today scan)))
          here elsewhere
          meetings procrastinated unplannable followups outside-work
          orphan-candidates undecided in-flight unreadable)
@@ -339,9 +340,15 @@ than asking for one."
                 (when (and todo (not done))
                   (let ((place (org-foresight--entry-place)))
                     (cond
-                     ((and place (eq place base))
+                     ;; Every place the day is at, not the one it is worked
+                     ;; from.  A day based at home with an appointment at the
+                     ;; office is a day the office errands can be run on, and
+                     ;; asking only for the base both hid them here and called
+                     ;; them impossible below -- one mistake, read twice.
+                     ((and place (memq place places))
                       (push (list :title title :marker (point-marker)
-                                  :deadline dead :people (org-foresight--entry-people))
+                                  :place place :deadline dead
+                                  :people (org-foresight--entry-people))
                             here))
                      ;; The mirror image: work put on today that today cannot
                      ;; do.  A home day with an office errand on it is a plan
@@ -349,7 +356,8 @@ than asking for one."
                      ((and place sched
                            (= 0 (org-foresight--day-of sched today)))
                       (push (org-foresight--finding
-                             title (format "needs %s; today is %s" place base))
+                             title (format "needs %s · today: %s" place
+                                           (org-foresight--places-phrase places)))
                             elsewhere)))))
                 ;; (b) A decision that keeps not being made.
                 (when (and todo (not done))
@@ -396,6 +404,10 @@ than asking for one."
                              orphan-candidates)))
       (list
        :here (org-foresight--here-sort (nreverse here))
+       ;; Kept beside the rows it decided, so the section that shows them can
+       ;; head itself without a second scan of every file for an answer this
+       ;; pass already had.
+       :places places
        :signals
        (seq-filter
        #'cdr
@@ -586,33 +598,59 @@ its reader off to find one, and a reader who has to go looking stops reading.")
 (defconst org-foresight-here-urgent "⚠"
   "The mark for work whose need falls before you are next in this place.")
 
+(defun org-foresight--places-phrase (places)
+  "Return PLACES as a phrase: \"home\", or \"home, office\".
+
+Commas rather than an \"and\", because this goes into a note with 36 columns
+to live in.  A list that grows by two characters a place still says something
+when it is cut off; one that saves its last word for the end loses the word
+that mattered."
+  (string-join (mapcar (lambda (p) (format "%s" p)) places) ", "))
+
 (defun org-foresight-report-here (&optional rows day)
-  "Return the work only DAY's place can do, and when that place comes again.
+  "Return the work only where DAY goes can do, and when it goes there again.
 
 The heading is the whole point of the section: \"next at the office on
 Wednesday\" is what turns a list of errands into a decision, because it says
-what the alternative to doing it now actually costs."
+what the alternative to doing it now actually costs.
+
+Where the day goes, not where it is based.  A day worked from home with an
+appointment at the office is a day the office errands can be run on, and it is
+the day to be told so -- by tomorrow the answer is Wednesday again."
   (let* ((day (or day (org-foresight--day-start 0)))
          (rows (or rows (org-foresight-here)))
          (base (org-foresight-day-place day))
+         ;; From the same pass that produced ROWS, where there was one: the
+         ;; question was already answered there, and answering it again costs
+         ;; another walk of every agenda file.
+         (places (or (plist-get org-foresight--signals-cache :places)
+                     (org-foresight-day-places day)))
          (next (org-foresight-next-day-at base day)))
     (if (null rows)
-        (propertize (format "(nothing that only %s can do)" base) 'face 'org-table)
+        (propertize (format "(nothing that only %s can do)"
+                            (org-foresight--places-phrase places))
+                    'face 'org-table)
       (concat
        (org-foresight-report--indent
         (propertize
          (if next
-             (format "%s · next %s day is %s" base base
+             (format "%s · next %s day is %s"
+                     (org-foresight--places-phrase places) base
                      (format-time-string "%a %m-%d" next))
-           (format "%s · not %s again within the horizon" base base))
+           (format "%s · not %s again within the horizon"
+                   (org-foresight--places-phrase places) base))
          'face 'org-agenda-structure))
        "\n"
        (mapconcat
         (lambda (r)
           (let* ((dead (plist-get r :deadline))
                  ;; Urgent means the deadline lands before you are next here:
-                 ;; the place, not the clock, is what runs out.
-                 (urgent (and dead (or (null next) (time-less-p dead next))))
+                 ;; the place, not the clock, is what runs out.  Asked of the
+                 ;; row's own place, not of the day's: on a day that visits
+                 ;; somewhere the list holds work for both, and "next home
+                 ;; day" says nothing at all about an office errand.
+                 (again (org-foresight-next-day-at (plist-get r :place) day))
+                 (urgent (and dead (or (null again) (time-less-p dead again))))
                  (people (plist-get r :people)))
             (org-foresight-report--actionable
              (format "  %s %s  %s"
@@ -625,13 +663,19 @@ what the alternative to doing it now actually costs."
                                                 (or (plist-get r :title) "?"))
                       40 0 ?\s)
                      (propertize
-                      (concat
-                       (if dead
-                           (format "due %s" (format-time-string "%a %m-%d" dead))
-                         "")
-                       (when people
-                         (format "%s(%s)" (if dead " " "")
-                                 (string-join people ", "))))
+                      ;; The place only where the day has more than one: with
+                      ;; one it is the heading, repeated on every row.
+                      (string-join
+                       (delq nil
+                             (list
+                              (when (cdr places)
+                                (format "@%s" (plist-get r :place)))
+                              (when dead
+                                (format "due %s"
+                                        (format-time-string "%a %m-%d" dead)))
+                              (when people
+                                (format "(%s)" (string-join people ", ")))))
+                       " ")
                       'face 'shadow))
              (plist-get r :marker))))
         rows "\n")))))
