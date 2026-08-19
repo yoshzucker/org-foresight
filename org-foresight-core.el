@@ -442,6 +442,48 @@ Looked up in either direction, so only one of each pair need be listed."
   :type 'integer
   :group 'org-foresight)
 
+(defcustom org-foresight-travel-property "TRAVEL"
+  "Property naming an entry that *is* a journey, and where it goes.
+
+Journeys are normally derived: a meeting at the office implies getting there,
+and nothing has to be written down.  Sometimes the derived one is wrong -- the
+train you actually catch, an errand on the way -- and then the answer is to
+write the journey down and have the derivation defer to it.
+
+  * Drive in early
+  <2026-08-19 Wed 07:10-08:00>
+  :PROPERTIES:
+  :TRAVEL: office
+  :END:
+
+The value is the place the journey ends at.  An entry carrying it is booked
+time like any other, counted as travel rather than as work, and it puts you
+where it says from the moment it ends -- so nothing is derived to take you
+somewhere you have already said you are going.
+
+`\[org-foresight-book-travel]' writes one from the derived row it replaces,
+which is the only way it is worth doing by hand."
+  :type 'string
+  :group 'org-foresight)
+
+(defcustom org-foresight-unworkable-places nil
+  "Places nothing can be worked from, so the day does not linger in them.
+
+A journey normally arrives just in time: leaving at the last possible moment
+is what a person does, and the hours before it belong to wherever they were
+already.  That is right for anywhere work can happen, and wrong for the gym.
+An hour there is not an hour anything else can be done in, so the day does not
+wait in it -- what took you there ends and you set off, and the hours that
+frees land where they are worth something.
+
+  \='(gym)
+
+Not a ranking.  The only question a ranking would settle beyond this one is
+where to go when nothing needs you anywhere, and that already has an answer:
+you go back to where the day is worked from."
+  :type '(repeat symbol)
+  :group 'org-foresight)
+
 (defun org-foresight--travel-minutes (from to)
   "Return the minutes needed to get from FROM to TO."
   (if (eq from to)
@@ -477,14 +519,29 @@ that makes a token appearance at the office worth thinking twice about.  It
 is the reason the day has a place of its own: an office day with nothing in
 the calendar used to look like a day at home."
   (let* ((work (org-foresight-work-intervals day))
+         ;; Journeys somebody wrote down.  They are not places the day has to
+         ;; be taken to -- they are the taking -- so they are kept out of what
+         ;; needs a leg derived for it, and walked alongside it instead.
+         (written (seq-filter (lambda (e)
+                                (and (plist-get e :start)
+                                     (plist-get e :place)
+                                     (eq (plist-get e :kind) 'travel)))
+                              ledger))
          (placed (seq-filter (lambda (e)
                                (and (plist-get e :start)
                                     (plist-get e :place)
+                                    (not (eq (plist-get e :kind) 'travel))
                                     ;; Somebody else going somewhere is not a
                                     ;; journey of yours to make.
                                     (not (eq (plist-get e :attention)
                                              'informational))))
                              ledger))
+         ;; Both, in the order the day happens in: a written leg says where
+         ;; you are from the moment it ends, and everything after it has to
+         ;; know.  Nothing is emitted for one -- it is already an entry, and
+         ;; drawing it twice is exactly what this is for.
+         (stops (seq-sort-by (lambda (e) (float-time (plist-get e :start))) #'<
+                             (append placed written)))
          (taken (seq-keep (lambda (e)
                             (and (plist-get e :start)
                                  (cons (plist-get e :start) (plist-get e :end))))
@@ -525,7 +582,12 @@ the calendar used to look like a day at home."
     ;; would come out of the morning, and going in would cost the same working
     ;; day as staying home -- which is exactly the arithmetic that makes a
     ;; token appearance at the office look free.
-    (when (and work (not (eq base here)))
+    (when (and work (not (eq base here))
+               ;; Unless the way in is already written down, in which case
+               ;; the walk below picks it up and this would be the same
+               ;; journey a second time.
+               (not (seq-find (lambda (e) (eq (plist-get e :place) base))
+                              written)))
       (let* ((mins (org-foresight--travel-minutes here base))
              (opens (car (car work)))
              ;; The first thing today that is at the day's own place.
@@ -553,13 +615,23 @@ the calendar used to look like a day at home."
                   out)
             (push leg taken))))
       (setq here base))
-    (dolist (e placed)
+    (dolist (e stops)
       (let ((there (plist-get e :place)))
-        (unless (eq there here)
+        (when (eq (plist-get e :kind) 'travel)
+          ;; Written: it takes you there itself.  Say so and emit nothing.
+          (setq here there))
+        (unless (or (eq there here) (eq (plist-get e :kind) 'travel))
           (let ((mins (org-foresight--travel-minutes here there)))
             (when (> mins 0)
-              (let ((leg (org-foresight--travel-slot
-                          (plist-get e :start) mins taken since off)))
+              (let ((leg (if (memq here org-foresight-unworkable-places)
+                             ;; Nothing keeps you where nothing can be done.
+                             ;; The departure is what is pinned, so the hours
+                             ;; between are spent where they are of some use
+                             ;; rather than sitting in a changing room.
+                             (org-foresight--travel-slot-from
+                              since mins taken off)
+                           (org-foresight--travel-slot
+                            (plist-get e :start) mins taken since off))))
                 (push (list :kind 'travel
                             :title (format "→ %s" there)
                             :marker (plist-get e :marker)
@@ -1014,7 +1086,17 @@ a done-type keyword such as DELEG drops out too."
                        (title (org-get-heading t t t t))
                        (marker (point-marker))
                        (location (org-entry-get (point) "LOCATION"))
-                       (place (org-foresight--entry-place))
+                       ;; A journey somebody wrote down, and where it goes.
+                       ;; Read before the place, because it *is* the place:
+                       ;; this entry does not happen somewhere, it is the
+                       ;; getting there.
+                       (booked-travel
+                        (and org-foresight-travel-property
+                             (org-entry-get (point)
+                                            org-foresight-travel-property)))
+                       (place (if booked-travel
+                                  (intern booked-travel)
+                                (org-foresight--entry-place)))
                        (category (org-entry-get (point) "CATEGORY" t))
                        (attention (org-foresight--entry-attention category))
                        ;; day index -> the kind of claim seen there, so one
@@ -1050,7 +1132,13 @@ a done-type keyword such as DELEG drops out too."
                               ;; worth knowing: it is why the house is empty.
                               (unless (eq attention 'informational)
                                 (push (cons (car occ) end) (aref busy idx)))
-                              (push (list :kind (if todo 'task 'meeting)
+                              (push (list :kind (cond (booked-travel 'travel)
+                                                      (todo 'task)
+                                                      (t 'meeting))
+                                          ;; Org draws this row itself.  The
+                                          ;; grid must not draw it a second
+                                          ;; time under a name it invented.
+                                          :written (and booked-travel t)
                                           :title title :marker marker
                                           ;; Where the stamp itself is, which
                                           ;; is what the agenda's own time
@@ -1397,6 +1485,7 @@ any total taken over them is guaranteed to add up to the day."
                                           org-foresight-private-categories)
                                   'private
                                 (plist-get e :kind))
+                        :written (plist-get e :written)
                         :start s :end n
                         :title (plist-get e :title)
                         :marker (plist-get e :marker)
@@ -1710,9 +1799,18 @@ day as a whole -- a home day with an appointment at the office is a day on
 which the office errands can, in fact, be run.
 
 BANDS default to DAY's, which costs a scan; pass them when they are to hand."
-  (delete-dups
-   (cons (org-foresight-day-place day)
-         (mapcar #'cddr (org-foresight-day-place-spans day bands)))))
+  (let ((bands (or bands (org-foresight-day-blocks day))))
+    (delete-dups
+     (append
+      (list (org-foresight-day-place day))
+      (mapcar #'cddr (org-foresight-day-place-spans day bands))
+      ;; And wherever something is actually booked, which is not the same
+      ;; list.  A span runs from an arrival to a departure, so it exists only
+      ;; where a journey could be placed -- and where one could not, the day
+      ;; still goes: the appointment is at nine whether or not the hour before
+      ;; it was free to travel in.  Without this the entry that puts the day
+      ;; somewhere is the entry told the day never goes there.
+      (seq-keep (lambda (b) (plist-get b :place)) bands)))))
 
 (defun org-foresight-next-day-at (place &optional from horizon)
   "Return the next day at PLACE after FROM, or nil within HORIZON days.

@@ -803,6 +803,76 @@ Nil means `org-default-notes-file'."
       (and (boundp 'org-default-notes-file) org-default-notes-file)
       (user-error "Set `org-foresight-task-file' first")))
 
+(defun org-foresight--file-open-day (when)
+  "Move point in the current buffer to where an entry for WHEN belongs.
+Returns the outline level it should be written at.  Past the day\='s existing
+entries rather than above them: filing two related things in one go should
+leave them in the order they were written, and each one landing on top
+reverses that."
+  (let ((level 1))
+    (when org-foresight-task-datetree
+      (org-datetree-find-date-create
+       (calendar-gregorian-from-absolute (time-to-days when)))
+      (setq level (1+ (org-current-level)))
+      (org-end-of-subtree t t))
+    (unless org-foresight-task-datetree
+      (goto-char (point-max)))
+    (unless (bolp) (insert "\n"))
+    level))
+
+(defun org-foresight--file-journey (title place from to)
+  "File a journey TITLE to PLACE running FROM until TO.
+
+An active range rather than a SCHEDULED stamp: a journey is an hour that
+happens, not a task waiting to be started, and the day has to read it as
+occupied time."
+  (with-current-buffer (find-file-noselect (org-foresight--task-file))
+    (org-with-wide-buffer
+     (let ((level (org-foresight--file-open-day from)))
+       (insert (make-string level ?*) " " title "\n"
+               (format-time-string "<%Y-%m-%d %a %H:%M>--" from)
+               (format-time-string "<%Y-%m-%d %a %H:%M>\n" to))
+       (forward-line -2)
+       (org-set-property org-foresight-travel-property (format "%s" place))
+       (save-buffer)
+       (point-marker)))))
+
+;;;###autoload
+(defun org-foresight-book-travel ()
+  "Write down the journey on this agenda row, so it stops being derived.
+
+A derived leg is a claim about the day, and a good one -- until the day
+disagrees.  The train you actually catch, an errand on the way, going in early
+because the road is quieter: none of that can be guessed from where a meeting
+happens to be, and until now the only way to say it was to argue with the
+arithmetic.
+
+Writes an ordinary timed entry carrying `org-foresight-travel-property\='.
+From then on the derivation defers to it -- the leg is yours, it is booked
+time like any other, and nothing invents a second one to the same place.
+
+Its own command rather than `\[org-agenda-schedule]\='.  A derived row
+answers to none of Org\='s commands, because there is no entry behind it and
+inheriting a neighbour\='s marker would quietly reschedule the wrong thing.
+One key meaning \"make this real\" is honest; one key meaning two different
+things depending on which row it is pressed on is not."
+  (interactive)
+  (let ((journey (org-get-at-bol 'org-foresight-journey)))
+    (unless journey
+      (user-error "No derived journey on this line"))
+    (pcase-let* ((`(,place ,start ,end) journey)
+                 (mins (/ (float-time (time-subtract end start)) 60))
+                 (title (read-string "Journey: " (format "\u2192 %s" place)))
+                 (from (org-read-date t t nil "Leaving" start))
+                 (to (time-add from (* 60 mins))))
+      (org-foresight--file-journey title place from to)
+      (org-foresight--invalidate-signals)
+      (setq org-foresight--shape-cache nil)
+      (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
+      (message "Booked %s, %s-%s" title
+               (format-time-string "%H:%M" from)
+               (format-time-string "%H:%M" to)))))
+
 (defun org-foresight--file-task (title when effort props)
   "File a task TITLE scheduled at WHEN with EFFORT and PROPS.
 WHEN is a time value; its time of day is kept only when it is not midnight,
@@ -815,18 +885,7 @@ poison the very measurement `org-foresight--reschedule-count' reads."
         (org-log-redeadline nil))
     (with-current-buffer (find-file-noselect file)
       (org-with-wide-buffer
-       (let ((level 1))
-         (when org-foresight-task-datetree
-           (org-datetree-find-date-create
-            (calendar-gregorian-from-absolute (time-to-days when)))
-           (setq level (1+ (org-current-level)))
-           ;; Past the day's existing entries, not above them: filing two
-           ;; related tasks in one go should leave them in the order they
-           ;; were written, and each one landing on top reverses that.
-           (org-end-of-subtree t t))
-         (unless org-foresight-task-datetree
-           (goto-char (point-max)))
-         (unless (bolp) (insert "\n"))
+       (let ((level (org-foresight--file-open-day when)))
          (insert (make-string level ?*) " "
                  org-foresight-task-todo " " title "\n")
          (forward-line -1)
