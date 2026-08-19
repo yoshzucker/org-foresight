@@ -184,6 +184,11 @@ then occasionally:
 | =org-foresight-learn-leak=  | weekly              | how much a day loses to the unrecorded |
 | =org-foresight-learn-bias=  | monthly             | how far estimates run over    |
 
+The watcher is read hourly rather than on every redraw: one fetch is four
+requests returning a day of events each, paid inside a redraw you are waiting
+on, and what they buy is an account of hours already spent. =C-u r= asks it
+again now, as does =M-x org-foresight-observe-refresh=.
+
 ** The daily loop
 
 *During the day* — =C-c a a=. Org draws the day; org-foresight hands it what
