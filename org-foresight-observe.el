@@ -44,10 +44,17 @@ Use the IPv4 literal, not `localhost': on Windows `localhost' resolves to IPv6
 ~2s connect-fallback before reaching the server.")
 (defvar org-foresight-observe--cache nil
   "Cons (FETCH-TIME . STRING) caching `org-foresight-report-observed'.")
-(defvar org-foresight-observe-cache-ttl 120
+(defvar org-foresight-observe-cache-ttl 3600
   "Seconds to reuse `org-foresight-observe--cache' before refetching.
+
+One fetch is four requests, each returning a day of events to be parsed, and
+every one of them is paid inside a redraw the reader is waiting on.  What they
+buy is the account of hours already spent -- a rear-view mirror.  Asking it
+again ten minutes later cannot change a decision, so it is asked hourly, and
+`\[org-agenda-redo]' with a prefix argument asks now.
+
 A failed fetch is cached too, so a machine with no watcher pays the wait once
-every couple of minutes rather than on every keystroke that redraws.")
+an hour rather than on every keystroke that redraws.")
 (defvar org-foresight-observe-timeout 2
   "Seconds to wait for ActivityWatch before giving up on it.
 
@@ -61,6 +68,26 @@ makes every fetch wait out the whole timeout, and the agenda waits with it.")
   "When non-nil, exclude overnight idle from today's afk total.
 The day is treated as starting at the first not-afk activity, so `away (afk)'
 counts only breaks within the active window, not pre-dawn idle time.")
+
+(defun org-foresight-observe-refresh (&rest _)
+  "Forget the cached ActivityWatch fetch, so the next question reaches the watcher.
+
+The account of the day is a rear-view mirror and is read hourly.  This is for
+the moment the mirror is the point: something was just clocked, or the watcher
+was just started, and the question is what it says now."
+  (interactive)
+  (setq org-foresight-observe--cache nil))
+
+(defun org-foresight-observe--redo-all (&optional all &rest _)
+  "Refresh the watcher when the whole agenda is being rebuilt.
+
+`\\[org-agenda-redo]' rebuilds the view from the files; with a prefix argument
+it rebuilds all of them, and that is the one reading of the key which should
+take in the half of the day that comes from no file at all.  Plain `r' stays
+cheap, which is what makes it worth pressing."
+  (when all (org-foresight-observe-refresh)))
+
+(advice-add 'org-agenda-redo :before #'org-foresight-observe--redo-all)
 
 (defun org-foresight-observe--get-json (path)
   "GET PATH under `org-foresight-observe-url'.

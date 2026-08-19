@@ -1176,6 +1176,12 @@ asked you to attend was never yours to move in the first place."
     (review :body org-foresight-report--review :place bottom))
   "Alist of (STYLE :body FUNCTION :place top-or-bottom).
 
+FUNCTION is called with one argument: a survey of the horizon, or nil.  It is
+free to ignore it, and must work when it is nil -- but a renderer that wants
+one should take the offered one rather than ask for its own, because a survey
+is a walk of every entry in every agenda file and the caller has already paid
+for this one.
+
 A registry rather than a `pcase' so that a file loaded later can add a style
 without this one having to know about it -- org-foresight-plan.el registers
 its own board here, and it depends on this file, not the other way round.
@@ -1195,14 +1201,16 @@ to act on.")
   "Return where STYLE's report belongs, `top' or `bottom'."
   (or (plist-get (org-foresight-report--renderer style) :place) 'bottom))
 
-(defun org-foresight-report--body ()
+(defun org-foresight-report--body (&optional scan)
   "Return the report text for the current `org-foresight-report-style'.
-Dispatches through `org-foresight-report-renderers'; an unknown style simply
-renders nothing."
-  (when-let ((fn (plist-get (org-foresight-report--renderer) :body)))
-    (funcall fn)))
 
-(defun org-foresight-report--daily ()
+Dispatches through `org-foresight-report-renderers'; an unknown style simply
+renders nothing.  SCAN is a survey of the horizon the renderer may use rather
+than taking one of its own -- see `org-foresight-report-render'."
+  (when-let ((fn (plist-get (org-foresight-report--renderer) :body)))
+    (funcall fn scan)))
+
+(defun org-foresight-report--daily (&optional scan)
   "Return the day looked back on: where the hours went, against where they were
 meant to go.
 
@@ -1221,14 +1229,14 @@ block scanning again for itself."
             ;; happened.  What is done with is read last, and least often.
             (org-foresight-report--badge "Load" "when I could take this on")
             "\n"
-            (org-foresight-report-load)
+            (org-foresight-report-load nil scan)
             "\n\n"
             (org-foresight-report--badge "Spent" "where the hours actually went")
             "\n"
             (org-foresight-report--indent (org-foresight-report-spent clock))
             "\n")))
 
-(defun org-foresight-report--review ()
+(defun org-foresight-report--review (&optional _scan)
   "Return the weekly review: where the last seven days went, and how far the
 estimates that shaped them were out.
 
@@ -1250,12 +1258,12 @@ between two meetings."
                     (org-foresight-report--indent estimates)
                     "\n"))))
 
-(defun org-foresight-report--guarded (thunk)
-  "Call THUNK, returning its string or a visible complaint on failure.
+(defun org-foresight-report--guarded (thunk &rest args)
+  "Call THUNK on ARGS, returning its string or a visible complaint on failure.
 A failure must never take the agenda down with it, but it must not vanish
 either: silently swallowing the error leaves a missing block and no way to
 find out why, which is far worse to live with than one ugly line."
-  (condition-case err (funcall thunk)
+  (condition-case err (apply thunk args)
     (error
      (message "org-foresight: %s" (error-message-string err))
      (propertize (format "(org-foresight failed: %s)"
@@ -1331,11 +1339,24 @@ step afterwards."
              org-foresight-report-style
              (not (buffer-narrowed-p)))
     (save-excursion
-      (let ((inhibit-read-only t)
-            (top-p (eq (org-foresight-report--place) 'top))
-            (body (org-foresight-report--guarded #'org-foresight-report--body))
-            (line (org-foresight-report--guarded
-                   #'org-foresight-report-capacity-line)))
+      (let* ((inhibit-read-only t)
+             (top-p (eq (org-foresight-report--place) 'top))
+             ;; One survey for both halves of the report.  The verdict asks
+             ;; about today and the forward view about the fortnight, and a
+             ;; survey is a walk of every entry in every agenda file -- so the
+             ;; wider of the two questions is asked once and the narrower one
+             ;; reads its answer out of it.  A survey of a fortnight costs what
+             ;; a survey of one day costs: the walk is the price, and the days
+             ;; are only how many buckets it sorts the answers into.
+             (scan (org-foresight-report--guarded
+                    (lambda ()
+                      (org-foresight-scan org-foresight-horizon-days
+                                          (org-foresight--day-start 0)))))
+             (scan (and (not (stringp scan)) scan))
+             (body (org-foresight-report--guarded
+                    #'org-foresight-report--body scan))
+             (line (org-foresight-report--guarded
+                    #'org-foresight-report-capacity-line nil scan)))
         (org-foresight-report--clear)
         (goto-char (point-min))
         (when line
