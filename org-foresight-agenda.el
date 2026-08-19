@@ -138,7 +138,7 @@ this file\'s business to make the ground under it firm.  Inherits the standard
 table, so every other character stays as the user has it.")
 
 (defun org-foresight-agenda--item (txt &optional category dotime face marker
-                                       stamp mark edge)
+                                       stamp mark edge journey)
   "Return TXT as an agenda item at DOTIME, or nil where TXT is empty.
 
 CATEGORY fills the agenda's category column; FACE, when given, is laid over
@@ -164,6 +164,10 @@ duration in \"free 2:15\" as the time of day."
       ;; label somebody may well translate.
       (when edge
         (put-text-property 0 (length item) 'org-foresight-edge edge item))
+      ;; JOURNEY is where a derived leg goes, carried so the row can be turned
+      ;; into an entry that says the same thing.
+      (when journey
+        (put-text-property 0 (length item) 'org-foresight-journey journey item))
       (org-foresight-report--actionable item marker stamp))))
 
 (defun org-foresight-agenda--hhmm (time)
@@ -274,7 +278,7 @@ page.  One day\'s worth: the views that show a key show a single day.")
 (defconst org-foresight-agenda--mark-meanings
   `((,org-foresight-agenda-elsewhere "needs a place today does not go"
      org-foresight-agenda-elsewhere)
-    (,org-foresight-agenda-wont-fit "will not fit"
+    (,org-foresight-agenda-wont-fit "will not fit, or is booked twice"
      org-foresight-report-overcommitted)
     ("↳" "would fit in the gap above" org-foresight-report-spare)
     (,org-foresight-agenda-arrived "arrived today"
@@ -315,12 +319,17 @@ way of saying nothing."
 (defun org-foresight-agenda--travel (bands)
   "Return the rows for the journeys among BANDS.
 
+A journey somebody wrote down is skipped: it is an entry, Org has already
+drawn it, and a second row under a name this file invented would be the same
+hour twice.
+
 A journey is the clearest case for this whole file: it takes an hour of the
 day, it is nowhere in any file, and until it is drawn the day looks an hour
 longer than it is."
   (seq-keep
    (lambda (b)
-     (when (eq (plist-get b :kind) 'travel)
+     (when (and (eq (plist-get b :kind) 'travel)
+                (not (plist-get b :written)))
        (let ((trimmed (plist-get b :trimmed)))
          (org-foresight-agenda--item
           (or (plist-get b :title) "→ ?")
@@ -337,7 +346,12 @@ longer than it is."
           'org-foresight-agenda-derived
           (plist-get b :marker)
           (plist-get b :stamp)
-          (and trimmed org-foresight-agenda-wont-fit)))))
+          (and trimmed org-foresight-agenda-wont-fit)
+          nil
+          ;; Where this leg goes and when, kept on the row so that
+          ;; `org-foresight-book-travel' can write it down without being
+          ;; told again what it is looking at.
+          (list (plist-get b :place) (plist-get b :start) (plist-get b :end))))))
    bands))
 
 (defun org-foresight-agenda--checks (ledger)
@@ -381,13 +395,25 @@ honest statement is that every gap is a little thinner than it looks."
         1.0
       (max 0.0 (min 1.0 (- 1.0 (/ reserve span)))))))
 
-(defun org-foresight-agenda--gap (b keep ledger &optional place)
+(defvar org-foresight-agenda--now nil
+  "The moment the day is being read at, or nil for the present one.
+
+A seam for tests rather than a setting.  What a gap can still hold depends on
+how much of it is left, so a suite that asked the clock would pass all morning
+and fail all afternoon.")
+
+(defun org-foresight-agenda--gap (b keep ledger &optional place now)
   "Return the rows for free band B: what it holds, and what would go in it.
 
 KEEP is the fraction of it that survives the reserve.  The candidates are
 LEDGER's unplaced work that would fit in what is left, largest first -- the
 biggest thing that will go in is the one worth knowing about, since anything
 smaller still fits afterwards.
+
+NOW is what \"what is left\" is measured from.  A stretch that has already gone
+holds nothing, whatever it held this morning, and one that is half gone holds
+what is still in front of it -- an hour offered at two o\'clock for a gap that
+opened at nine is not an offer, it is a reproach.
 
 PLACE is where the body is while B lasts.  Work that named a place of its own
 is offered only where that is the place: an hour at home is no use at all to
@@ -401,8 +427,15 @@ the hour the gap opens.  That is not decoration: it means the answer to
 \"where does this go\" is given by putting the cursor on the line and pressing
 the key you would have pressed anyway."
   (let* ((start (plist-get b :start))
+         (now (or now org-foresight-agenda--now (current-time)))
          (mins (/ (float-time (time-subtract (plist-get b :end) start)) 60.0))
-         (usable (* mins keep))
+         ;; What is left of it, which is all that may be offered.  The row
+         ;; above still reports the stretch as it was: the day's shape is what
+         ;; it was, and only the offer is about what is still ahead.
+         (left (/ (float-time (time-subtract (plist-get b :end)
+                                             (org-foresight--max-time start now)))
+                  60.0))
+         (usable (* (max 0.0 left) keep))
          (at (org-foresight-agenda--hhmm start))
          (fits (seq-sort-by
                 #'org-foresight-report--entry-minutes #'>
@@ -410,6 +443,10 @@ the key you would have pressed anyway."
                  (lambda (e)
                    (and (eq (plist-get e :kind) 'promised)
                         (<= (org-foresight-report--entry-minutes e) usable)
+                        ;; Nowhere is work offered in a place no work happens
+                        ;; in.  The hour is free and no use, and the day is
+                        ;; already leaving it as soon as it can.
+                        (not (memq place org-foresight-unworkable-places))
                         (or (null place)
                             (null (plist-get e :place))
                             (eq (plist-get e :place) place))))
@@ -447,13 +484,15 @@ the key you would have pressed anyway."
 DAY, where given, is what lets each gap know where the body is while it lasts,
 so work that needs a place is offered only in the hours spent there.  Omitted,
 every gap is offered everything that fits."
-  (let ((keep (org-foresight-agenda--keep cap)))
+  (let ((keep (org-foresight-agenda--keep cap))
+        (now (or org-foresight-agenda--now (current-time))))
     (mapcan (lambda (b)
               (when (eq (plist-get b :kind) 'available)
                 (org-foresight-agenda--gap
                  b keep ledger
                  (and day (org-foresight-place-at
-                           day (plist-get b :start) bands)))))
+                           day (plist-get b :start) bands))
+                 now)))
             bands)))
 
 (defcustom org-foresight-agenda-lands-minutes 5
@@ -549,6 +588,41 @@ it, which is the one place a rule was worth drawing."
                               (org-duration-from-minutes over))
                       'org-foresight-report-overcommitted)))))))))
 
+(defun org-foresight-agenda--clashes (ledger)
+  "Return a hash of the LEDGER entries whose hour is claimed twice.
+
+Two things booked over each other is a day that cannot happen, and Org draws
+them one after the other as though it could.  The bands know -- the later of
+the pair is trimmed there to keep the day a partition -- but that is a fact
+about the drawing, and the trimming is exactly what makes the collision
+invisible in the rows.
+
+Both parties are marked, because it takes two to make one.  Which of them
+ought to move is not a question this can answer, and a mark on the later one
+alone would be answering it.
+
+Only what actually competes: something you merely have to hear, or somebody
+else\='s fixture, shares its hour by definition -- see
+`org-foresight-attention-property\='.  Derived rows are left out too; a journey
+with nowhere to go is already reported as one."
+  (let ((timed (seq-filter
+                (lambda (e)
+                  (and (plist-get e :start) (plist-get e :end)
+                       (markerp (plist-get e :marker))
+                       (memq (plist-get e :kind) '(meeting task))
+                       (not (memq (plist-get e :attention)
+                                  '(background informational)))))
+                ledger))
+        (out (make-hash-table :test 'equal)))
+    (dolist (a timed)
+      (dolist (b timed)
+        (unless (eq a b)
+          (when (and (time-less-p (plist-get a :start) (plist-get b :end))
+                     (time-less-p (plist-get b :start) (plist-get a :end)))
+            (let ((m (plist-get a :marker)))
+              (puthash (cons (marker-buffer m) (marker-position m)) t out))))))
+    out))
+
 (defun org-foresight-agenda--mark-rows (list bands cap ledger &optional day)
   "Return LIST with LEDGER's entries marked, given BANDS and CAP.
 
@@ -593,6 +667,7 @@ marks go is a decision about the page as a whole and is taken once, by
                                     60.0)))
                              bands))))
          (places (and day (org-foresight-day-places day bands)))
+         (clashes (org-foresight-agenda--clashes ledger))
          (marks (make-hash-table :test 'equal)))
     (dolist (e ledger)
       (when-let* ((m (plist-get e :marker))
@@ -603,6 +678,10 @@ marks go is a decision about the page as a whole and is taken once, by
                     ((and places (plist-get e :place)
                           (not (memq (plist-get e :place) places)))
                      org-foresight-agenda-elsewhere)
+                    ;; The same glyph and the same news: the day cannot hold
+                    ;; this.  An hour claimed twice is one hour short exactly
+                    ;; as an estimate with no gap to take it is.
+                    ((gethash key clashes) org-foresight-agenda-wont-fit)
                     ((and fits
                           (eq (plist-get e :kind) 'promised)
                           (> (org-foresight-report--entry-minutes e) largest))
