@@ -74,9 +74,11 @@ records the value and loses the reason.
 
   ;; The agenda's left gutter carries the margin and two brackets -- the
   ;; working hours and the hours away from home -- so the prefix needs five
-  ;; leading spaces.
+  ;; leading spaces.  The effort goes in front of `% s': an estimate is a
+  ;; number read down a column, and behind the leader it moves with whatever
+  ;; word that row needed -- `Scheduled: ', `Deadline:  ', or nothing at all.
   (setq org-agenda-prefix-format
-        '((agenda . "     %-8.8c%?-12t% s%?-5e")))
+        '((agenda . "     %-8.8c%?-12t%?-5e% s")))
 
   ;; Categories that are life rather than work.  They fill the day but never
   ;; count against capacity, and are never reported as work that escaped.
@@ -240,7 +242,7 @@ that is Org. Five things are not:
 |--------------------+---------------------------------------------------|
 | =→ office=         | a journey derived from where the day happens      |
 | =0:30 free=        | a stretch nothing has claimed, in the colour of room |
-| =↳ NEXT …=         | promised work that would fit in the gap above it, and can be done from where that gap is |
+| =↳ NEXT …=         | promised work that would fit in what is left of the gap above it, and can be done from where that gap is |
 | =work starts ────= | the edge of the working day                       |
 | =work lands ────=  | where the day actually ends, corrections included |
 
@@ -262,7 +264,7 @@ problem the reader does not have:
 | Mark | Meaning                                                       |
 |------+---------------------------------------------------------------|
 | =@=  | needs a place today does not go — so it is offered in no gap  |
-| =⨯=  | will not fit — a journey that cannot have the hours it needs, or work with no gap big enough to take it |
+| =⨯=  | will not fit, or is booked twice — a journey that cannot have the hours it needs, work with no gap big enough to take it, or an hour two things have both claimed (both of them are marked, since it takes two) |
 | =↳=  | would fit in the gap above                                    |
 | =↯=  | arrived today — it landed on the day rather than was planned into it |
 | =╰=  | shares its time — see [[*Not everything wants all of you]]             |
@@ -859,6 +861,72 @@ gets acted on, and the hour goes on finding out that it was not one.
 Note that this is where the body is minute by minute, not where the day is
 worked from. On an office day the morning before you set off is still spent at
 home, and the evening after you get back is too.
+
+What is left, not what there was. A stretch that has gone offers nothing,
+whatever it held this morning, and one that is half gone offers what still
+fits in front of it: an hour suggested at two o'clock for a gap that opened at
+nine is not an offer. The row above still reports the stretch as it was —
+the shape of the day is what it was — and only the offer is about what is
+still ahead. What became of the morning is a different question, and =v l=
+answers it with what was finished in it.
+
+*** When the derived journey is wrong
+
+It is a claim about the day, and a good one until the day disagrees. The train
+you actually catch, an errand on the way, going in early because the road is
+quieter: none of that can be guessed from where a meeting happens to be.
+
+=M-x org-foresight-book-travel= on a =→ office= row asks when you are leaving
+and writes the journey down:
+
+#+begin_example
+,* → office
+<2026-08-19 Wed 07:10--2026-08-19 Wed 08:10>
+:PROPERTIES:
+:TRAVEL: office
+:END:
+#+end_example
+
+From then on it is an entry like any other -- Org draws it, it is counted as
+travel, and it puts you at the office from the moment it ends -- and nothing
+derives a second leg to a place you have already said you are going to. The
+way back is still derived, since nobody wrote that down.
+
+It has a command of its own rather than answering to =s=. A derived row
+answers to none of Org's commands, because there is no entry behind it and
+inheriting a neighbour's marker would quietly reschedule the wrong thing. One
+key meaning /make this real/ is honest; one key meaning two different things
+depending on the row is not.
+
+#+begin_src emacs-lisp
+(define-key org-agenda-mode-map "T" #'org-foresight-book-travel)
+#+end_src
+
+*** Somewhere you cannot work
+
+A journey normally arrives just in time. Leaving at the last possible moment
+is what a person does, and the hours before it belong to wherever they already
+were — which is right for anywhere work can happen, and wrong for the gym:
+
+#+begin_src emacs-lisp
+(setq org-foresight-unworkable-places '(gym))
+#+end_src
+
+#+begin_example
+without                              with
+  travel   9:10-9:30  → gym           travel   9:10-9:30  → gym
+  persona  9:30-10:30 swim            persona  9:30-10:30 swim
+          10:30-14:20 3:50 free       travel  10:30-11:10 → office
+  ↳ NEXT ordinary work                        11:10-15:00 3:50 free
+  travel  14:20-15:00 → office        ↳ NEXT ordinary work
+#+end_example
+
+The same journey and the same free minutes, moved so that they are somewhere
+they can be spent. Nothing is offered in an unworkable place either way.
+
+Deliberately not a ranking. The only question a ranking would settle beyond
+this one is where to go when nothing needs you anywhere, and that already has
+an answer: back to where the day is worked from.
 
 Being left out is silent, though, and silence is indistinguishable from a bug.
 So work needing a place today never reaches carries =@= in the mark column,

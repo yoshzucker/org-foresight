@@ -4240,6 +4240,11 @@ assertion about \"tomorrow\" survive being run tomorrow."
            (org-foresight-surge-default "0:30")
            (org-foresight-leak-default "0:00")
            (org-foresight-lost-default "0:00")
+           ;; Early, and fixed.  What a gap can still hold is measured from
+           ;; now, so a suite that asked the clock would offer the morning's
+           ;; candidates before lunch and none of them after it.
+           (org-foresight-agenda--now
+            (time-add (org-foresight--day-start 0) (seconds-to-time (* 60 60 7))))
            (org-foresight--shape-cache nil))
        (unwind-protect (progn ,@body)
          (when (get-buffer org-agenda-buffer-name)
@@ -4402,6 +4407,172 @@ free and in the wrong one."
                             (funcall at "16:00")))
       (should (seq-find (lambda (l) (string-match-p "anywhere at all" l))
                         (funcall at "16:00"))))))
+
+(ert-deftest org-foresight-test-e2e-an-hour-claimed-twice-is-marked ()
+  "Two things booked over each other is a day that cannot happen, and it says so.
+
+The bands trim the later of the pair to keep the day a partition, and that
+trimming is exactly what made the collision invisible: Org draws the two rows
+one after the other, and nothing on the page says they are the same hour.
+
+Both are marked, because it takes two.  A commitment that shares its hour
+without competing for it is not one of them."
+  (org-foresight-test--with-agenda
+      (concat "* the school run\n:PROPERTIES:\n:CATEGORY: family\n:END:\n"
+              (org-foresight-test--stamp 0 "08:00" "09:30") "\n"
+              "* standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "09:00" "09:45") "\n"
+              "* somebody else's fixture\n:PROPERTIES:\n:CATEGORY: meeting\n"
+              ":ATTENTION: informational\n:END:\n"
+              (org-foresight-test--stamp 0 "09:15" "10:00") "\n"
+              "* an hour of its own\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "11:00" "12:00") "\n")
+    (let* ((lines (org-foresight-test--agenda))
+           (marked (lambda (re)
+                     (seq-find (lambda (l)
+                                 (and (string-match-p re l)
+                                      (string-search
+                                       org-foresight-agenda-wont-fit l)))
+                               lines))))
+      ;; both sides of the collision, private or not
+      (should (funcall marked "school run"))
+      (should (funcall marked "standup"))
+      ;; what shares its hour is not competing for it
+      (should-not (funcall marked "fixture"))
+      ;; and an hour nothing else wants is left alone
+      (should-not (funcall marked "an hour of its own")))))
+
+(ert-deftest org-foresight-test-e2e-a-journey-can-be-written-down ()
+  "A derived leg can be made real, and once it is, nothing derives it again.
+
+The derivation is a claim about the day, and a good one until the day
+disagrees -- the train you actually catch cannot be guessed from where a
+meeting happens to be.  Writing it down has to end the argument rather than
+add to it: the entry is the journey, and a second one to the same place is
+the same hour drawn twice."
+  (org-foresight-test--with-agenda
+      (concat "* office meeting\n:PROPERTIES:\n:CATEGORY: meeting\n"
+              ":LOCATION: \u672c\u793e\n:END:\n"
+              (org-foresight-test--stamp 0 "13:00" "14:00") "\n")
+    (let* ((org-foresight-work '(("09:00" . "17:30")))
+           (org-foresight-places '((office . "\u672c\u793e")))
+           (org-foresight-home-place 'home)
+           (org-foresight-travel-matrix '(((home . office) . 60)))
+           (org-foresight-task-file (car org-agenda-files))
+           (org-foresight-task-datetree nil)
+           (org-foresight--shape-cache nil)
+           (org-foresight--signals-cache nil))
+      ;; the derived leg is there, and carries where it goes and when
+      (org-foresight-test--agenda)
+      (let ((journey
+             (with-current-buffer org-agenda-buffer-name
+               (goto-char (point-min))
+               (catch 'found
+                 (while (not (eobp))
+                   (when-let ((j (org-get-at-bol 'org-foresight-journey)))
+                     (throw 'found j))
+                   (forward-line 1))
+                 nil))))
+        (should journey)
+        (should (eq 'office (car journey)))
+        ;; write it down, an hour earlier than the derivation chose
+        (org-foresight--file-journey
+         "\u2192 office" 'office
+         (time-subtract (nth 1 journey) 3600)
+         (time-subtract (nth 2 journey) 3600))
+        (setq org-foresight--shape-cache nil)
+        (let ((lines (org-foresight-test--agenda)))
+          ;; the written one is drawn once, by Org, at the hour it says
+          (should (= 1 (seq-count (lambda (l) (string-search "\u2192 office" l))
+                                  lines)))
+          (should (seq-find (lambda (l)
+                              (and (string-search "\u2192 office" l)
+                                   (string-search "11:00" l)))
+                            lines))
+          ;; and the way home is still derived, since nobody wrote that down
+          (should (seq-find (lambda (l) (string-search "\u2192 home" l))
+                            lines)))))))
+
+(ert-deftest org-foresight-test-e2e-you-do-not-wait-where-you-cannot-work ()
+  "A place nothing can be done in is left as soon as what took you there ends.
+
+A journey normally arrives just in time, which is right everywhere work can
+happen and wrong at the gym: the hours between the last press-up and setting
+off for the office were spent in a changing room, and were offered as though
+they could be worked.  Naming the place unworkable moves the departure to the
+front of them, and the same free minutes land somewhere they are worth
+something."
+  (let ((body (concat "* \u30b8\u30e0\n:PROPERTIES:\n:CATEGORY: personal\n"
+                      ":LOCATION: GYM\n:END:\n"
+                      (org-foresight-test--stamp 0 "09:30" "10:30") "\n"
+                      "* office meeting\n:PROPERTIES:\n:CATEGORY: meeting\n"
+                      ":LOCATION: \u672c\u793e\n:END:\n"
+                      (org-foresight-test--stamp 0 "15:00" "16:00") "\n"
+                      "* NEXT ordinary work\nSCHEDULED: "
+                      (org-foresight-test--stamp 0)
+                      "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")))
+    (cl-flet ((lines-with
+                (unworkable re)
+                (org-foresight-test--with-agenda body
+                  (let ((org-foresight-work '(("09:00" . "17:30")))
+                        (org-foresight-places
+                         '((office . "\u672c\u793e") (gym . "GYM")))
+                        (org-foresight-home-place 'home)
+                        (org-foresight-unworkable-places unworkable)
+                        (org-foresight-travel-matrix
+                         '(((home . gym) . 20) ((gym . office) . 40)
+                           ((home . office) . 60)))
+                        (org-foresight--shape-cache nil))
+                    (seq-filter (lambda (l) (string-match-p re l))
+                                (org-foresight-test--agenda))))))
+      ;; left as it is, the journey waits until the meeting needs it ...
+      (should (seq-find (lambda (l) (string-search "14:20" l))
+                        (lines-with nil "\u2192 office")))
+      ;; ... and the hours at the gym are offered for work
+      (should (seq-find (lambda (l) (string-search "10:30" l))
+                        (lines-with nil "\u21b3 NEXT")))
+      ;; named unworkable, you set off the moment the gym ends ...
+      (should (seq-find (lambda (l) (string-search "10:30" l))
+                        (lines-with '(gym) "\u2192 office")))
+      ;; ... and what is offered is offered after you have arrived
+      (should (seq-find (lambda (l) (string-search "11:10" l))
+                        (lines-with '(gym) "\u21b3 NEXT")))
+      (should-not (seq-find (lambda (l) (string-search "10:30" l))
+                            (lines-with '(gym) "\u21b3 NEXT"))))))
+
+(ert-deftest org-foresight-test-e2e-a-gap-that-has-gone-offers-nothing ()
+  "What is left of a stretch is what may be offered, not what it was.
+
+An hour suggested at two o\'clock for a gap that opened at nine is not an
+offer, it is a reproach -- and the morning it names was spent on something,
+which is a different question and a different view.  A stretch half gone
+offers what still fits in front of it."
+  (let ((body (concat "* NEXT two hours\nSCHEDULED: "
+                      (org-foresight-test--stamp 0)
+                      "\n:PROPERTIES:\n:EFFORT: 2:00\n:END:\n"
+                      "* NEXT twenty minutes\nSCHEDULED: "
+                      (org-foresight-test--stamp 0)
+                      "\n:PROPERTIES:\n:EFFORT: 0:20\n:END:\n")))
+    (cl-flet ((offered-at
+                (hh mm at)
+                (org-foresight-test--with-agenda body
+                  (let ((org-foresight-agenda--now
+                         (time-add (org-foresight--day-start 0)
+                                   (seconds-to-time (* 60 (+ (* 60 hh) mm))))))
+                    (seq-filter (lambda (l)
+                                  (and (string-search "\u21b3 NEXT" l)
+                                       (string-search at l)))
+                                (org-foresight-test--agenda))))))
+      ;; first thing: the whole of the morning is ahead, so both are offered
+      (should (= 2 (length (offered-at 7 0 " 9:00"))))
+      ;; from half eleven only twenty minutes of it is left
+      (should (= 1 (length (offered-at 11 30 " 9:00"))))
+      (should (string-match-p "twenty minutes"
+                              (car (offered-at 11 30 " 9:00"))))
+      ;; and once it is over it holds nothing at all, whatever it held
+      (should-not (offered-at 13 30 " 9:00"))
+      ;; while the afternoon, still ahead, is untouched
+      (should (= 2 (length (offered-at 13 30 "13:00")))))))
 
 (ert-deftest org-foresight-test-e2e-work-in-the-wrong-place-says-so ()
   "Work left out of every gap must say why, and only where the reason holds.

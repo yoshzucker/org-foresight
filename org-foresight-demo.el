@@ -129,6 +129,32 @@ what the importer writes and what a reader of the agenda can use."
      ":CATEGORY: meeting\n:LOCATION: 顧客様先\n:END:\n"
      (org-foresight-demo--stamp d1 "09:00" "12:00") "\n\n"
 
+     ;; An hour where nothing can be worked, and an afternoon somewhere else.
+     ;; Left as an ordinary place the journey on would wait until the meeting
+     ;; needed it, and the four hours between would be offered for work -- in
+     ;; a changing room.  `org-foresight-unworkable-places\' moves the
+     ;; departure to the front of them instead, and they land at the office.
+     "* Swim\n:PROPERTIES:\n:UID: demo-swim\n"
+     ":CATEGORY: personal\n:LOCATION: GYM 駅前\n:END:\n"
+     (org-foresight-demo--stamp d3 "13:00" "14:00") "\n\n"
+
+     "* Architecture review\n:PROPERTIES:\n:UID: demo-architecture\n"
+     ":CATEGORY: meeting\n:LOCATION: 本社 会議室B\n:PLAN_PREP: t\n:END:\n"
+     (org-foresight-demo--stamp d3 "16:00" "17:00") "\n\n"
+
+     ;; Two things in one hour.  Neither looks wrong on its own and Org draws
+     ;; them one after the other, so without a mark on both the day reads as
+     ;; though it could happen.
+     "* Recruiting call\n:PROPERTIES:\n:UID: demo-recruiting\n"
+     ":CATEGORY: meeting\n:PLAN_PREP: t\n:END:\n"
+     (org-foresight-demo--stamp 0 "15:00" "15:30") "\n\n"
+
+     ;; Private, and somewhere: the journey to it is derived exactly as the
+     ;; journey to a meeting is, and comes out of the day just as surely.
+     "* Dentist\n:PROPERTIES:\n:UID: demo-dentist\n"
+     ":CATEGORY: family\n:LOCATION: さくら歯科\n:END:\n"
+     (org-foresight-demo--stamp d2 "10:00" "11:00") "\n\n"
+
      ;; A private commitment outside the working hours: it fills the time but
      ;; is not borrowed work.
      "* Dinner with the family\n:PROPERTIES:\n:UID: demo-dinner\n"
@@ -238,6 +264,18 @@ example of every situation the signals look for."
      "**** NEXT Reply to the procurement thread\n"
      "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
      ":PROPERTIES:\n:EFFORT:   0:30\n:CATEGORY: admin\n:END:\n"
+
+     ;; Work the place decides, and today goes there: offered in the hours at
+     ;; the office and in none of the others, and listed under `Here'.
+     "**** NEXT Sign the contract in the safe\n"
+     "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
+     ":PROPERTIES:\n:EFFORT:   0:30\n:CATEGORY: admin\n:PLACE: office\n:END:\n"
+
+     ;; And work the place decides on a day that never goes there.  Offered
+     ;; nowhere -- which is right, and silent, which is why it carries `@'.
+     "**** NEXT Count the stock\n"
+     "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
+     ":PROPERTIES:\n:EFFORT:   1:00\n:CATEGORY: admin\n:PLACE: warehouse\n:END:\n"
 
      "**** NEXT Review the migration plan\n"
      "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
@@ -456,6 +494,9 @@ from, and there is no undo for that."
                     :workdays org-foresight-workdays
                     :work org-foresight-work
                     :day-places org-foresight-day-places
+                    :places org-foresight-places
+                    :travel-matrix org-foresight-travel-matrix
+                    :unworkable-places org-foresight-unworkable-places
                     :check-in org-foresight-check-in
                     :check-out org-foresight-check-out
                     :meeting-categories org-foresight-meeting-categories
@@ -490,6 +531,25 @@ from, and there is no undo for that."
         (setq org-foresight-day-places
               (list (cons (nth 6 (decode-time (org-foresight--day-start 0)))
                           'office)))
+        ;; And what the generated locations mean.  Without these the demo
+        ;; would depend on the reader having configured places already, and a
+        ;; day with no journeys in it is a day with half the point missing --
+        ;; the commute is the cost the whole package exists to make visible.
+        (setq org-foresight-places
+              '((office . "本社\\|会議室")
+                (client . "顧客\\|様先")
+                (gym . "GYM\\|ジム")
+                (clinic . "歯科\\|クリニック")
+                (warehouse . "倉庫"))
+              org-foresight-travel-matrix
+              '(((home . office) . 45) ((home . client) . 60)
+                ((office . client) . 45) ((home . gym) . 15)
+                ((gym . client) . 50) ((gym . office) . 40)
+                ((home . clinic) . 20) ((home . warehouse) . 90))
+              ;; Nothing can be worked from a changing room, so the day does
+              ;; not wait in one: the demo leaves the gym the minute it is
+              ;; over, and the hours that frees land at the client instead.
+              org-foresight-unworkable-places '(gym))
         ;; What the generated categories mean, since the demo is meant to be
         ;; looked at before anything has been configured.  Without these the
         ;; club fixtures would eat the evening they are supposed to leave
@@ -533,6 +593,11 @@ from, and there is no undo for that."
           (plist-get org-foresight-demo--saved :workdays)
           org-foresight-work (plist-get org-foresight-demo--saved :work)
           org-foresight-day-places (plist-get org-foresight-demo--saved :day-places)
+          org-foresight-places (plist-get org-foresight-demo--saved :places)
+          org-foresight-travel-matrix
+          (plist-get org-foresight-demo--saved :travel-matrix)
+          org-foresight-unworkable-places
+          (plist-get org-foresight-demo--saved :unworkable-places)
           org-foresight-check-in (plist-get org-foresight-demo--saved :check-in)
           org-foresight-check-out (plist-get org-foresight-demo--saved :check-out)
           org-foresight-meeting-categories
