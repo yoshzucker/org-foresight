@@ -4540,6 +4540,62 @@ something."
       (should-not (seq-find (lambda (l) (string-search "10:30" l))
                             (lines-with '(gym) "\u21b3 NEXT"))))))
 
+(ert-deftest org-foresight-test-the-watcher-is-asked-once-an-hour ()
+  "One fetch is four requests, paid inside a redraw somebody is waiting on.
+
+What they buy is the account of hours already spent, so asking again ten
+minutes later cannot change a decision.  Plain `r\=' therefore reuses the
+answer; a prefix argument -- the reading of the key that means rebuild all of
+it -- goes back to the watcher."
+  (let ((fetches 0)
+        (org-foresight-observe--cache nil))
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (lambda (&rest _) (setq fetches (1+ fetches)) nil)))
+      (should (>= org-foresight-observe-cache-ttl 3600))
+      (org-foresight-observe-today)
+      (org-foresight-observe-today)
+      (org-foresight-observe-today)
+      (should (= 1 fetches))
+      ;; a plain redraw leaves it alone ...
+      (org-foresight-observe--redo-all nil)
+      (org-foresight-observe-today)
+      (should (= 1 fetches))
+      ;; ... and rebuilding all of it asks again
+      (org-foresight-observe--redo-all t)
+      (org-foresight-observe-today)
+      (should (= 2 fetches)))))
+
+(ert-deftest org-foresight-test-the-day-file-is-not-opened-to-be-asked ()
+  "Asking what shape a day is must not cost a look at the disk.
+
+The question is put a hundred times over while one agenda is drawn -- every
+call to `org-foresight-work-intervals\=' and `org-foresight-day-place\=' is
+one -- and each one used to open the day file, once to read a modification
+tick and four times more to read four properties off one heading.  On a
+synchronised drive that was the most expensive thing the package did."
+  (org-foresight-test--with-day
+      (concat "* 2026\n** 2026-08\n*** "
+              (format-time-string "%Y-%m-%d %a" (org-foresight--day-start 0))
+              "\n:PROPERTIES:\n:WORK: 10:00-16:00\n:PLACE: office\n:END:\n")
+    (let ((org-foresight-day-file (car org-agenda-files))
+          (org-foresight--shape-cache nil)
+          (opens 0))
+      ;; Twice, as a session has: the first read visits the file, and the
+      ;; second is the first to see a modification tick at all -- so it is the
+      ;; second that settles.  From then on nothing is opened again until
+      ;; something changes.
+      (org-foresight-day-shape (org-foresight--day-start 0))
+      (org-foresight-day-shape (org-foresight--day-start 0))
+      (cl-letf* ((real (symbol-function 'find-file-noselect))
+                 ((symbol-function 'find-file-noselect)
+                  (lambda (&rest args)
+                    (setq opens (1+ opens))
+                    (apply real args))))
+        (dotimes (_ 50)
+          (org-foresight-work-intervals (org-foresight--day-start 0))
+          (org-foresight-day-place (org-foresight--day-start 0)))
+        (should (= 0 opens))))))
+
 (ert-deftest org-foresight-test-e2e-a-gap-that-has-gone-offers-nothing ()
   "What is left of a stretch is what may be offered, not what it was.
 

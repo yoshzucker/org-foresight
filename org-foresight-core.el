@@ -1329,8 +1329,13 @@ own heading, so a day nobody has said anything about needs no input at all."
 `org-foresight-work-intervals' is asked for every day of the horizon, several
 times per render; without this each call would search the whole file again.")
 
-(defun org-foresight--day-property (day name)
-  "Return property NAME from DAY's own heading in the day tree, or nil."
+(defun org-foresight--day-properties (day names)
+  "Return an alist of the properties NAMES on DAY's own heading in the day tree.
+
+All of them in one visit, because they are all on the same heading: asked one
+at a time this opened the file, searched it from the top and threw the
+position away once per property, four times over, for a heading most days do
+not have at all.  What is not there is simply absent from the answer."
   (let ((file (org-foresight--places-file)))
     (when (and file (file-exists-p file))
       (with-current-buffer (find-file-noselect file)
@@ -1340,12 +1345,22 @@ times per render; without this each call would search the whole file again.")
                 (concat "^\\*+ +"
                         (regexp-quote (format-time-string "%Y-%m-%d" day)))
                 nil t)
-           (org-entry-get (point) name)))))))
+           (seq-keep (lambda (name)
+                       (when-let ((v (org-entry-get (point) name)))
+                         (cons name v)))
+                     names)))))))
 
 (defun org-foresight--shape-table ()
-  "Return the shape cache, emptied whenever the day file has changed."
+  "Return the shape cache, emptied whenever the day file has changed.
+
+`get-file-buffer\=', not `find-file-noselect\=': this runs on every question
+about every day -- a hundred times over while one agenda is drawn -- and all
+it wants is a number that says whether the answers are still good.  Opening
+the file to ask costs a stat every time, which on a synchronised drive is the
+single most expensive thing this package does.  A file nobody has visited has
+nothing cached to invalidate, and the first read of it visits it anyway."
   (let* ((file (org-foresight--places-file))
-         (buf (and file (file-exists-p file) (find-file-noselect file)))
+         (buf (and file (get-file-buffer file)))
          (tick (and buf (buffer-chars-modified-tick buf))))
     (unless (and org-foresight--shape-cache
                  (equal tick (car org-foresight--shape-cache)))
@@ -1388,18 +1403,20 @@ be declared free of work by saying so."
 
 (defun org-foresight--day-shape-1 (day)
   "Work out DAY's shape from the day file and the defaults."
-  (let* ((wake (or (org-foresight--day-property day "WAKE")
+  (let* ((declared (org-foresight--day-properties
+                    day '("WAKE" "SLEEP" "WORK" "PLACE")))
+         (wake (or (cdr (assoc "WAKE" declared))
                    (car org-foresight-awake)))
-         (sleep (or (org-foresight--day-property day "SLEEP")
+         (sleep (or (cdr (assoc "SLEEP" declared))
                     (cdr org-foresight-awake)))
-         (raw (org-foresight--day-property day "WORK"))
+         (raw (cdr (assoc "WORK" declared)))
          (work
           (cond
            (raw (org-foresight--parse-ranges raw))  ; "none" parses to nothing
            ((memq (nth 6 (decode-time day)) org-foresight-workdays)
             org-foresight-work)
            (t nil)))
-         (place (or (org-foresight--day-property day "PLACE")
+         (place (or (cdr (assoc "PLACE" declared))
                     (cdr (assq (nth 6 (decode-time day))
                                org-foresight-day-places))
                     org-foresight-home-place))
