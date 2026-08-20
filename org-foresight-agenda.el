@@ -299,7 +299,7 @@ shares the hour is quiet.")
       (propertize glyph 'face (nth 2 entry))
     glyph))
 
-(defun org-foresight-agenda-key ()
+(defun org-foresight-agenda-key (&optional _scan)
   "Return a line explaining the marks this agenda used, or nil for none.
 
 Only the marks actually on the page.  A key describing a clash on a day that
