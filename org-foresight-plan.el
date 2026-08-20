@@ -216,9 +216,11 @@ board -- only pays for the walk once.")
 (defvar org-foresight--signals-cache nil
   "Plist (:time T :files F :signals S) memoizing `org-foresight-signals'.")
 
-(defun org-foresight-signals (&optional force)
+(defun org-foresight-signals (&optional force scan)
   "Return an alist (LABEL . FINDINGS) of work that exists but is not planned.
-Cached for `org-foresight-signals-cache-ttl' seconds unless FORCE.
+Cached for `org-foresight-signals-cache-ttl' seconds unless FORCE.  SCAN, a
+survey wide enough to cover a week, is used instead of taking one where the
+caller already has it.
 
 The cache is keyed on the agenda file list as well as the clock.  Time alone
 would be wrong: switching which files are in play -- demo data in or out, a
@@ -233,7 +235,7 @@ board describing the other corpus is worse than a slow one."
                                 (plist-get org-foresight--signals-cache :time)))
                 org-foresight-signals-cache-ttl))
         (plist-get org-foresight--signals-cache :signals)
-      (let ((result (org-foresight--signals-compute)))
+      (let ((result (org-foresight--signals-compute scan)))
         (setq org-foresight--signals-cache
               (append (list :time (current-time) :files files) result))
         (plist-get result :signals)))))
@@ -255,7 +257,7 @@ what asking one costs."
       (org-foresight-signals force))
     (plist-get org-foresight--signals-cache :here)))
 
-(defun org-foresight--signals-compute ()
+(defun org-foresight--signals-compute (&optional scan)
   "Walk the agenda files and return the signals.
 
 One pass, in the same spirit as the other scans here: every signal is a
@@ -270,7 +272,7 @@ than asking for one."
          ;; both.  A survey of a week costs what a survey of a day costs --
          ;; the walk is the price, and the days are only how many buckets it
          ;; sorts the answers into.
-         (scan (org-foresight-scan org-foresight--borrow-days today))
+         (scan (or scan (org-foresight-scan org-foresight--borrow-days today)))
          (places (org-foresight-day-places
                   today (org-foresight-day-blocks today scan)))
          here elsewhere
@@ -768,7 +770,7 @@ either way, and only the shortcut has appeared."
         keys
       (format "%s M-x %s" keys command))))
 
-(defun org-foresight-plan--verdict-line ()
+(defun org-foresight-plan--verdict-line (&optional scan)
   "Return a one-line summary of what is unsettled, or nil when nothing is.
 
 The daily agenda otherwise gives no hint that anything is outstanding, and a
@@ -780,7 +782,7 @@ both.  It is the one kind that stops being possible when you stand up, so a
 number that folded it into the rest would be a number that says the same
 thing at half past nine and at half past five."
   (let ((n (apply #'+ (mapcar (lambda (g) (length (cdr g)))
-                              (org-foresight-signals))))
+                              (org-foresight-signals nil scan))))
         (here (length (org-foresight-here))))
     (when (> (+ n here) 0)
       (concat
