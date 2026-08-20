@@ -105,6 +105,9 @@ hour goes."
   :type 'integer
   :group 'org-foresight)
 
+(defconst org-foresight--borrow-days 7
+  "How many days the borrowing signal looks over, and so how wide its survey is.")
+
 (defcustom org-foresight-undecided-enabled nil
   "Whether to report captured items that have not been decided about.
 
@@ -262,7 +265,12 @@ than asking for one."
          (today (org-foresight--day-start 0))
          (horizon (time-add today (days-to-time org-foresight-horizon-days)))
          (uids (make-hash-table :test 'equal))
-         (scan (org-foresight-scan 1 today))
+         ;; The week, not the day: the borrowing signal asks about seven of
+         ;; them and everything else asks about today, and one survey answers
+         ;; both.  A survey of a week costs what a survey of a day costs --
+         ;; the walk is the price, and the days are only how many buckets it
+         ;; sorts the answers into.
+         (scan (org-foresight-scan org-foresight--borrow-days today))
          (places (org-foresight-day-places
                   today (org-foresight-day-blocks today scan)))
          here elsewhere
@@ -426,7 +434,7 @@ than asking for one."
                    (if (> (length in-flight) org-foresight-wip-limit)
                        (nreverse in-flight)
                      nil))
-             (cons "Borrowed from private time" (org-foresight--borrow-findings))
+             (cons "Borrowed from private time" (org-foresight--borrow-findings scan))
              (cons "Leaking (unclocked work)" (org-foresight--leak-findings))
              (cons "Cannot be done from here" (nreverse elsewhere))
              (cons "Undecided (captured, not decided)" (nreverse undecided))
@@ -516,13 +524,22 @@ in a day with ninety minutes left of it, whatever the morning looked like."
               out)))
     (nreverse out)))
 
-(defun org-foresight--borrow-findings ()
-  "Return a finding when this week has taken too much from private time."
+(defun org-foresight--borrow-findings (&optional scan)
+  "Return a finding when this week has taken too much from private time.
+
+SCAN must cover `org-foresight--borrow-days\=' days from today.  Without one
+each day asked for its own, and a survey is a walk of every entry in every
+agenda file: seven of them, for one line that is usually not printed.  On a
+slow machine that was four seconds every time the signals fell out of their
+few-second cache, and a fifth of a second every other time -- which is what a
+redraw that feels unpredictable turns out to be made of."
   (let ((total 0.0)
-        (days 0))
-    (dotimes (i 7)
+        (days 0)
+        (scan (or scan (org-foresight-scan org-foresight--borrow-days
+                                           (org-foresight--day-start 0)))))
+    (dotimes (i org-foresight--borrow-days)
       (let* ((day (org-foresight--day-start i))
-             (cap (ignore-errors (org-foresight-capacity day))))
+             (cap (ignore-errors (org-foresight-capacity day scan))))
         (when-let ((borrowed (and cap (plist-get cap :borrowed-min))))
           (when (> borrowed 0)
             (setq total (+ total borrowed) days (1+ days))))))

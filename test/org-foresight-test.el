@@ -4540,6 +4540,35 @@ something."
       (should-not (seq-find (lambda (l) (string-search "10:30" l))
                             (lines-with '(gym) "\u21b3 NEXT"))))))
 
+(ert-deftest org-foresight-test-the-signals-survey-the-files-once ()
+  "Working out the signals must walk the agenda files once, not eight times.
+
+The borrowing signal asks about seven days, and asked each of them for its own
+survey -- seven walks of every entry in every file, for one line that is
+usually not printed, plus the walk the rest of the signals needed.  A survey
+of a week costs what a survey of a day costs, so one serves them all.
+
+Measured on a slow machine this was the whole of the difference between a
+redraw that took four seconds and one that took nine tenths of a second: the
+eight extra walks landed whenever the signals fell out of their few-second
+cache, which is once in every four or five redraws."
+  (org-foresight-test--with-signals
+      (concat "* NEXT something\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n"
+              "* dinner\n:PROPERTIES:\n:CATEGORY: family\n:END:\n"
+              (org-foresight-test--stamp 0 "19:00" "20:30") "\n")
+    (let ((org-foresight--signals-cache nil)
+          (org-foresight--shape-cache nil)
+          (org-foresight-private-categories '("family"))
+          (surveys 0))
+      (cl-letf* ((real (symbol-function 'org-foresight-scan))
+                 ((symbol-function 'org-foresight-scan)
+                  (lambda (&rest args)
+                    (setq surveys (1+ surveys))
+                    (apply real args))))
+        (org-foresight-signals t)
+        (should (= 1 surveys))))))
+
 (ert-deftest org-foresight-test-the-profile-carries-no-content ()
   "The profile must be sendable to somebody who may not see the calendar.
 
