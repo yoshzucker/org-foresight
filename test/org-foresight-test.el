@@ -4567,7 +4567,13 @@ cache, which is once in every four or five redraws."
                     (setq surveys (1+ surveys))
                     (apply real args))))
         (org-foresight-signals t)
-        (should (= 1 surveys))))))
+        (should (= 1 surveys))
+        ;; And none at all when the caller has one to offer, which is the case
+        ;; every time the verdict asks: the report has already surveyed the
+        ;; horizon to draw its own blocks, and a week is inside a fortnight.
+        (setq surveys 0)
+        (org-foresight-signals t (funcall real 14 (org-foresight--day-start 0)))
+        (should (= 0 surveys))))))
 
 (ert-deftest org-foresight-test-the-profile-carries-no-content ()
   "The profile must be sendable to somebody who may not see the calendar.

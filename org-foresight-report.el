@@ -472,14 +472,20 @@ CLOCK is the plist from `org-foresight-clock-scan'."
 
 (defvar org-foresight-verdict-extras nil
   "Functions contributing extra lines beneath the capacity verdict.
-Each is called with no arguments and returns a line, or nil to add nothing.
+
+Each is called with one argument -- a survey of the horizon, or nil -- and
+returns a line, or nil to add nothing.  It is free to ignore the survey and
+must work when it is nil, but one that wants a survey should take the offered
+one: a survey is a walk of every entry in every agenda file, and the caller
+has already paid for this one.
+
 A registry rather than a fixed call, so a file loaded later can add to the
 summary without this one having to know about it.")
 
-(defun org-foresight-report--verdict-extras ()
+(defun org-foresight-report--verdict-extras (&optional scan)
   "Return the extra verdict lines, newline-prefixed, or the empty string."
   (mapconcat (lambda (fn)
-               (if-let ((line (org-foresight-report--guarded fn)))
+               (if-let ((line (org-foresight-report--guarded fn scan)))
                    (concat "\n" line)
                  ""))
              org-foresight-verdict-extras ""))
@@ -910,7 +916,7 @@ not have to go looking for is a number you will not look at."
       (when (> (plist-get cap :committed-min) 0)
         (org-foresight-report--indent
          (concat (org-foresight-report--rest-day cap)
-                 (org-foresight-report--verdict-extras)))))
+                 (org-foresight-report--verdict-extras scan)))))
      (t
       (org-foresight-report--indent
        (concat (org-foresight-report--verdict cap)
@@ -923,7 +929,7 @@ not have to go looking for is a number you will not look at."
                  (concat "\n" frees))
                (when-let ((bars (org-foresight-report--bars cap)))
                  (concat "\n" bars))
-               (org-foresight-report--verdict-extras)))))))
+               (org-foresight-report--verdict-extras scan)))))))
 
 (defun org-foresight-report--rest-day (cap)
   "Return the one line a day with no working hours has to say, from CAP.
