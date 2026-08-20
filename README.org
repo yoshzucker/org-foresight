@@ -126,6 +126,32 @@ draws the same agenda with a different block underneath is not a third place
 effect, and what to do next. Worth running once after the above and again
 whenever a figure looks wrong.
 
+** When a redraw is slow
+
+=M-x org-foresight-profile=, from the agenda that is slow. It redraws five
+times, times what each redraw spent where, and writes a report:
+
+#+begin_example
+Redraw, 4 runs, seconds
+                      1      2      3      4  median   calls
+  total            0.92   0.49   0.50   0.51    0.51   1
+    scan           0.44   0.40   0.41   0.39    0.41   2
+    watcher        0.41   0.00   0.00   0.00    0.00   1/0/0/0
+    elsewhere      0.06   0.09   0.09   0.12    0.09   1
+  opens            0.00   0.00   0.00   0.00    0.00   12
+#+end_example
+
+Several runs because the interesting number is the spread: the first redraw
+above pays for the watcher and the rest do not, which is what a machine that
+feels unreliable usually turns out to be.
+
+*The report carries no content.* Every line of it is assembled from durations,
+counts and sizes, and the code that assembles it is never handed a heading, a
+file name, a category, a place or a tag — so it can be sent to somebody who
+may not see the calendar it was measured on. Read it before sending it all the
+same; it is a few dozen lines, and looking is how you find out that it is
+true.
+
 ** Trying it on invented data of your own
 
 A file like this exercises the whole model. Add it to =org-agenda-files=:

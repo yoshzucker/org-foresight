@@ -54,6 +54,7 @@
 (require 'org-foresight-report)
 (require 'org-foresight-agenda)
 (require 'org-foresight-plan)
+(require 'org-foresight-profile)
 
 ;;;; Entry points
 
