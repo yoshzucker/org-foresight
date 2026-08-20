@@ -4540,6 +4540,57 @@ something."
       (should-not (seq-find (lambda (l) (string-search "10:30" l))
                             (lines-with '(gym) "\u21b3 NEXT"))))))
 
+(ert-deftest org-foresight-test-the-profile-carries-no-content ()
+  "The profile must be sendable to somebody who may not see the calendar.
+
+That is a property of the code, not of the reader remembering to strip
+fields: the functions that assemble the report are handed durations, counts
+and sizes, and are never handed a heading, a file name, a category, a place
+or a tag.  This is the test that says so -- every distinctive string in the
+fixture is looked for in the output, including the name of the file it was
+all read out of."
+  (require 'org-foresight-profile)
+  (org-foresight-test--with-agenda
+      (concat "* NEXT ACQUISITIONOFNORTHERNCO\n:PROPERTIES:\n"
+              ":CATEGORY: SECRETPROJECTX\n:PLACE: UNDISCLOSEDSITE\n"
+              ":EFFORT: 1:00\n:END:\n"
+              "SCHEDULED: " (org-foresight-test--stamp 0) "\n"
+              "* CONFIDENTIALMEETING\n:PROPERTIES:\n:CATEGORY: SECRETPROJECTX\n"
+              ":LOCATION: HEADQUARTERSALPHA\n:END:\n"
+              (org-foresight-test--stamp 0 "13:00" "14:00") " :SENSITIVETAG:\n")
+    (let* ((org-foresight-places '((UNDISCLOSEDSITE . "HEADQUARTERSALPHA")))
+           (org-foresight-profile-file
+            (make-temp-file "org-foresight-profile" nil ".txt"))
+           (org-foresight--shape-cache nil))
+      (unwind-protect
+          (progn
+            (org-foresight-test--agenda)
+            (with-current-buffer org-agenda-buffer-name
+              (cl-letf (((symbol-function 'display-buffer) #'ignore)
+                        ((symbol-function 'org-foresight-observe--get-json)
+                         (lambda (&rest _) nil)))
+                (org-foresight-profile 2)))
+            (let ((report (with-temp-buffer
+                            (insert-file-contents org-foresight-profile-file)
+                            (buffer-string))))
+              (should (string-match-p "org-foresight profile" report))
+              ;; the numbers are there ...
+              (should (string-match-p "headings" report))
+              (should (string-match-p "scan" report))
+              ;; ... and nothing that was read to produce them
+              (dolist (secret '("ACQUISITIONOFNORTHERNCO" "SECRETPROJECTX"
+                                "UNDISCLOSEDSITE" "CONFIDENTIALMEETING"
+                                "HEADQUARTERSALPHA" "SENSITIVETAG"
+                                "org-foresight-test"))
+                (should-not (string-match-p (regexp-quote secret) report)))
+              ;; nor the path of any file it was read from
+              (dolist (file org-agenda-files)
+                (should-not (string-match-p (regexp-quote file) report))
+                (should-not (string-match-p
+                             (regexp-quote (file-name-nondirectory file))
+                             report)))))
+        (delete-file org-foresight-profile-file)))))
+
 (ert-deftest org-foresight-test-the-watcher-is-asked-once-an-hour ()
   "One fetch is four requests, paid inside a redraw somebody is waiting on.
 
