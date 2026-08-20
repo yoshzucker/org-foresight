@@ -164,7 +164,13 @@ of the answer."
     (concat
      (format "  emacs           %s (%s)\n" emacs-version system-type)
      (format "  org             %s\n" (org-version))
-     (format "  native-comp     %s\n"
+     ;; Two facts, not one.  A build made with native compilation still
+     ;; reports it unavailable when libgccjit cannot be loaded, and the two
+     ;; cases want opposite answers: one needs a library, the other needs a
+     ;; different Emacs.  Reporting only the second sends a reader after the
+     ;; wrong one.
+     (format "  native-comp     built in %s, usable %s\n"
+             (if (featurep 'native-compile) "yes" "no")
              (if (and (fboundp 'native-comp-available-p)
                       (native-comp-available-p))
                  "yes" "no"))
