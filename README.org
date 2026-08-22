@@ -221,12 +221,14 @@ again now, as does =M-x org-foresight-observe-refresh=.
 no file contains:
 
 #+begin_example
- Work 8:30 · OVER by 3:45 · ends 20:39 · reserve 0:36 of 1:00 · est +1:27
+ Work 8:30 · 2:01 left of the day · OVER by 3:45 · reserve 0:14 of 1:00
  ↳ any one of Rewrite the annual re… 6:00→7:12 · Project review 1:30
-            █ booked 2:45  █ travel 2:00  █ promised 7:30  ▭ reserve 1:00
- Work  8:30 ████████████████████████████████████████┃██████████████████
- Off   7:00 ███████··························
-            █ private 1:30  · unclaimed 5:30
+            █ baseline 4:15  █ surge 0:35  █ borrowed 0:20  ▭ unclocked 0:49
+            ▭ away 0:30  ┃
+            █ booked 0:45  █ travel 1:16  █ promised 7:30  ▭ reserve 0:14
+ Work  8:30 ███████████████████████▭▭▭▭▭▭▭┃████████┃██████████████████████…
+ Off   7:00 ████······┃███████···············
+            █ borrowed 0:45  · own 1:15  ┃  █ private 1:30  · unclaimed 3:30
 
 Thursday   13 August 2026
           08:00...... ----------------
@@ -265,6 +267,278 @@ Thursday   13 August 2026
  ↳ lost 0:40 · away from the machine
 
 #+end_example
+
+*** Both bars are ruled at now
+
+Two bars, each ruled once. Left of a rule is measured and right of it is
+predicted, and the rule itself is the present moment.
+
+Both, because a day cannot be half measured. The work row was made robust
+across the day first and the off row left as a forecast, and it then decayed
+in exactly the way the work row had stopped doing: by the evening it was
+still offering hours that had gone. Whatever is true of one is true of the
+other — they are two halves of one waking day.
+
+The rules do not line up between the rows, and should not. Each bar draws its
+own hours end to end — the work row leaves out the evening, the off row
+leaves out the working day — so the same moment falls at a different fraction
+of each. What a rule says is /this much of this row's hours has passed/. It was two rows once,
+the second indented by the width of the first — which made the seam something
+to be inferred from an alignment rather than something on the page, and a
+reader should not have to measure a picture to find out what it says.
+
+The rule is the same glyph the overflow uses, in a different colour: Org's
+own =now= colour, so the mark in the bar and the =← now= line in the agenda
+below it are visibly one statement about one time. It replaces the cell it
+stands on rather than being inserted between the halves, which is what keeps
+the bar the length its scale says it is.
+
+One legend per bar, on the bar's own side of the block: the working day's
+above it, the hours off below theirs. Each carries the rule /inside/ it,
+between the terms that were measured and the terms that are forecast — so the
+legend is divided the way the bar it names is divided, and the same mark
+means the same thing wherever it appears. A legend takes as many lines as its
+terms need; what must not happen is a legend drifting away from the bar it
+belongs to.
+
+It exists because a forecast alone gets less true as the day goes on. What
+may still be promised is worked out from what is *left* to do — so a task
+marked DONE leaves the calculation entirely, and the hours it took leave with
+it. That is right for a forecast and a lie about a day: by four in the
+afternoon a bar drawn from the forecast alone reports an afternoon of slack,
+when what is true is that the day is nearly gone. Nothing was remembering the
+hours that had been spent.
+
+So the elapsed half is now drawn from what actually happened, and its four
+parts divide it exactly:
+
+=baseline= and =surge= are the two halves of the clock, named the way load is
+named everywhere: the level the day was already running at, and what landed
+on top of it. They are told apart by the one thing that is checked — whether
+the entry carries a dated surge mark — and by nothing else. Not =planned=:
+that would claim a plan had been consulted, and none is. A task written this
+morning and clocked at noon is baseline, and so is effort spent long past its
+estimate.
+
+They add up, because the bar adds them:
+
+: baseline + surge          = the clock, inside the working hours
+: + worked (on the Off row) = the Clocked total in [Spent]
+
+| Part         | What it is                                                |
+|--------------+-----------------------------------------------------------|
+| =baseline=   | the clock was running, on work that did not arrive today   |
+| =surge=      | the clock was running, against work that arrived          |
+| =borrowed=   | the clock was running, on something private — an hour work lent out |
+| =unclocked=  | no clock, and nothing says you were away                  |
+| =away=       | no clock, and the watcher says you were away from the machine |
+
+*=borrowed= goes both ways, and each row names the hours it lent the other.*
+Life taking an hour of the working day is =borrowed= on the =Work= row; work
+taking an evening is =borrowed= on the =Off= row. Same word, same rule,
+opposite directions — and each is drawn in the colour of whoever took the
+time, so the row tells you which way it went.
+
+A clock is not evidence that an hour was work. Counting every clock line as
+work reported an hour at the dentist as an hour of the day's work, and the
+same clock running at eight in the evening as an hour borrowed from the
+evening for work. Entries in =org-foresight-private-categories= are told
+apart, and their clock is still a clock — it is not leak, and the watcher's
+account goes on seeing it — but it is not work.
+
+=unclocked= is drawn in the =reserve='s own colour, in the same box, on the
+same blank cell. =surge= is that same colour on a cell that is full, which is
+what tells it from =baseline= beside it — the reserve was held for exactly
+this, and here it is, spent. That is not a
+coincidence to be tidied away. The reserve is the forecast of exactly these
+hours, held back for work arriving and for time going unrecorded, and these
+are that forecast coming true. Read across the seam, an outline held open
+ahead of =now= becomes, behind it, either a fill — the interruption arrived
+and somebody clocked it — or the same outline again: the hour went, and
+nothing was written in it.
+
+Not dots. A dot means an hour nobody wanted, which is what =spare= and
+=unclaimed= are. An unrecorded hour /was/ wanted and used; only the record of
+it is missing, and an outline says exactly that — the hour is there, and
+nothing is written inside it.
+
+=away= is drawn in dots, not in a box, and the difference is the point.
+=unclocked= is an hour that was there and went unwritten — a failure of the
+record, which is what an outline says: the hour is present, nothing inside
+it. =away= is an hour you were not present for, which is not a recording
+failure but an absence, and absence is what the dot means everywhere else
+here. It also means the two are never told apart by a hairline: set side by
+side as blanks they are two boxes touching, and two touching boxes read as
+one. Its colour is the one the sparkline gives the same hours in =[Spent]=.
+
+=away= depends on ActivityWatch. Without it =away= is zero and its time falls
+to =unclocked=, which is the truthful reading rather than a degraded one:
+nothing was watching, so nothing can be said about where you were. This falls
+out of the arithmetic rather than out of a branch, and there is a test that a
+day with no watcher still divides exactly.
+
+**** Every word in the two legends
+
+Four groups, each complete on its own: every minute of the day falls in
+exactly one term of exactly one of them. Nothing here is a rate, a ratio or
+an opinion — each is a number of minutes, and the last column says where the
+minutes came from.
+
+Two words are used throughout. A *clock* is an Org =CLOCK= line.
+
+*Private* means the entry's =CATEGORY= is listed in
+=org-foresight-private-categories=. There is no matching mark for work and
+there is not meant to be: *work is the default*, and only life is declared.
+Nothing is tagged, no property is set, no keyword is required — an entry is
+work unless its category says otherwise, so a file that has never heard of
+this package is read as a file full of work. Where a table below says /work
+entry/ it means /an entry that is not private/, and nothing more.
+
+***** Work row, left of the rule — the working hours that have gone
+
+They divide =elapsed = work hours ∩ [start of day, now]=.
+
+| Term        | What it means                          | How it is found |
+|-------------+----------------------------------------+-----------------|
+| =baseline=  | worked on something that did not arrive today | a clock ran, on a not-private entry with no dated =SURGE= mark |
+| =surge=     | worked on something that landed on you today  | a clock ran, on a not-private entry whose =SURGE= mark is dated today and has not been rescheduled to another day |
+| =borrowed=  | a working hour spent on life           | a clock ran, on a private entry |
+| =unclocked= | the hour went, no clock ran, and nothing says you were elsewhere | no clock, and the watcher does not report =afk= |
+| =away=      | the hour went, no clock ran, and you were away from the machine | no clock, and the watcher reports =afk= |
+
+Only =away= needs ActivityWatch. Without it =away= is zero and its minutes
+fall to =unclocked=, which is the truthful reading — nothing was watching, so
+nothing can be said about where you were.
+
+***** Work row, right of the rule — the working hours still to come
+
+They divide =remaining = work hours ∩ [now, end of day]=.
+
+| Term       | What it means                            | How it is found |
+|------------+------------------------------------------+-----------------|
+| =booked=   | work already fixed at a time             | a timed entry, not private, inside the work hours |
+| =travel=   | getting to and from it                   | derived from =PLACE= and =org-foresight-travel-matrix=, or written down with =TRAVEL= |
+| =borrowed= | a working hour already promised to life  | a timed entry, private, inside the work hours |
+| =promised= | effort owed on work dated today but not placed at an hour | =EFFORT= of entries scheduled today, less what is already clocked against them, corrected by the estimate bias |
+| =reserve=  | held back for what has not happened yet  | =surge + leak + lost=, each learned from history and scaled to the fraction of the span still ahead |
+| =spare=    | what survives all of it                  | the remainder — negative means the day is promised past its end |
+
+***** Off row, left of the rule — the waking hours off that have gone
+
+They divide =elapsed off = (awake \ work hours) ∩ [start of day, now]=.
+
+| Term       | What it means                     | How it is found |
+|------------+-----------------------------------+-----------------|
+| =borrowed= | an hour off spent on work         | a clock ran, on a not-private entry, outside the work hours |
+| =own=      | your own time                     | the rest — nothing is watching these hours but the clock, and it said nothing |
+
+***** Off row, right of the rule — the waking hours off still to come
+
+They divide =remaining off = (awake \ work hours) ∩ [now, end of day]=.
+
+| Term        | What it means                       | How it is found |
+|-------------+-------------------------------------+-----------------|
+| =private=   | life already fixed at a time        | a timed entry, private, outside the work hours |
+| =borrowed=  | an hour off already promised to work | a timed entry, not private, outside the work hours |
+| =unclaimed= | nothing claims them at all          | the rest |
+
+***** What adds up to what
+
+: baseline + surge + borrowed + unclocked + away  = elapsed work hours
+: booked + travel + borrowed + promised + reserve + spare = remaining work hours
+: elapsed work hours + remaining work hours       = Work
+:
+: borrowed + own                                  = elapsed off hours
+: private + borrowed + unclaimed                  = remaining off hours
+: elapsed off hours + remaining off hours         = Off
+:
+: Work + Off                                      = the waking day
+:
+: baseline + surge                                = the clock, in work hours
+: + borrowed (Work row)                           = every clock in work hours
+: + borrowed (Off row)                            = every work clock today
+: + private clock outside the hours               = Clocked, in [Spent]
+
+=borrowed= is the one word that appears in all four groups, and it always
+means the same thing: *hours this row lent the other*. Which way it went is
+told by the row it is on and by its colour — green where life took a working
+hour, grey where work took an hour off.
+
+**** The plan and the record divide the day differently
+
+They are two divisions of the same hours, each complete on its own, and they
+do not line up term for term. Saying which is which is the only way the two
+legends read as one account.
+
+*What the plan knows.* Every hour still ahead is in exactly one cell, and the
+axis is how firmly it is spoken for:
+
+| How firmly spoken for | Work           | Life    |
+|-----------------------+----------------+---------|
+| placed at a time      | booked, travel | private |
+| owed, not yet placed  | promised       | —       |
+| held back for what has not happened | reserve | —  |
+| not spoken for        | spare          | —       |
+
+*What the record knows.* Every hour already past is in exactly one cell, and
+the axis is what evidence exists:
+
+| Did a clock run | What else says            | Segment   |
+|-----------------+---------------------------+-----------|
+| yes             | the entry carries no dated surge mark | baseline |
+| yes             | the entry arrived         | surge     |
+| no              | the watcher does not say you were away | unclocked |
+| no              | the watcher says you were away | away |
+
+*How they meet.* The reserve is the join. It is held back for exactly the
+three things the record can find without a plan, and it is the only forecast
+term with a segment of its own on the other side:
+
+| Forecast                     | is a forecast of        | Record            |
+|------------------------------+-------------------------+-------------------|
+| booked + travel + promised   | work you do and record  | baseline          |
+| reserve — its surge share    | work that arrives       | surge             |
+| reserve — its leak share     | desk time nobody records | unclocked        |
+| reserve — its lost share     | time away from the machine | away           |
+| private, inside work hours   | life you do not clock   | unclocked, or away |
+| spare                        | nothing in particular   | whichever of the four it turns into |
+
+*The plan is finer than the record.* Six kinds of future hour, four kinds of
+past one — because a plan may say anything and evidence may only say what it
+saw. So the mapping fans in, and =spare= has no counterpart at all: what an
+unclaimed hour becomes is precisely what the day decides, which is the thing
+worth watching the bar for.
+
+The =Off= row is the same story with less evidence. Ahead of the rule the plan
+divides it into =private=, =borrowed= and =unclaimed=; behind it only the clock
+is watching, so =borrowed= becomes =worked= and both of the others become
+=own=. Two terms, because two is all that is known.
+
+A clock that runs outside the working hours — started at seven, run through a
+declared lunch — is not one of the four: it did not happen inside the span
+they divide, and putting it in would break the sum. It is drawn on the =Off=
+row instead, as =worked=, because that is the row those hours are on — and it
+is already the row that says the same thing about booked work, under
+=borrowed=.
+
+The elapsed half of that row has two segments and no more, because two is all
+that is known. The clock says which of those hours were worked; about the
+rest it says nothing, which is the honest reading of an hour off — it was
+yours, and what you did with it is not this tool's business. Hence =own=.
+
+It is /added/ to the four, not taken out of them. =baseline= and =surge= are
+the clock inside the working hours; this is the rest of the clock, and the
+three together are the =Clocked= total in =[Spent]=:
+
+: baseline 2:10 + surge 0:20 = 2:30   in the hours, on the Work row
+:                            + 0:20   outside them, on the Off row as worked
+:                            = 2:50   which is what [Spent] reports
+
+Without it =[Spent]=
+reports a total larger than everything the bar accounts for, with nothing
+able to explain the difference — and a reader who cannot explain a
+disagreement has to doubt both figures. With a lunch break declared this
+happens on ordinary days, not on strange ones.
 
 The rules, the entries, =now=, the categories, the effort column — all of
 that is Org. Five things are not:
@@ -422,7 +696,7 @@ The mirror of the same idea sits under the verdict. A bar says how far over
 the day is; it can never say by what. So an overcommitted day names its way
 out:
 
-: Work 8:30 · OVER by 0:45 · ends 18:15
+: Work 8:30 · 2:00 left of the day · OVER by 0:45
 : ↳ any one of Quarterly summary 1:00 · Project review 1:30
 
 Ranked by the *smallest that is on its own enough* — the opposite order to
@@ -455,15 +729,50 @@ everything else.
 
 Three shapes, and each says something the colour cannot.
 
-| Shape        | What it is                 | Segments                          |
-|--------------+----------------------------+-----------------------------------|
-| filled block | claimed                    | booked, travel, promised, private |
-| outline      | held open, holding nothing | reserve                           |
-| dots         | not claimed at all         | spare, unclaimed, free            |
+| Shape        | What it is                    | Segments                          |
+|--------------+-------------------------------+-----------------------------------|
+| filled block | claimed, and recorded         | booked, travel, promised, private, clocked, surge |
+| outline      | the hour is there, and nothing is written in it | reserve, unclocked |
+| colour       | which kind of hour it is                    | every segment                     |
+| dots         | not claimed at all            | spare, unclaimed, free            |
+| rule =┃=     | a line across the day         | where =now= is, where the span runs out |
+
+The rule is one glyph in two colours rather than two glyphs. They are the
+same kind of statement — here is a line across the day — and telling them
+apart is a question of /which/ line, which is what colour already answers
+here.
+
+The outline is the one shape that reads both ways across =now=. Ahead of it
+the hour is empty because it is being kept empty; behind it the hour is empty
+because nothing was written in it while it went by. They are the same shape
+because they are the same hour, before and after — the reserve is a forecast
+of exactly the hours =unclocked= and =away= turn out to be.
 
 Only the claimed hours need telling apart from each other, so only they spend
 the grey ramp — three steps, two apart, which is as fine as an eye reliably
 resolves. Everything else is a shape, and shapes are read faster than shades.
+*Only a blank cell is boxed*, and both directions matter. A box is drawn in
+the face's own foreground, so around a cell already filled with a block of
+that colour it draws nothing at all — =surge= carried one for a while and it
+was invisible from the day it went on, a mark that marked nothing. A blank
+cell is the opposite case: the box is the only thing drawing it.
+
+So the box says one thing exactly — /this hour is here and there is nothing
+inside it/ — and it is the reserve's: the cell held open ahead of =now=, and
+the same cell found empty behind it. When the interruption it was held for
+does arrive, what marks it is the colour on a cell that is now full.
+
+It is drawn inside the character cell, so a row keeps the height of every
+other row on the page. Each segment has a face of its own, because Emacs
+draws one box per run of identical face and two segments sharing one are
+bounded together — which is how the elapsed bar once drew =surge= and
+=unclocked= inside a single box, with no edge between them.
+
+The bar is drawn in whole cells for the same reason. A run ending in a
+part-width block would stop its ink partway across the last cell while the
+box went on to the end of it; if fractional cells are ever wanted, the box is
+what has to go.
+
 (The examples render the outline as =▭= for want of a way to draw a face box
 in a text file; on screen it is one rectangle around the whole run, in the
 same yellow as =┃= and =OVER by=. The reserve is the last thing between a day
@@ -539,6 +848,56 @@ attended, only of when a window was in front. The day is then drawn from
 that instead, and the header says =screen only=: a coarse picture is worth
 more than a blank one, but the two must not look alike.
 
+** Filling in what the clock missed
+
+Every day leaves holes in its own record. The interruption taken without
+stopping to start a timer; the hour the machine slept through; the task
+finished before anybody remembered it was never clocked in. Each one is time
+nothing can account for, and by the evening they are the whole difference
+between a day that looks half spent and one that was.
+
+=C= in the agenda (=M-x org-foresight-clock-fill=) fills one in:
+
+#+begin_example
+  Unrecorded: 10:05-10:35  0:30  (at the keyboard)
+            → 14:20-14:50  0:30  (at the keyboard)
+              16:10-16:25  0:15  (away)
+
+  What were you doing?  ONGO Unblock the release
+                        NEXT Review the migration plan
+                        a call from procurement          ← anything, really
+  Arrived unplanned? y
+#+end_example
+
+*No hour is ever typed.* Where the holes are is known already — they are the
+=unclocked= and =away= stretches the bar above the agenda was drawn from — so
+the only thing left for a person is the one thing no machine can supply,
+which is what they were doing in them. This is the whole design: typing times
+by hand is a small tax on an act that is already an afterthought, and a small
+tax on an afterthought collects nothing. That is why the holes were still
+there at six o'clock.
+
+The list offers what today already knows about — anything clocked today, and
+the day's own entries — but it does not require an answer from it. A stretch
+that went on something nobody had written down is the commonest kind there
+is, and that becomes a new entry under today, with no TODO keyword: what is
+being recorded already happened, and a keyword would put it back among the
+things still to do. Answering *yes* to the last question marks it as work
+that arrived, which is what keeps tomorrow's reserve for interruptions
+honest — an interruption nobody recorded teaches it that there are none.
+
+Stretches shorter than =org-foresight-clock-fill-minimum= (five minutes) are
+not offered. A day is full of small holes, and listing every one of them
+buries the twenty minutes that actually went somewhere.
+
+#+begin_src emacs-lisp
+(define-key org-agenda-mode-map "C" #'org-foresight-clock-fill)
+#+end_src
+
+Over =org-agenda-convert-date=, which offers the Julian and Mayan dates.
+Remembering happens while looking at the day the hour went missing from,
+which is why it is a key here rather than only an =M-x=.
+
 * Not everything wants all of you
 
 Occupying an hour and demanding all of it are different things, and treating
@@ -610,12 +969,12 @@ offered, and out of the projection: the day is drawn with =work pauses= and
 =work resumes= around it, and nothing plans through it.
 
 #+begin_example
- Work 8:30 · 1:15 left to promise · ends 16:45 · reserve 0:24 of 1:00 · est +0:40
-            █ booked 2:45  █ travel 1:00  █ promised 2:30  ▭ reserve 1:00
-            · spare 1:15
- Work  8:30 ██████████████████████████████▭▭▭▭▭······
- Off   7:00 ███████··························
-            █ private 1:30  · unclaimed 5:30
+ Work 8:30 · 8:30 left of the day · ends 16:45 · reserve 0:24 of 1:00
+              █ booked 2:45  █ travel 1:00  █ promised 2:30  ▭ reserve 1:00
+              · spare 1:15
+ Work    8:30 ██████████████████████████████▭▭▭▭▭······
+ Off     7:00 ███████··························
+              █ private 1:30  · unclaimed 5:30
 #+end_example
 
 Two bars, written as the sums they are, so the parts can be checked against
@@ -1288,6 +1647,30 @@ off. The data is written relative to today rather than stored with fixed
 dates, so it describes the same situation whenever it is generated —
 =M-x org-foresight-demo-regenerate= is also the way back to a clean slate
 after experimenting.
+
+The demo day has an hour of its own, =org-foresight-demo-hour=, set to the
+middle of the afternoon. Most of a real day is outside working hours, and
+read at seven in the morning the demo would show a day nothing had happened
+in yet — one bar, an empty elapsed half, and none of what the two rows are
+for.
+
+Moving it is the best demonstration there is. Set it to =09:30=, then
+=12:30=, then =16:30=, toggling the mode off and on between:
+
+: Work  7:30   ┃██████████████████████    ··       ← 09:30
+: Work  7:30 ████████┃████████████████    ·······   ← 12:30
+: Work  7:30 ████████████       ┃████             ← 16:30
+
+The rule walks across the bar, the measured half grows behind it, meetings
+drop out of =booked= as they pass. No single reading of the block shows
+that.
+
+=M-x org-foresight-demo-at= does the same thing without the toggling, and is
+the quickest way to find a bug: everything here is worked out from one
+moment, so walking that moment across a day exercises every branch that
+depends on it — the morning before anything has happened, the middle of a
+declared break, the last half hour, the hour after work ends — against data
+that stays put while you do.
 
 Real files are never touched: fabricated clock entries would otherwise enter
 every report and every learned average, with no undo.

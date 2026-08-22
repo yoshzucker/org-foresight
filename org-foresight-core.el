@@ -44,6 +44,17 @@
 ;; already loaded.
 (declare-function org-agenda-redo "org-agenda" (&optional all))
 
+(defvar org-foresight-now nil
+  "The moment the day is being read at, or nil for the present one.
+
+A seam for tests rather than a setting.  Almost everything here is a statement
+about what is still true, so a suite that asked the clock would pass in the
+morning and fail in the afternoon -- and the interesting cases all live at an
+hour somebody has to be able to name.
+
+Bound rather than passed where the caller is Org's own machinery and there is
+no argument to thread it through, which is why it is a variable at all.")
+
 (defgroup org-foresight nil
   "Forward-looking capacity, signals and scheduling for Org."
   :group 'org
@@ -134,23 +145,49 @@ Returns a fresh, sorted, disjoint list; never mutates IVS."
 
 ;;;; Clock scan
 
+(defcustom org-foresight-private-categories nil
+  "CATEGORY values whose entries are private commitments, not work.
+
+They occupy the day but never count against work capacity.  Read by both
+surveys -- the clock scan tells a private clock from a working one, and the
+day scan tells a private band from a booked one -- which is why it sits above
+them rather than with the options of either."
+  :type '(repeat string)
+  :group 'org-foresight)
+
+
 (defun org-foresight--day-start (&optional day-offset)
   "Return the Emacs time value for local midnight, DAY-OFFSET days back."
   (let ((d (decode-time (current-time))))
     (encode-time 0 0 0 (- (nth 3 d) (or day-offset 0)) (nth 4 d) (nth 5 d))))
 
-(defun org-foresight--clock-charge-task (table cat minutes)
-  "Add MINUTES under CAT to TABLE for the entry point is inside.
+(defun org-foresight--clock-charge-task (table cat minutes iv &optional day)
+  "Add MINUTES and the segment IV under CAT to TABLE for the entry point is in.
 
 Keyed on the heading's position, so a drawer holding several CLOCK lines is
 one task rather than several.  The heading's own facts -- what it is called,
 what state it is in, what it was estimated at -- are read once, the first time
-that heading is seen."
+that heading is seen.
+
+IV is kept as well as its length because minutes cannot be intersected with
+anything.  Asking how much of the day was spent *inside the working hours*
+means cutting the clock against them, and a total has already thrown away the
+one thing that cut needs.
+
+DAY, where given, is the day the question is being asked about, and decides
+`:surge\=' -- whether this is work that arrived rather than was planned.  Read
+here because point is already on the heading; asking again later would mean
+opening every one of them a second time."
   (let* ((head (save-excursion (org-back-to-heading t) (point)))
          (key (cons (current-buffer) head))
          (task (gethash key table)))
     (if task
-        (plist-put task :minutes (+ minutes (plist-get task :minutes)))
+        (progn
+          (plist-put task :minutes (+ minutes (plist-get task :minutes)))
+          ;; Safe only because `:intervals\=' is in the plist below: `plist-put\='
+          ;; returns a fresh list when the key is absent, and the return value
+          ;; is dropped here -- exactly as the line above already relies on.
+          (plist-put task :intervals (cons iv (plist-get task :intervals))))
       (puthash key
                (save-excursion
                  (goto-char head)
@@ -160,13 +197,16 @@ that heading is seen."
                        :effort (org-foresight--duration-minutes
                                 (org-entry-get (point) "EFFORT"))
                        :marker (point-marker)
+                       :surge (and day (org-foresight--entry-surge-p day))
+                       :intervals (list iv)
                        :minutes minutes))
                table))))
 
-(defun org-foresight-clock-scan (days)
+(defun org-foresight-clock-scan (days &optional now)
   "Scan `org-agenda-files' LOGBOOK CLOCK lines over the last DAYS days
 \(today inclusive) in one pass.  A running clock (no end timestamp) is
-closed at `current-time', so its elapsed-so-far time always counts -- every
+closed at NOW, the current time by default, so its elapsed-so-far time always
+counts -- every
 consumer built on this plist agrees on whether \"now\" is included, unlike
 the three separate hand-rolled scans this replaces.  Return a plist:
 :rows           (CATEGORY . MINUTES) alist for the whole window, desc
@@ -176,11 +216,19 @@ the three separate hand-rolled scans this replaces.  Return a plist:
 :today-rows     (CATEGORY . MINUTES) alist for today only, desc
 :today-total    today's total minutes
 :today-segments today's clock-segment count (fragmentation)
-:today-intervals  today's (START . END) time conses
-:today-tasks    plists (:title :category :todo :effort :marker :minutes) for
-                every entry clocked today, desc by minutes.  EFFORT is the
-                estimate in minutes or nil; MARKER points at the heading, so a
-                row built from one of these answers to the agenda's commands
+:today-intervals  today's (START . END) time conses, every clock alike
+:today-private-intervals  the subset of them clocked against a private
+                category.  A clock is a clock -- the watcher's leak and lost
+                are measured against all of them -- but only some of it is
+                work, and telling which is what stops an hour at the dentist
+                being reported as an hour of the day's work
+:today-tasks    plists (:title :category :todo :effort :marker :minutes
+                :intervals :surge) for every entry clocked today, desc by
+                minutes.  EFFORT is the estimate in minutes or nil; MARKER
+                points at the heading, so a row built from one of these answers
+                to the agenda's commands; INTERVALS are the segments
+                themselves, so the entry can be cut against the working hours;
+                SURGE says the work arrived rather than was planned
 :intervals-byday  DAYS-length vector of (START . END) lists, index 0 = oldest,
                   normalized; a segment is filed under the day it starts in,
                   matching how :byday attributes minutes.
@@ -191,7 +239,7 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
   (let* ((today0 (org-foresight--day-start 0))
          (today1 (time-add today0 (days-to-time 1)))
          (from (org-foresight--day-start (1- days)))
-         (now (current-time))
+         (now (or now (current-time)))
          (table (make-hash-table :test 'equal))
          (today-table (make-hash-table :test 'equal))
          (byday (make-vector days 0))
@@ -202,7 +250,7 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
          ;; second pass: the same LOGBOOK is already open under point, and the
          ;; heading's own data is one `org-back-to-heading' away.
          (today-tasks (make-hash-table :test 'equal))
-         today-intervals
+         today-intervals today-private-intervals
          (re (concat "^[ \t]*" org-clock-string
                      "[ \t]*\\(\\[[^]\n]+\\]\\)\\(?:--\\(\\[[^]\n]+\\]\\)\\)?")))
     (dolist (file (org-agenda-files))
@@ -239,8 +287,16 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                          (puthash cat (+ today-dur (gethash cat today-table 0))
                                   today-table)
                          (push (cons ts ce) today-intervals)
+                         ;; Kept apart rather than dropped.  A clock running
+                         ;; on a private entry is a clock running -- it is
+                         ;; not leak, and the watcher's account must go on
+                         ;; seeing it -- but it is not work, and the hours it
+                         ;; covers are hours work lent out rather than spent.
+                         (when (member cat org-foresight-private-categories)
+                           (push (cons ts ce) today-private-intervals))
                          (org-foresight--clock-charge-task
-                          today-tasks cat today-dur))))))))))))
+                          today-tasks cat today-dur (cons ts ce)
+                          today0))))))))))))
     (dotimes (i days)
       (aset intervals-byday i
             (org-foresight--intervals-normalize (aref intervals-byday i))))
@@ -253,6 +309,9 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
             :today-rows (seq-sort-by #'cdr #'> today-rows)
             :today-total today-total :today-segments today-segments
             :today-intervals (nreverse today-intervals)
+            :today-private-intervals
+            (org-foresight--intervals-normalize
+             (nreverse today-private-intervals))
             :today-tasks (seq-sort-by (lambda (e) (plist-get e :minutes)) #'> tasks)
             :intervals-byday intervals-byday))))
 
@@ -1304,12 +1363,6 @@ is worked from somewhere else.  Work that needs a place is not late until the
 next day at that place has gone, and until the day has a place of its own
 there is no way to ask when that is."
   :type '(alist :key-type integer :value-type symbol)
-  :group 'org-foresight)
-
-(defcustom org-foresight-private-categories nil
-  "CATEGORY values whose entries are private commitments, not work.
-They occupy the day but never count against work capacity."
-  :type '(repeat string)
   :group 'org-foresight)
 
 (defcustom org-foresight-day-file nil
@@ -2446,6 +2499,27 @@ over is not free time however empty the calendar looked at breakfast."
   "Return the parts of INTERVALS that have not already elapsed at NOW."
   (seq-keep (lambda (iv) (org-foresight--window-remaining iv now)) intervals))
 
+(defun org-foresight--window-elapsed (window now)
+  "Return the part of WINDOW that has already gone at NOW.
+
+The exact complement of `org-foresight--window-remaining\=', written beside it
+in the same three branches and the same order so that a reader can see the two
+are total by looking rather than by reasoning: every branch that hands the
+whole window to one hands nothing to the other, and the branch that splits it
+splits it at the same instant.
+
+Deliberately not \"intersect with midnight-to-now\": that needs a midnight it
+has not been given, and it stops being a visible dual of the function above --
+which is the only thing that keeps the two from drifting apart."
+  (cond ((null window) nil)
+        ((not (time-less-p (car window) now)) nil)      ; wholly ahead
+        ((time-less-p now (cdr window)) (cons (car window) now))
+        (t window)))                                    ; wholly past
+
+(defun org-foresight--intervals-elapsed (intervals now)
+  "Return the parts of INTERVALS that have already gone at NOW."
+  (seq-keep (lambda (iv) (org-foresight--window-elapsed iv now)) intervals))
+
 (defun org-foresight--day-busy (day scan)
   "Return what SCAN says is already taken on DAY."
   (let ((idx (org-foresight--day-of day (plist-get scan :from))))
@@ -2552,15 +2626,157 @@ about what the rest of the day will."
                   0.0)))
     (max 0.0 (min (- budget spent) (* budget ahead)))))
 
+(defun org-foresight--task-intervals (clock surge)
+  "Return the clock segments of CLOCK's tasks whose arrived-ness is SURGE."
+  (org-foresight--intervals-normalize
+   (apply #'append
+          (seq-keep (lambda (task)
+                      (and (eq (and (plist-get task :surge) t) surge)
+                           (copy-sequence (plist-get task :intervals))))
+                    (and clock (plist-get clock :today-tasks))))))
+
+(defun org-foresight-behind (day &optional clock coverage now)
+  "Return how the elapsed part of DAY's working hours was actually spent.
+
+The backward half of the day, and the counterweight to everything else here.
+`org-foresight-capacity\=' answers what may still be promised, and it answers
+it from what is *left* to do -- so a task marked DONE leaves it entirely and
+the hours it took leave with it.  That is right for a forecast and wrong for a
+picture of the day: by four in the afternoon a forecast alone says the day is
+mostly empty, when what is true is that it is mostly gone.
+
+Five segments, which divide the elapsed working span exactly:
+
+  :borrowed-min   a clock running on a private entry inside the working
+                  hours.  Not work, and not unrecorded either: the hour is
+                  accounted for, it was simply lent out.  The mirror of the
+                  `borrowed\=' the hours off report, which is work taking
+                  their time -- each row names the hours it lent the other
+  :baseline-min   clock time against work that did not arrive today: the
+                  level the day was already running at before anything landed
+                  on it.  Named for exactly what is checked, which is the
+                  absence of a dated surge mark and nothing else.  Not
+                  `planned\=', which would claim the work was on a plan when no
+                  plan is consulted -- a task written this morning and clocked
+                  at noon lands here, and so does effort spent long past its
+                  estimate.  The sums the bar draws:
+
+                    baseline + surge                = the clock, in hours
+                    baseline + surge + :outside-min = the clock, all of it
+  :surge-min      clock time against work that arrived unplanned
+  :unclocked-min  elapsed, no clock running, and nothing says you were away
+  :away-min       elapsed, no clock running, the watcher says afk
+  :behind-min     the elapsed span itself; the four sum to it
+
+  :outside-min    clock that has already run and fell outside the working
+                  hours.  Not one of the four -- it is not part of the span
+                  they divide -- and named
+                  so that a `Clocked\=' total which disagrees with the bar can
+                  be accounted for rather than doubted.  With a declared lunch
+                  break this is an ordinary occurrence, not a corner.
+  :measured       whether the watcher had anything to say, so that an `away\='
+                  of zero can be told from an `away\=' nobody looked for
+  :elapsed        the intervals themselves
+  :unclocked-ivs
+  :away-ivs       the two unrecorded segments as intervals rather than as
+                  totals.  A total says how much of the day went unaccounted
+                  for; these say *which* stretches did, which is what
+                  `org-foresight-clock-fill\=' needs in order to ask about
+                  them one at a time instead of making somebody type hours
+
+The derivation has to run in this order, and each step earns its place:
+
+  W  = C \\ P             the clock, less anything clocked as private
+  B  = P ∩ E              private clock inside the working hours: lent out
+  Cb = W ∩ E              the working clock, cut to the elapsed span
+  Sb = (S ∩ Cb) \\ P       the same, and the baseline wins any overlap
+  baseline  = Cb \\ Sb
+  U         = E \\ Cb \\ B       elapsed, with no clock running at all
+  away      = U ∩ F
+  unclocked = U \\ F
+
+`unclocked\=' is `U \\ F\=' and not `U ∩ active\='.  The difference looks
+cosmetic and is not.  Splitting by \"active\" would make three sets -- active,
+afk, and the time the watcher says nothing about (asleep, not yet started, a
+hole in the bucket) -- and the third would have to be assigned by hand.  Every
+such hand-assignment is a special case, and the special case is always wrong on
+the machine with no watcher at all.  Taking the complement of afk instead means
+only what the watcher positively vouches for becomes `away\=', the rest is
+unrecorded time, and a day with no watcher falls to one segment through the
+same arithmetic rather than through a branch.
+
+Never returns nil.  Given no clock it reports the whole elapsed span as
+unclocked, which is the truthful reading -- nothing is known about it -- and
+one a reader can see, where a nil would quietly draw the day at half length."
+  (let* ((now (or now org-foresight-now (current-time)))
+         (work (org-foresight-work-intervals day))
+         (elapsed (org-foresight--intervals-elapsed work now))
+         (all (org-foresight--intervals-normalize
+               (copy-sequence (and clock (plist-get clock :today-intervals)))))
+         ;; A clock on a private entry covers the hour as surely as any
+         ;; other, but it does not spend the hour on work.  Inside the
+         ;; working day those hours are lent out, not worked; outside it they
+         ;; are simply yours, and nothing here has anything to say about
+         ;; them.
+         (priv (and clock (plist-get clock :today-private-intervals)))
+         (work-clock (org-foresight--intervals-subtract all priv))
+         ;; Cut to the elapsed span first.  A clock may run before work
+         ;; begins, through a declared break, or into the evening, and none of
+         ;; that may enter a partition of the working hours.  It also clips a
+         ;; hand-written CLOCK line that ends in the future, which looks like
+         ;; a missing guard and is not: E stops at NOW by construction.
+         (cb (org-foresight--intervals-intersect work-clock elapsed))
+         (borrowed (org-foresight--intervals-intersect priv elapsed))
+         (by-plan (org-foresight--task-intervals clock nil))
+         (arrived (org-foresight--task-intervals clock t))
+         ;; Intersected with Cb rather than with E: a per-task segment that
+         ;; somehow escaped the day's own list cannot then break the sum -- it
+         ;; is dropped rather than counted twice.  Overlaps go to planned,
+         ;; which is the reading that does not spend the reserve on a minute
+         ;; that had planned work in it too.
+         (sb (org-foresight--intervals-subtract
+              (org-foresight--intervals-intersect arrived cb) by-plan))
+         (baseline (org-foresight--intervals-subtract cb sb))
+         (unaccounted (org-foresight--intervals-subtract
+                       (org-foresight--intervals-subtract elapsed cb)
+                       borrowed))
+         (afk (and coverage (plist-get coverage :afk-ivs)))
+         (away (org-foresight--intervals-intersect unaccounted afk))
+         (unclocked (org-foresight--intervals-subtract unaccounted afk))
+         (mins (lambda (ivs) (/ (org-foresight--intervals-seconds ivs) 60.0))))
+    (list :behind-min (funcall mins elapsed)
+          :baseline-min (funcall mins baseline)
+          :borrowed-min (funcall mins borrowed)
+          :surge-min (funcall mins sb)
+          :unclocked-min (funcall mins unclocked)
+          :away-min (funcall mins away)
+          ;; Clock that has already run and fell outside the working hours --
+          ;; cut to NOW first, so a CLOCK line written for later today is not
+          ;; reported as an hour spent somewhere it has not been spent yet.
+          :outside-min (funcall mins
+                                (org-foresight--intervals-subtract
+                                 (org-foresight--intervals-elapsed work-clock
+                                                                   now)
+                                 elapsed))
+          :measured (and afk t)
+          :elapsed elapsed
+          :unclocked-ivs unclocked
+          :away-ivs away)))
+
 (defun org-foresight-capacity (day &optional scan now)
   "Return a plist describing how much of DAY may still be promised.
 
-Within the work span, these divide it exactly:
+Within the part of the work span that is still ahead, these divide it
+exactly:
 
-  :span-min   the whole span in minutes
-  :booked-min meetings and work already placed at a time
-  :travel-min getting to and from them
-  :private-min-in-span  life that happens to fall in working hours
+  :span-min   the whole span in minutes, either side of NOW alike
+  :behind-min the part of it NOW has passed.  Nothing here divides that
+              half; `org-foresight-behind\=' does, from what was clocked
+  :ahead-min  the part still to come, which the rest of this group divides
+  :booked-min meetings and work already placed at a time, less any of it
+              that is already over
+  :travel-min getting to and from them, on the same terms
+  :private-min-in-span  life that happens to fall in working hours, likewise
   :committed-min  effort still owed on work promised for DAY but not placed
   :bias-min   how much of `:committed-min' is the estimate correction
   :surge-min  what is still held for work that has not arrived
@@ -2575,8 +2791,13 @@ Within the work span, these divide it exactly:
 
 Outside it, these divide the rest of the waking day:
 
-  :off-min        the waking day less the work span
-  :private-min    commitments that are life rather than work
+  :off-min        the waking day less the work span, either side of NOW
+  :off-behind-min the part of it NOW has passed.  Nothing here divides that
+                  half either: what is known about it is what the clock says,
+                  which `org-foresight-behind\=' reports as `:outside-min\='
+  :off-ahead-min  the part still to come, which the rest of this group
+                  divides
+  :private-min    commitments that are life rather than work, still to come
   :borrowed-min   work that fell outside the span, taken from private time
   :unclaimed-min  waking hours nothing has claimed at all
   :grey-min       an alias of `:unclaimed-min'
@@ -2603,12 +2824,18 @@ which is what lets an overrun be read as a list of terms rather than as a
 verdict.  Every one of them is measured from NOW, so they answer what is
 still true rather than what the morning looked like.
 
-The two groups answer different questions and must not be mixed: the first
-describes the day that was planned, the second what can still be promised.
+Everything above is measured from NOW.  A meeting held this morning is not
+capacity this afternoon, and counting its hour here as well as in
+`org-foresight-behind\=' would let the same hour be spent twice -- once as a
+plan and once as a fact.  What the day looked like when it started is a
+different question, and `:reserve-day-min\=' is the one figure kept for it.
 
-NOW defaults to the current time; passing it makes the whole calculation
-reproducible, which is what lets this be tested at all."
-  (let* ((now (or now (current-time)))
+NOW defaults to `org-foresight-now\=', and that to the current time.  Passing
+it makes the whole calculation reproducible, which is what lets this be
+tested at all -- and honouring the variable is what lets a whole render be
+pinned to an hour at once, for a demonstration or a screenshot, without
+every caller in the chain having to be told."
+  (let* ((now (or now org-foresight-now (current-time)))
          (scan (or scan (org-foresight-scan 1 day now)))
          (idx (org-foresight--day-of day (plist-get scan :from)))
          (work (org-foresight-work-intervals day))
@@ -2626,9 +2853,8 @@ reproducible, which is what lets this be tested at all."
          ;; claim about the hours still ahead, so each is measured against
          ;; them rather than against the whole span -- which is what stops a
          ;; full day's allowance being held against the last half hour of it.
-         (rest (/ (org-foresight--intervals-seconds
-                   (org-foresight--intervals-remaining work now))
-                  60.0))
+         (remaining (org-foresight--intervals-remaining work now))
+         (rest (/ (org-foresight--intervals-seconds remaining) 60.0))
          (ahead (if (> span 0) (min 1.0 (/ rest span)) 0.0))
          (surge (org-foresight--surge-left scan idx ahead))
          (leak (* (org-foresight-leak-minutes) ahead))
@@ -2649,37 +2875,61 @@ reproducible, which is what lets this be tested at all."
          (run-out (org-foresight--run-out-intervals day scan now))
          (bands (org-foresight-day-blocks day scan))
          (awake (plist-get (org-foresight-day-shape day) :awake))
-         (booked 0.0) (travel 0.0) (private 0.0) (private-in 0.0)
+         ;; The waking hours that are not working hours, and the part of them
+         ;; still to come.  The bands drawn against them are cut to it for
+         ;; the same reason the working ones are: an evening that is over
+         ;; cannot be spent again, and a row that goes on offering it decays
+         ;; through the day exactly as the work row used to.
+         (off-ivs (org-foresight--intervals-subtract
+                   (list (cons (car awake) (cdr awake))) work))
+         (off-left (org-foresight--intervals-remaining off-ivs now))
+         (booked 0.0) (travel 0.0) (private-out 0.0) (private-in 0.0)
          (borrowed 0.0) (grey 0.0))
     (dolist (b bands)
-      (let ((mins (/ (float-time (time-subtract (plist-get b :end)
-                                                (plist-get b :start)))
+      (let* ((iv (cons (plist-get b :start) (plist-get b :end)))
+             ;; What the band still costs.  Every band is counted by what is
+             ;; left of it rather than by its length: an hour that is over
+             ;; cannot be spent again, and its time is already spoken for by
+             ;; the record of what happened.  A row drawn from lengths decays
+             ;; through the day -- by the evening it offers hours that have
+             ;; gone -- which is true of the hours outside the working day
+             ;; exactly as it is of the ones inside it.
+             (left (/ (org-foresight--intervals-seconds
+                       (org-foresight--intervals-intersect (list iv) remaining))
+                      60.0))
+             ;; The same, for the bands that lie outside the working hours:
+             ;; they are measured against what is left of the evening rather
+             ;; than of the working day.
+             (off (/ (org-foresight--intervals-seconds
+                      (org-foresight--intervals-intersect (list iv) off-left))
                      60.0)))
         (pcase (plist-get b :kind)
-          ('grey (setq grey (+ grey mins)))
+          ('grey (setq grey (+ grey off)))
           ;; A private commitment is not work and not empty time; without a
           ;; figure of its own it vanished from the account entirely, leaving
           ;; hours that were spoken for looking free.  One that falls in
-          ;; working hours is counted separately, because it is time the day
-          ;; cannot spend on work and must not be handed back as spare.
+          ;; working hours is counted apart from the rest, because it is time
+          ;; the day cannot spend on work and must not be handed back as
+          ;; spare.
           ('private
-           (setq private (+ private mins))
-           (when (org-foresight--within-p (plist-get b :start) (plist-get b :end)
-                                          work)
-             (setq private-in (+ private-in mins))))
+           (if (org-foresight--within-p (car iv) (cdr iv) work)
+               (setq private-in (+ private-in left))
+             (setq private-out (+ private-out off))))
           ('travel (if (plist-get b :borrowed)
-                       (setq borrowed (+ borrowed mins))
-                     (setq travel (+ travel mins))))
+                       (setq borrowed (+ borrowed off))
+                     (setq travel (+ travel left))))
           ;; A check is booked work like any other: it is ten minutes of the
           ;; day that cannot be spent twice, and the whole reason to derive it
           ;; is that nothing was counting it.
           ((or 'meeting 'task 'check)
            (if (plist-get b :borrowed)
-               (setq borrowed (+ borrowed mins))
-             (setq booked (+ booked mins))))
+               (setq borrowed (+ borrowed off))
+             (setq booked (+ booked left))))
           (_ nil))))
     (list :work work
           :span-min span
+          :ahead-min rest
+          :behind-min (- span rest)
           :booked-min booked
           :travel-min travel
           :private-min-in-span private-in
@@ -2693,7 +2943,7 @@ reproducible, which is what lets this be tested at all."
           :reserve-min reserve
           :reserve-day-min reserve-day
           :needed-min needed
-          :spare-min (- span booked travel private-in committed reserve)
+          :spare-min (- rest booked travel private-in committed reserve)
           :headroom-min (- free-min needed)
           :lands (org-foresight--pour run-out needed)
           :overflow-min (max 0.0 (- needed
@@ -2702,7 +2952,11 @@ reproducible, which is what lets this be tested at all."
           :off-min (- (/ (float-time (time-subtract (cdr awake) (car awake)))
                          60.0)
                       span)
-          :private-min (- private private-in)
+          :off-ahead-min (/ (org-foresight--intervals-seconds off-left) 60.0)
+          :off-behind-min (/ (org-foresight--intervals-seconds
+                              (org-foresight--intervals-elapsed off-ivs now))
+                             60.0)
+          :private-min private-out
           :borrowed-min borrowed
           :unclaimed-min grey
           :grey-min grey)))
