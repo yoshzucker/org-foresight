@@ -931,6 +931,174 @@ doing the same work twice."
   (let ((d (decode-time time)))
     (and (zerop (nth 0 d)) (zerop (nth 1 d)) (zerop (nth 2 d)))))
 
+;;;; Filling in the clock
+;; The other half of filing.  Above, work that has not happened yet; here,
+;; work that has happened and left no record of it.
+
+(defcustom org-foresight-clock-fill-minimum 5
+  "Shortest unrecorded stretch, in minutes, worth being asked about.
+
+A day is full of small holes -- a phone call, a walk to the printer, the
+minute between finishing one thing and starting the next.  Listing every one
+of them would bury the twenty minutes that actually went somewhere, and a
+list nobody reads to the end is a list that loses its last item."
+  :type 'integer
+  :group 'org-foresight)
+
+(defun org-foresight--clock-gaps (behind)
+  "Return BEHIND's unrecorded stretches as (INTERVAL . KIND), earliest first.
+
+KIND is `unclocked' or `away'.  It is the only thing that tells one stretch
+from another, and it is worth carrying because the two are remembered
+differently: what you were doing at the keyboard and what you were doing away
+from it are not recalled by the same kind of effort."
+  (let ((least (* 60 org-foresight-clock-fill-minimum)))
+    (seq-sort-by
+     (lambda (gap) (float-time (car (car gap)))) #'<
+     (seq-filter
+      (lambda (gap)
+        (>= (float-time (time-subtract (cdr (car gap)) (car (car gap)))) least))
+      (append (mapcar (lambda (iv) (cons iv 'unclocked))
+                      (plist-get behind :unclocked-ivs))
+              (mapcar (lambda (iv) (cons iv 'away))
+                      (plist-get behind :away-ivs)))))))
+
+(defun org-foresight--clock-gap-label (gap)
+  "Return GAP as one line: when it ran, how long it was, and which kind."
+  (let ((iv (car gap)))
+    (format "%s-%s  %s  (%s)"
+            (format-time-string "%H:%M" (car iv))
+            (format-time-string "%H:%M" (cdr iv))
+            (org-duration-from-minutes
+             (/ (float-time (time-subtract (cdr iv) (car iv))) 60.0))
+            (if (eq (cdr gap) 'away) "away" "at the keyboard"))))
+
+(defun org-foresight--clock-fill-candidates (clock &optional scan)
+  "Return (TITLE . MARKER) for the work today already knows about.
+
+Two sources, because they miss different things.  What has been clocked today
+is where an interrupted task is found: it is on the list already and only
+wants its missing half.  The day's own entries are where a task that was
+never clocked at all is found -- the commoner case by far, and the one a list
+built from the clock alone can never offer.
+
+Neither is required.  A stretch that went on something nobody had written
+down is the whole reason the day has holes in it, and a prompt that refused
+to accept one would send its answer somewhere else."
+  (let* ((scan (or scan (org-foresight-scan 1 (org-foresight--day-start 0))))
+         (ledger (and (> (plist-get scan :days) 0)
+                      (aref (plist-get scan :ledger) 0)))
+         (out nil))
+    (dolist (task (plist-get clock :today-tasks))
+      (when-let ((marker (plist-get task :marker)))
+        (push (cons (plist-get task :title) marker) out)))
+    (dolist (entry ledger)
+      (when-let ((marker (plist-get entry :marker))
+                 (title (plist-get entry :title)))
+        (unless (assoc title out)
+          (push (cons title marker) out))))
+    (nreverse out)))
+
+(defun org-foresight--file-clocked (marker from to)
+  "Add a CLOCK line running FROM until TO to the entry at MARKER.
+
+Positioned by `org-clock-find-position', which is what `org-clock-in' itself
+uses.  Where a clock line goes -- whether the entry has a LOGBOOK, whether it
+is folded, where a new line sits among the old ones -- is Org's convention
+and moves with it, and a second implementation of it here would be a second
+one to keep true."
+  (org-with-point-at marker
+    (org-with-wide-buffer
+     (org-back-to-heading t)
+     (org-clock-find-position nil)
+     (insert-before-markers-and-inherit "\n")
+     (backward-char 1)
+     (insert-and-inherit org-clock-string " "
+                         (format-time-string (org-time-stamp-format t t) from)
+                         "--"
+                         (format-time-string (org-time-stamp-format t t) to))
+     ;; Org's own arithmetic for the `=> H:MM' that closes the line, for the
+     ;; same reason as the position: it is the number every clock report adds
+     ;; up, and one computed here would only be able to differ.
+     (org-clock-update-time-maybe)
+     (save-buffer))))
+
+(defun org-foresight--file-clocked-entry (title from to surge)
+  "File a new entry TITLE covering FROM until TO, and return its marker.
+
+No TODO keyword.  What is being written down already happened, and a keyword
+would put it back on the list of things to do -- the day would then carry it
+twice, once as an hour that is gone and once as an hour still owed.
+
+SURGE non-nil marks it as work that arrived rather than work that was
+planned, which is what keeps tomorrow's allowance for interruptions honest:
+an interruption nobody recorded teaches the reserve that there are none."
+  (with-current-buffer (find-file-noselect (org-foresight--task-file))
+    (org-with-wide-buffer
+     (let ((level (org-foresight--file-open-day from)))
+       (insert (make-string level ?*) " " title "\n")
+       (forward-line -1)
+       (when surge
+         (org-set-property org-foresight-surge-property
+                           (format-time-string (org-time-stamp-format t t)
+                                               from)))
+       (let ((marker (point-marker)))
+         (org-foresight--file-clocked marker from to)
+         marker)))))
+
+;;;###autoload
+(defun org-foresight-clock-fill ()
+  "Say what an unrecorded stretch of today was spent on.
+
+Every day leaves holes in its own record: the interruption taken without
+stopping to start a timer, the hour the machine slept through, the task
+finished before anybody remembered it was never clocked in.  Each one is time
+the record says nothing about, and by the evening they are the whole
+difference between a day that looks half spent and one that was.
+
+Nothing here asks for a time.  Where the holes are is known already -- they
+are what `org-foresight-behind\\=' measured in order to draw the elapsed bar
+-- so the only thing left for a person is the one thing no machine can
+supply, which is what they were doing in them.  Typing hours in by hand is
+the reason the holes are still there at six o\\='clock: it is a small tax on
+an act that is already an afterthought, and a small tax on an afterthought
+collects nothing.
+
+Pick a stretch, name the work, and the clock line is written where it
+belongs: on the entry when the work is already in a file, in a new one under
+today when it is not."
+  (interactive)
+  (let* ((day (org-foresight--day-start 0))
+         (clock (org-foresight-clock-scan 7))
+         (behind (org-foresight-behind
+                  day clock (org-foresight-observe-coverage clock)))
+         (gaps (org-foresight--clock-gaps behind)))
+    (unless gaps
+      (user-error "Nothing today is unrecorded for longer than %d minutes"
+                  org-foresight-clock-fill-minimum))
+    (let* ((choices (mapcar (lambda (gap)
+                              (cons (org-foresight--clock-gap-label gap) gap))
+                            gaps))
+           (gap (cdr (assoc (completing-read "Unrecorded: " choices nil t nil
+                                             nil (car (car choices)))
+                            choices)))
+           (from (car (car gap)))
+           (to (cdr (car gap)))
+           (known (org-foresight--clock-fill-candidates clock))
+           (title (completing-read "What were you doing? " (mapcar #'car known)))
+           (marker (cdr (assoc title known))))
+      (when (string-empty-p (string-trim title))
+        (user-error "Nothing named, nothing written"))
+      (if marker
+          (org-foresight--file-clocked marker from to)
+        (org-foresight--file-clocked-entry
+         title from to (y-or-n-p "Arrived unplanned? ")))
+      (org-foresight--invalidate-signals)
+      (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
+      (message "Clocked %s, %s-%s" title
+               (format-time-string "%H:%M" from)
+               (format-time-string "%H:%M" to)))))
+
 ;;;; Meeting preparation
 
 (defun org-foresight--meeting-slots (start end)

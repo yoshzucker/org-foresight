@@ -287,9 +287,15 @@ example of every situation the signals look for."
      ":PROPERTIES:\n:EFFORT:   1:00\n:CATEGORY: engineering\n:END:\n"
      ":LOGBOOK:\n" (org-foresight-demo--clock 0 10 15 11 30) "\n:END:\n"
 
+     ;; Clocked through the all-hands, which is a `background\' meeting: it
+     ;; wants the hour but not the attention, and work done in one is what
+     ;; that distinction is for.  It also keeps every clock line today behind
+     ;; `org-foresight-demo-hour\', so `[Spent]\' and the elapsed bar agree
+     ;; about how much of the day has been recorded -- a demo whose two
+     ;; blocks disagree teaches that they are allowed to.
      "**** ONGO Investigate the latency report\n"
      ":PROPERTIES:\n:EFFORT:   2:00\n:CATEGORY: engineering\n:END:\n"
-     ":LOGBOOK:\n" (org-foresight-demo--clock 0 15 45 16 40) "\n:END:\n"
+     ":LOGBOOK:\n" (org-foresight-demo--clock 0 13 0 13 55) "\n:END:\n"
 
      ;; --- today: work that arrived rather than was planned ---------------
      ;; Marked with its arrival, no date of its own, and clocked from the
@@ -299,7 +305,12 @@ example of every situation the signals look for."
      "**** ONGO Unblock the release for the field team\n"
      ":PROPERTIES:\n:SURGE:    " (org-foresight-demo--inactive 0 11 40) "\n"
      ":EFFORT:   0:45\n:CATEGORY: engineering\n:END:\n"
-     ":LOGBOOK:\n" (org-foresight-demo--clock 0 11 40 12 0) "\n:END:\n"
+     ;; Ran twenty minutes into the declared lunch break, which is what an
+     ;; interruption does: it does not stop because the day said it would.
+     ;; Those twenty minutes are named as `outside hours\' rather than put in
+     ;; the bar, and they are why `Clocked\' is larger than the four segments
+     ;; add up to -- a difference the demo is better for showing than hiding.
+     ":LOGBOOK:\n" (org-foresight-demo--clock 0 11 40 12 20) "\n:END:\n"
 
      ;; --- the signals ----------------------------------------------------
      ;; Kept moving: four reschedules, written the way org-log-reschedule does.
@@ -451,6 +462,28 @@ demo and a curve on the review."
           '("calendar.org" "tasks.org")))
 
 ;;;###autoload
+(defcustom org-foresight-demo-hour "15:29"
+  "The moment of the demo day, as \"HH:MM\".
+
+The demo is looked at whenever it is opened, and most of a day is outside
+working hours.  Read at seven in the morning nothing has happened yet: the
+day divides into one bar, the elapsed half of it is empty, and the reader is
+shown a picture the tool draws for perhaps an hour a day.  Read at eleven at
+night it is worse -- nothing is left to promise either.
+
+So the demo day has an hour of its own, and it is the middle of the
+afternoon: far enough in that a good deal has happened, far enough from the
+end that a good deal is still to come, and the one time of day at which both
+halves of the bar have something to say.
+
+It is a variable rather than a constant because moving it is the best
+demonstration there is.  Set it to \"09:30\", then \"12:30\", then \"16:30\",
+redrawing between, and the elapsed bar grows while the forecast shrinks --
+which is the whole of what the two rows are for, and is not visible in any
+single reading of them."
+  :type 'string
+  :group 'org-foresight-demo)
+
 (defun org-foresight-demo-regenerate ()
   "Write the demo files afresh, dated relative to today.
 Also the way back to a known state: anything done to the demo data -- tasks
@@ -493,6 +526,8 @@ from, and there is no undo for that."
                     :day-file (bound-and-true-p org-foresight-day-file)
                     :workdays org-foresight-workdays
                     :work org-foresight-work
+                    :now org-foresight-now
+                    :grid-now (bound-and-true-p org-agenda-show-current-time-in-grid)
                     :day-places org-foresight-day-places
                     :places org-foresight-places
                     :travel-matrix org-foresight-travel-matrix
@@ -525,6 +560,18 @@ from, and there is no undo for that."
         ;; it.  A demo of an unbroken nine-to-five would show none of that.
         (setq org-foresight-work '(("09:00" . "12:00")
                                    ("13:00" . "17:30")))
+        ;; And an hour to be read at.  Set after the shape of the day, since
+        ;; that is what makes the hour mean anything, and stated for the same
+        ;; reason the working days are: what is being demonstrated is the
+        ;; day, not the clock on the wall of whoever opened it.
+        (setq org-foresight-now
+              (org-foresight--hhmm-on (org-foresight--day-start 0)
+                                      org-foresight-demo-hour))
+        ;; And Org stops drawing its own `now', which reads the wall clock and
+        ;; would put a second, different present moment on the same page.
+        ;; `org-foresight-agenda--pinned-now' draws it at the pinned hour
+        ;; instead, in Org's own words.
+        (setq org-agenda-show-current-time-in-grid nil)
         ;; Today at the office and the rest of the week from home, which is
         ;; the arrangement the board exists for: what only being here can
         ;; settle is only a question when here is not where you will be.
@@ -592,6 +639,9 @@ from, and there is no undo for that."
     (setq org-foresight-workdays
           (plist-get org-foresight-demo--saved :workdays)
           org-foresight-work (plist-get org-foresight-demo--saved :work)
+          org-foresight-now (plist-get org-foresight-demo--saved :now)
+          org-agenda-show-current-time-in-grid
+          (plist-get org-foresight-demo--saved :grid-now)
           org-foresight-day-places (plist-get org-foresight-demo--saved :day-places)
           org-foresight-places (plist-get org-foresight-demo--saved :places)
           org-foresight-travel-matrix
@@ -615,6 +665,33 @@ from, and there is no undo for that."
     (setq org-foresight--shape-cache nil
           org-foresight--bias-cache nil)
     (message "Demo data off; agenda back to the real files")))
+
+;;;###autoload
+(defun org-foresight-demo-at (hour)
+  "Read the demo day at HOUR, as \"HH:MM\", and redraw.
+
+The demo is one day, and most of what this package does can only be seen by
+watching that day go past: what would fit in the gap ahead of you, which
+gaps have gone, how the measured half of the bar grows while the forecast
+shrinks, when the reserve runs down.  A single hour shows one frame of it.
+
+Also the quickest way to find a bug.  Everything here is worked out from one
+moment, so walking that moment across a day exercises every branch that
+depends on it -- the morning before anything has happened, the middle of a
+declared break, the last half hour, the hour after work ends -- against data
+that stays put while you do."
+  (interactive
+   (list (read-string "Read the demo day at: " org-foresight-demo-hour)))
+  (unless org-foresight-demo-mode
+    (user-error "The demo is not on; `org-foresight-demo-mode\=' first"))
+  (setq org-foresight-demo-hour hour
+        org-foresight-now (org-foresight--hhmm-on (org-foresight--day-start 0)
+                                                  hour))
+  (setq org-foresight--shape-cache nil)
+  (when (fboundp 'org-foresight--invalidate-signals)
+    (org-foresight--invalidate-signals))
+  (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
+  (message "Demo day read at %s" hour))
 
 (provide 'org-foresight-demo)
 

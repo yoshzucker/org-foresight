@@ -395,12 +395,13 @@ honest statement is that every gap is a little thinner than it looks."
         1.0
       (max 0.0 (min 1.0 (- 1.0 (/ reserve span)))))))
 
-(defvar org-foresight-agenda--now nil
-  "The moment the day is being read at, or nil for the present one.
+(defvaralias 'org-foresight-agenda--now 'org-foresight-now
+  "The moment the day is being read at.
 
-A seam for tests rather than a setting.  What a gap can still hold depends on
-how much of it is left, so a suite that asked the clock would pass all morning
-and fail all afternoon.")
+An alias since the backward half of the day needed the same seam: a test that
+pins when \"now\" is must pin it for the gaps, the bars and the verdict at
+once, or the two halves of the day are drawn at different instants and the
+join between them stops meaning anything.")
 
 (defun org-foresight-agenda--gap (b keep ledger &optional place now)
   "Return the rows for free band B: what it holds, and what would go in it.
@@ -541,7 +542,9 @@ it, which is the one place a rule was worth drawing."
            (awake (plist-get (org-foresight-day-shape day) :awake))
            (drift (and lands
                        (/ (float-time (time-subtract lands ends)) 60.0))))
-      (seq-keep
+      (append
+       (org-foresight-agenda--pinned-now day)
+       (seq-keep
        (pcase-lambda (`(,time ,label ,face ,edge))
          ;; Label first, rule after -- the order Org uses for `← now ────',
          ;; which is the other line of this kind on the page.  Two rules that
@@ -586,7 +589,30 @@ it, which is the one place a rule was worth drawing."
           (list (list (cdr awake)
                       (format "work lands · %s will not fit"
                               (org-duration-from-minutes over))
-                      'org-foresight-report-overcommitted)))))))))
+                      'org-foresight-report-overcommitted))))))))))
+
+(defun org-foresight-agenda--pinned-now (day)
+  "Return the `now\=' rule for DAY when the day is being read at a pinned hour.
+
+Org draws its own, from the wall clock.  That is right whenever the two agree
+and a contradiction whenever they do not: with `org-foresight-now\=' set, every
+figure on the page -- what is behind, what is ahead, which gaps are still
+usable -- is worked out from the pinned hour, while Org\='s rule goes on
+pointing at the real one.  A page with two different present moments on it is
+worse than a page with none.
+
+So the rule is drawn here instead, in Org\='s own words, and whoever pins the
+hour is expected to turn `org-agenda-show-current-time-in-grid\=' off --
+`org-foresight-demo-mode\=' does.  Nil when nothing is pinned, which is the
+ordinary case and leaves Org to it."
+  (when (and org-foresight-now
+             ;; On the day the pinned moment belongs to, which in a week view
+             ;; is one day of seven.
+             (= (time-to-days org-foresight-now) (time-to-days day)))
+    (list (org-foresight-agenda--item
+           org-agenda-current-time-string ""
+           (org-foresight-agenda--hhmm org-foresight-now)
+           'org-foresight-report-now))))
 
 (defun org-foresight-agenda--clashes (ledger)
   "Return a hash of the LEDGER entries whose hour is claimed twice.
