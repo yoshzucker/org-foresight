@@ -326,7 +326,13 @@ Keys:
    clocked-active / clocked-afk / unclocked-active / unclocked-afk
 :leak-apps  ALIST (APP . SEC) desc over the leak.  Named, not classified:
    what was on screen while you typed is worth seeing, and what was on it
-   while you were away is not."
+   while you were away is not.
+:active-ivs :afk-ivs  the status intervals themselves, *not* clipped to the
+   activity hull the totals above are clipped to.  A caller that cuts them
+   against something narrower of its own -- the elapsed working hours, say --
+   wants the raw answer: the twenty minutes between the hour work was declared
+   to start and the first keystroke are genuinely away, and the hull would
+   throw them away as \"before the day began\"."
   (let ((data (org-foresight-observe-today)))
     (when data
       (let ((first (plist-get data :first))
@@ -359,7 +365,15 @@ Keys:
                   :ua (org-foresight-observe--binned ua)
                   :uf (org-foresight-observe--binned uf)
                   :leak-apps leak-apps
-                  )))))))
+                  ;; Raw, for the reason in the docstring.  Nothing above is
+                  ;; touched: `org-foresight-learn-leak' calibrates the day's
+                  ;; budget from :leak-sec and :lost-sec, and a budget learned
+                  ;; from one definition and spent against another is worse
+                  ;; than no budget at all.
+                  :active-ivs (org-foresight-observe--status-intervals
+                               afk-ev "not-afk")
+                  :afk-ivs (org-foresight-observe--status-intervals
+                            afk-ev "afk"))))))))
 
 ;;;; Learning the surge reserve
 (defun org-foresight-observe--day-range (offset)
