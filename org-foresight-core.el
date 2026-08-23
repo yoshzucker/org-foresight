@@ -1422,6 +1422,45 @@ imported location is unhelpful can be corrected without editing the text."
   (let ((d (decode-time time)))
     (encode-time 0 0 0 (nth 3 d) (nth 4 d) (nth 5 d))))
 
+(defvar org-foresight--redraw-scan nil
+  "The survey the redraw now in progress is working from, or nil.
+
+Not a cache with a lifetime of its own.  A survey is only as true as the
+settings it was taken under -- turn the estimate correction off and the same
+files answer differently -- so one kept by the clock would hand the old
+answer to the new question.  This one lives for exactly as long as the
+redraw that took it, which is the one span over which nothing can change
+underneath it.")
+
+(defun org-foresight-scan-covers-p (scan day)
+  "Non-nil when SCAN has a bucket for DAY."
+  (let ((off (org-foresight--day-of day (plist-get scan :from))))
+    (and (>= off 0) (< off (plist-get scan :days)))))
+
+(defun org-foresight-invalidate-scan (&rest _)
+  "Forget the redraw\='s survey, so the next reader takes a fresh one.
+
+Called before every agenda build, which is what keeps a survey from
+outliving the settings it was taken under.  A survey is only true of the
+options in force when it ran -- turn the estimate correction off and the
+same files answer differently -- and no fingerprint of the files can notice
+that, because the files did not change.  So the survey is dropped wherever a
+new question might be being asked, and only shared within the one build
+where nothing can move underneath it."
+  (setq org-foresight--redraw-scan nil))
+
+(defun org-foresight-scan-day (scan key day)
+  "Return SCAN\='s KEY vector for DAY, or nil when DAY is outside the survey.
+
+A survey is a run of days and index 0 is whichever day it started at, which
+is not always today: one survey now answers a whole redraw, and the day a
+caller wants sits wherever its date puts it.  Reading index 0 and calling it
+today is right until the day a wider survey is handed in, and then it is a
+figure from the wrong date with nothing to mark it as one."
+  (let ((idx (org-foresight--day-of day (plist-get scan :from))))
+    (and (>= idx 0) (< idx (plist-get scan :days))
+         (aref (plist-get scan key) idx))))
+
 (defun org-foresight-scan (days &optional from now)
   "Survey what is already claimed over DAYS days starting at FROM (today).
 NOW, the current time by default, closes any clock still running; passing it
@@ -1698,12 +1737,57 @@ heading with \\[org-foresight-shape-day]."
 (defcustom org-foresight-horizon-days 14
   "How many days ahead this package looks.
 
+
 One number for every forward question -- which signals are worth raising, how
 far the forward load is costed, when you are next at a given place -- because
 they are the same question asked three times, and a horizon that differed
 between them would answer them inconsistently."
   :type 'integer
   :group 'org-foresight)
+
+(defun org-foresight-redraw-scan (&optional now)
+  "Return the survey this redraw is working from, taking one if it has none.
+
+A redraw wants the files twice: once for the day it is drawing and once for
+the fortnight the forward view reaches over.  Surveying a fortnight costs
+what surveying one day costs -- the walk of every heading is the expense and
+the day count only decides how many buckets it drops them into -- so the
+fortnight is taken once and both readers are answered out of it.  On a real
+journal the second walk was a fifth of the redraw, spent to learn what the
+first had already found out.
+
+Anchored at today, never earlier: index 0 stays the day everything else in
+this package means by it."
+  (let ((files (org-foresight--scan-files)))
+    (or (and org-foresight--redraw-scan
+             (equal files (car org-foresight--redraw-scan))
+             (cdr org-foresight--redraw-scan))
+        (let ((scan (org-foresight-scan (max 1 org-foresight-horizon-days)
+                                        (org-foresight--day-start 0) now)))
+          ;; Read after the walk, not before: it visits files nothing was
+          ;; visiting, and a survey filed under the ticks from beforehand
+          ;; would never match the ticks it is looked up with.
+          (setq org-foresight--redraw-scan
+                (cons (org-foresight--scan-files) scan))
+          scan))))
+
+(defun org-foresight--scan-files ()
+  "Return the agenda files paired with how far each has been edited here.
+
+`buffer-chars-modified-tick\=' of whatever visits the file, or nil where
+nothing does.  No file is opened to answer.  The names travel with the ticks
+because a different set of files is a different world, and two files can
+easily stand at the same tick.
+
+The second of the two things that bound a shared survey, and the one that
+catches an edit: a redraw that follows a write must not be answered out of
+the survey taken before it.  Settings are the other, and no fingerprint
+reaches those -- see `org-foresight-invalidate-scan\='."
+  (mapcar (lambda (f)
+            (let ((buf (find-buffer-visiting f)))
+              (cons f (and buf (buffer-chars-modified-tick buf)))))
+          (org-agenda-files)))
+
 
 (defcustom org-foresight-day-places nil
   "Alist of (WEEKDAY . PLACE) saying where an ordinary week is worked.
@@ -1728,6 +1812,7 @@ Nil means `org-default-notes-file'.  The properties are read from the day's
 own heading, so a day nobody has said anything about needs no input at all."
   :type '(choice (const :tag "org-default-notes-file" nil) file)
   :group 'org-foresight)
+
 
 (defun org-foresight--places-file ()
   "Return the file whose date tree carries per-day overrides, or nil."
@@ -1895,9 +1980,7 @@ any total taken over them is guaranteed to add up to the day."
          (awake (plist-get shape :awake))
          (work (plist-get shape :work))
          (scan (or scan (org-foresight-scan 1 day)))
-         (idx (org-foresight--day-of day (plist-get scan :from)))
-         (ledger (and (>= idx 0) (< idx (plist-get scan :days))
-                      (aref (plist-get scan :ledger) idx)))
+         (ledger (org-foresight-scan-day scan :ledger day))
          occupations out (cursor (car awake)))
     ;; Timed entries, clipped to the waking hours.  Somebody else's commitment
     ;; is left out: it takes none of the day, so giving it a band would make it

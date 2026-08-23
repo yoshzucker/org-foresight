@@ -186,7 +186,12 @@
 (defmacro org-foresight-test--with-org (text &rest body)
   "Run BODY with TEXT as the only agenda file."
   (declare (indent 1))
-  `(let ((file (make-temp-file "org-foresight-test" nil ".org" ,text)))
+  `(let ((file (make-temp-file "org-foresight-test" nil ".org" ,text))
+         ;; The redraw shares one survey between the agenda's two readers and
+         ;; drops it when the redraw ends.  A test is not a redraw: it must
+         ;; not be answered out of the corpus the last one was written
+         ;; against, and every fixture here is a different corpus.
+         (org-foresight--redraw-scan nil))
      (unwind-protect
          (let ((org-agenda-files (list file))
                (org-todo-keywords '((sequence "NEXT" "ONGO" "|" "DONE" "CANCEL")
@@ -5613,6 +5618,112 @@ cache, which is once in every four or five redraws."
         (setq surveys 0)
         (org-foresight-signals t (funcall real 14 (org-foresight--day-start 0)))
         (should (= 0 surveys))))))
+
+(ert-deftest org-foresight-test-every-profiled-phase-names-a-real-function ()
+  "The profiler measures functions that exist.
+
+It measures by advising what it is pointed at, and a name that no longer
+answers is advised silently and reports a flat zero -- so the phase that got
+renamed is the one phase the profile swears costs nothing.  This is the tool
+somebody reaches for when a redraw has gone slow, and the one reading it
+cannot afford is a confident nothing."
+  (require 'org-foresight-profile)
+  (dolist (phase org-foresight-profile--phases)
+    (should (fboundp (nth 1 phase)))))
+
+(ert-deftest org-foresight-test-the-files-are-surveyed-once-a-redraw ()
+  "One walk of the agenda files answers a whole redraw, span and all.
+
+The redraw asks the same files two different questions -- what today holds,
+and what the fortnight holds -- and used to walk them once for each.  A week
+view walked them once a day on top: eight walks to learn what one could have
+told it, and on a real journal that was a fifth of the redraw at a day\='s
+span and most of it at a week\='s.
+
+Both spans are checked because they fail differently: at a day\='s span the
+extra walk is the forward view\='s, and at a week\='s it is one per column."
+  (org-foresight-test--with-agenda
+      (concat "* NEXT something\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
+    (dolist (span '(day week))
+      (let ((org-agenda-span span)
+            (walks 0))
+        (cl-letf* ((real (symbol-function 'org-foresight-scan))
+                   ((symbol-function 'org-foresight-scan)
+                    (lambda (&rest args)
+                      (setq walks (1+ walks))
+                      (apply real args))))
+          (org-foresight-test--agenda)
+          (should (= 1 walks)))))
+    ;; And the one walk reaches as far as the furthest reader needs, or the
+    ;; saving is only that the forward view is answered out of buckets that
+    ;; were never filled.
+    (should (<= org-foresight-horizon-days
+                (plist-get (org-foresight-redraw-scan) :days)))))
+
+(ert-deftest org-foresight-test-a-shared-survey-notices-an-edit ()
+  "A survey kept from before a write is not handed to a reader after it.
+
+The build boundary drops the survey, and between builds a write can still
+happen -- \[org-foresight-report-refresh] runs after an edit made from the
+agenda itself, and the figures it draws must be of the file as it now
+stands.  So the survey is also checked against how far each file has been
+edited, and a moved tick is a fresh walk."
+  (org-foresight-test--with-agenda
+      (concat "* NEXT something\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
+    (let ((today (org-foresight--day-start 0)))
+      (should (= 60.0 (org-foresight-scan-day (org-foresight-redraw-scan)
+                                              :committed today)))
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (re-search-forward "EFFORT: +1:00")
+         (replace-match "EFFORT:   3:00")))
+      (should (= 180.0 (org-foresight-scan-day (org-foresight-redraw-scan)
+                                               :committed today))))))
+
+(ert-deftest org-foresight-test-a-day-past-the-horizon-is-surveyed-on-its-own ()
+  "A day the shared survey does not reach gets a survey of its own.
+
+The redraw\='s survey covers the fortnight, which is every day an agenda
+normally shows.  Jump a month ahead and the day is outside it -- and a day
+drawn from buckets that were never filled is a day that quietly says nothing
+is happening, which is the one answer worse than being slow."
+  (let ((org-foresight-horizon-days 3))
+    (org-foresight-test--with-agenda
+        (concat "* meeting far off\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+                (org-foresight-test--stamp 30 "10:00" "11:00") "\n")
+      (let ((far (org-foresight--day-start -30)))
+        (should-not (org-foresight-scan-covers-p (org-foresight-redraw-scan) far))
+        (should (org-foresight-scan-day
+                 (org-foresight-agenda--scan-for far) :ledger far))))))
+
+(ert-deftest org-foresight-test-a-shared-survey-does-not-outlive-its-settings ()
+  "A survey answers only for the options it was taken under.
+
+The files can be word for word the same and the answer still different: turn
+the estimate correction off and what is promised is charged at the estimate
+rather than at what the estimate has historically meant.  No fingerprint of
+the files notices that, because the files did not change -- so the survey is
+dropped at the head of every build instead, and this is what says so."
+  (org-foresight-test--with-bias
+      (concat
+       (org-foresight-test--done "r1" "reporting" "1:00" 2)
+       (org-foresight-test--done "r2" "reporting" "1:00" 2)
+       (org-foresight-test--done "r3" "reporting" "1:00" 2)
+       "* NEXT write the report\nSCHEDULED: " (org-foresight-test--stamp 0)
+       "\n:PROPERTIES:\n:EFFORT: 1:00\n:CATEGORY: reporting\n:END:\n")
+    (org-foresight-learn-bias)
+    (let ((today (org-foresight--day-start 0)))
+      (let ((corrected (org-foresight-scan-day (org-foresight-redraw-scan)
+                                               :committed today)))
+        (org-foresight-invalidate-scan)
+        (let* ((org-foresight-bias-enabled nil)
+               (raw (org-foresight-scan-day (org-foresight-redraw-scan)
+                                            :committed today)))
+          (should (= 120.0 corrected))
+          (should (= 60.0 raw)))))))
 
 (ert-deftest org-foresight-test-the-clock-is-surveyed-once-a-redraw ()
   "One walk of the logbooks per redraw, whichever blocks are being drawn.
