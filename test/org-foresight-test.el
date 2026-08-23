@@ -3270,6 +3270,7 @@ work, and a Saturday would show a day that cannot happen -- and that is a
 setting somebody lives by, so it has to come back exactly as it was."
   (let ((files org-agenda-files)
         (workdays org-foresight-workdays)
+        (keywords org-todo-keywords)
         (surge org-foresight-surge-cache-file)
         (leak org-foresight-leak-cache-file)
         (bias org-foresight-bias-cache-file)
@@ -3288,9 +3289,38 @@ setting somebody lives by, so it has to come back exactly as it was."
       (delete-directory org-foresight-demo-directory t))
     (should (equal files org-agenda-files))
     (should (equal workdays org-foresight-workdays))
+    (should (equal keywords org-todo-keywords))
     (should (equal surge org-foresight-surge-cache-file))
     (should (equal leak org-foresight-leak-cache-file))
     (should (equal bias org-foresight-bias-cache-file))))
+
+(ert-deftest org-foresight-test-the-demo-brings-its-own-keywords ()
+  "The demo is written in NEXT, so the demo has to declare NEXT.
+
+Its one promise is that it can be looked at before anything is configured,
+and `org-todo-keywords\=' defaults to TODO and DONE.  Without declaring them
+every `NEXT\=' in the generated files reads as a heading whose first word is
+odd -- not a task, not a project, nothing the package can see -- and the
+demo comes up nearly empty on the machine it exists for.
+
+Run through `org-foresight-demo-mode\=' with the stock keywords in force,
+because that is the situation: the test fixture binds the keywords itself,
+so anything written against the fixture would pass whether the mode declared
+them or not.  Asserted through the classification rather than through the
+variable -- what matters is that Org agrees these headings are work."
+  (let ((org-todo-keywords '((sequence "TODO" "DONE")))
+        (org-foresight-demo-directory
+         (file-name-as-directory (make-temp-file "org-foresight-demo" t))))
+    (unwind-protect
+        (progn
+          (org-foresight-demo-mode 1)
+          (let ((recs (plist-get (org-foresight-project-scan) :headings)))
+            (should (seq-some (lambda (r) (equal (plist-get r :todo) "NEXT"))
+                              recs))
+            (should (seq-some (lambda (r) (plist-get r :deadline-project-p))
+                              recs))))
+      (org-foresight-demo-mode -1)
+      (delete-directory org-foresight-demo-directory t))))
 
 (ert-deftest org-foresight-test-demo-fires-every-signal ()
   "One of everything: each signal must find its example in the demo corpus."
@@ -6957,6 +6987,914 @@ the dispatcher's own contract."
               (should (get-text-property (line-beginning-position) 'org-marker)))))
       (when (get-buffer "*Org Foresight Board*")
         (kill-buffer "*Org Foresight Board*")))))
+
+;;;; Projects and deadlines
+
+(defun org-foresight-test--classify ()
+  "Return (TITLE . CLASS) for every heading of the current agenda files.
+
+Keyword-less headings are in the list too, as `not-todo', read straight off
+the buffer rather than off the scan -- the scan answers for them by leaving
+them out, and a test that only saw the scan could not tell \"classified as
+scaffolding\" from \"missed entirely\"."
+  (let ((byline (make-hash-table :test #'equal)))
+    (dolist (rec (plist-get (org-foresight-project-scan) :headings))
+      (puthash (plist-get rec :title)
+               (cond ((plist-get rec :deadline-project-p) 'deadline-project)
+                     ((plist-get rec :project-p) 'project)
+                     (t 'task))
+               byline))
+    (with-current-buffer (find-file-noselect (car org-agenda-files))
+      (org-with-wide-buffer
+       (let (out)
+         (org-map-entries
+          (lambda ()
+            (let ((title (org-get-heading t t t t)))
+              (push (cons title (gethash title byline 'not-todo)) out)))
+          nil nil)
+         (nreverse out))))))
+
+(defconst org-foresight-test--project-fixture "\
+* this is not project because no todo state
+
+** NEXT this is not project because no childlen
+
+** NEXT this is non deadline project because have todo state and child todo
+
+*** NEXT task a
+
+** NEXT this is deadline project
+DEADLINE: %s
+
+*** NEXT task b
+
+** NEXT this is deadline project with grandchild (or more) todo
+DEADLINE: %s
+
+*** NEXT task c
+
+**** NEXT task d
+
+** NEXT this is deadline project because a child todo has deadline
+
+*** NEXT task e
+DEADLINE: %s
+
+**** NEXT task f
+
+** NEXT this is non deadline project because childlen todo does not have deadline 1
+
+*** NEXT this is deadline project because a child todo has deadline
+
+**** NEXT task g
+DEADLINE: %s
+
+** NEXT this is non deadline project because childlen todo does not have deadline 2
+
+*** NEXT this is deadline project because a child project directly has deadline
+
+**** NEXT this is also deadline project because has child todo and itself or the child has deadline
+DEADLINE: %s
+
+***** NEXT task h
+DEADLINE: %s
+
+** this is not project or task because no todo state
+
+*** NEXT this is non deadline project because has grandchild (or more) todo or project
+
+**** this is not project or task
+
+***** NEXT task i
+"
+  "The author's own specification of the rules, as an Org file.
+
+Verbatim but for two edits that cost nothing and buy a test: the repeated
+title `task' is numbered, and the two identically-titled `non deadline
+project' headings are, so that a classification can be keyed by title.  The
+dates are `%s' for `org-foresight-test--stamp' -- a literal date in a test
+is a test that expires.")
+
+(ert-deftest org-foresight-test-the-fixture-classifies-every-heading ()
+  "The author's specification, asserted heading by heading.
+
+This is the only canonical statement of the rules; everything else in this
+section tests one edge of what this states whole.  Asserted as a single
+comparison so that a failure names every heading that moved, rather than
+stopping at the first.
+
+Two headings the author labelled `task' are projects, and the rule they
+wrote is what makes them so: `task c' has `task d' under it, and `task e'
+has `task f'.  A heading with TODO children is a project whatever its title
+says.  `task e' is further a deadline project nested inside another one,
+which is ordinary and not a special case."
+  (let ((due (org-foresight-test--stamp 1)))
+    (org-foresight-test--with-org
+        (format org-foresight-test--project-fixture due due due due due due)
+      (should (equal
+               '(("this is not project because no todo state" . not-todo)
+                 ("this is not project because no childlen" . task)
+                 ("this is non deadline project because have todo state and child todo" . project)
+                 ("task a" . task)
+                 ("this is deadline project" . deadline-project)
+                 ("task b" . task)
+                 ("this is deadline project with grandchild (or more) todo" . deadline-project)
+                 ("task c" . project)
+                 ("task d" . task)
+                 ("this is deadline project because a child todo has deadline" . deadline-project)
+                 ("task e" . deadline-project)
+                 ("task f" . task)
+                 ("this is non deadline project because childlen todo does not have deadline 1" . project)
+                 ("this is deadline project because a child todo has deadline" . deadline-project)
+                 ("task g" . task)
+                 ("this is non deadline project because childlen todo does not have deadline 2" . project)
+                 ("this is deadline project because a child project directly has deadline" . deadline-project)
+                 ("this is also deadline project because has child todo and itself or the child has deadline" . deadline-project)
+                 ("task h" . task)
+                 ("this is not project or task because no todo state" . not-todo)
+                 ("this is non deadline project because has grandchild (or more) todo or project" . project)
+                 ("this is not project or task" . not-todo)
+                 ("task i" . task))
+               (org-foresight-test--classify))))))
+
+(ert-deftest org-foresight-test-a-keywordless-heading-is-transparent ()
+  "A grouping heading is a hole for ownership and a wall for extent.
+
+Both halves come from one line of the walk -- pop by level always, push only
+what has a keyword -- and both are needed.  Transparent, so a TODO under a
+grouping still finds its TODO grandparent; a wall, so the grouping's own
+subtree ends where the outline says it does."
+  (org-foresight-test--with-org
+      "* NEXT root
+** notes
+*** NEXT buried
+"
+    (let* ((recs (plist-get (org-foresight-project-scan) :headings))
+           (root (seq-find (lambda (r) (equal (plist-get r :title) "root")) recs))
+           (buried (seq-find (lambda (r) (equal (plist-get r :title) "buried")) recs)))
+      ;; the grouping got no record at all
+      (should (= 2 (length recs)))
+      (should (plist-get root :project-p))
+      (should (plist-get buried :leaf-p))
+      ;; and the link skipped straight past the grouping
+      (should (eq root (plist-get buried :todo-parent))))))
+
+(ert-deftest org-foresight-test-a-sibling-does-not-become-a-parent ()
+  "The stack is popped by level for every heading, keyword or not.
+
+Without the unconditional pop, a keyword-less heading closing one subtree
+leaves that subtree's TODO on the stack, and a later heading takes it as a
+parent -- adopting across two branches that share nothing at all.
+
+`third' has to be *deeper* than the heading left stale for this to bite, or
+its own pop clears the stack before it looks.  That is why it is a `**'
+under a `*' grouping: written flat, the test passes against a walk that
+never pops for keyword-less headings, and says nothing."
+  (org-foresight-test--with-org
+      "* NEXT first
+** NEXT inside first
+* second is not a todo
+** NEXT third
+"
+    (let* ((recs (plist-get (org-foresight-project-scan) :headings))
+           (third (seq-find (lambda (r) (equal (plist-get r :title) "third")) recs))
+           (first (seq-find (lambda (r) (equal (plist-get r :title) "first")) recs)))
+      (should (null (plist-get third :todo-parent)))
+      (should (plist-get third :leaf-p))
+      ;; and the one that really does have a child still has it
+      (should (plist-get first :project-p)))))
+
+(ert-deftest org-foresight-test-a-deadline-stops-one-generation-up ()
+  "A DEADLINE reaches the project it is written under, and no further.
+
+The grandparent is a container for a tree that has a date; it is not itself
+the thing that is due.  Letting the date travel all the way up would make
+one deadline the due date of every tree the work is filed in, and the
+outermost heading of a file would end up due whenever anything in it was."
+  (org-foresight-test--with-org
+      (format "* NEXT outer
+** NEXT middle
+*** NEXT leaf
+DEADLINE: %s
+" (org-foresight-test--stamp 1))
+    (let ((recs (plist-get (org-foresight-project-scan) :headings)))
+      (pcase-let ((`(,outer ,middle ,leaf) recs))
+        (should (plist-get outer :project-p))
+        (should-not (plist-get outer :deadline-project-p))
+        (should (plist-get middle :deadline-project-p))
+        (should (plist-get leaf :leaf-p))))))
+
+(ert-deftest org-foresight-test-a-child-project-s-own-deadline-does-reach-up ()
+  "The other half of the same rule, and the case that fixes its shape.
+
+Here the DEADLINE is written on a heading that is itself a project, and that
+heading is a TODO child of the one above -- so the one above is a deadline
+project.  Only one generation again; it is the same rule, and the pair of
+tests is what says it is not `never travels' and not `always travels'."
+  (org-foresight-test--with-org
+      (format "* NEXT outer
+** NEXT middle
+DEADLINE: %s
+*** NEXT leaf
+" (org-foresight-test--stamp 1))
+    (let ((recs (plist-get (org-foresight-project-scan) :headings)))
+      (pcase-let ((`(,outer ,middle ,_leaf) recs))
+        (should (plist-get outer :deadline-project-p))
+        (should (plist-get middle :deadline-project-p))))))
+
+(ert-deftest org-foresight-test-a-done-child-still-makes-a-project ()
+  "Finishing the last child does not turn a project into a task.
+
+The outline's shape is a fact about the file, not about progress.  A
+classification that flickered as work was closed would be unusable as a
+key -- the same heading would answer differently on Tuesday and Wednesday
+having never been edited."
+  (org-foresight-test--with-org
+      "* NEXT parent
+** DONE finished
+"
+    (let ((recs (plist-get (org-foresight-project-scan) :headings)))
+      (should (plist-get (car recs) :project-p))
+      (should (plist-get (cadr recs) :done)))))
+
+(ert-deftest org-foresight-test-projects-do-not-cross-files ()
+  "Containment is per file: the stack is emptied between them.
+
+Two agenda files are two outlines, not one long one, and a heading at the
+top of the second must not be adopted by whatever the first file happened to
+end on."
+  (let ((a (make-temp-file "org-foresight-a" nil ".org" "* NEXT deep in a\n** NEXT child\n"))
+        (b (make-temp-file "org-foresight-b" nil ".org" "*** NEXT top of b\n")))
+    (unwind-protect
+        (let ((org-agenda-files (list a b))
+              (org-todo-keywords '((sequence "NEXT" "|" "DONE"))))
+          (let* ((recs (plist-get (org-foresight-project-scan) :headings))
+                 (top (seq-find (lambda (r) (equal (plist-get r :title) "top of b"))
+                                recs)))
+            (should top)
+            (should (null (plist-get top :todo-parent)))
+            (should (plist-get top :leaf-p))))
+      (dolist (f (list a b))
+        (when (get-file-buffer f) (kill-buffer (get-file-buffer f)))
+        (delete-file f)))))
+
+(defmacro org-foresight-test--with-units (text &rest body)
+  "Run BODY over TEXT with the estimate correction off.
+
+The correction is learned from history and would put a multiplier on every
+figure here; these tests are about which minutes are counted, not about how
+far estimates run over, and that has its own tests."
+  (declare (indent 1))
+  `(org-foresight-test--with-org ,text
+     (let ((org-foresight-bias-enabled nil))
+       ,@body)))
+
+(defun org-foresight-test--units ()
+  "Return (TITLE MINUTES LEAVES) for each unit, earliest due first."
+  (mapcar (lambda (u) (list (plist-get u :title)
+                            (plist-get u :remaining-min)
+                            (plist-get u :leaves)))
+          (plist-get (org-foresight-project-scan) :units)))
+
+(ert-deftest org-foresight-test-a-unit-sums-its-leaves-not-its-own-estimate ()
+  "The demand is the work inside, not an estimate written on the container.
+
+A project heading may carry an EFFORT -- people put one there as a note to
+themselves -- and counting it as well as its children's would charge the
+same work twice, once wholesale and once in parts."
+  (org-foresight-test--with-units
+      (format "* NEXT the project
+DEADLINE: %s
+:PROPERTIES:
+:EFFORT:   9:00
+:END:
+** NEXT first
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+** NEXT second
+:PROPERTIES:
+:EFFORT:   0:30
+:END:
+" (org-foresight-test--stamp 3))
+    (should (equal '(("the project" 90.0 2)) (org-foresight-test--units)))))
+
+(ert-deftest org-foresight-test-a-leaf-belongs-to-its-nearest-deadline-project ()
+  "Nested deadline projects each take their own leaves, and no leaf twice.
+
+This is what lets the units be added up.  The outer project is due as well,
+and its demand is what is filed directly under it -- the inner project's
+hours answer to the inner project's date, which is the date that will
+actually be missed if they are not done."
+  (org-foresight-test--with-units
+      (format "* NEXT outer
+DEADLINE: %s
+** NEXT directly under outer
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+** NEXT inner
+DEADLINE: %s
+*** NEXT under inner
+:PROPERTIES:
+:EFFORT:   2:00
+:END:
+" (org-foresight-test--stamp 5) (org-foresight-test--stamp 2))
+    ;; inner is due first, so it sorts first
+    (should (equal '(("inner" 120.0 1) ("outer" 60.0 1))
+                   (org-foresight-test--units)))))
+
+(ert-deftest org-foresight-test-done-work-is-not-demand ()
+  "Three ways of being finished, and none of them is owed.
+
+A done leaf, a leaf under a done project, and a project whose leaves are all
+done.  The last is dropped entirely: it is not a deadline that will land, it
+is one that has, and leaving it in would pad every count of what is still
+outstanding."
+  (org-foresight-test--with-units
+      (format "* NEXT live
+DEADLINE: %s
+** NEXT open
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+** DONE closed
+:PROPERTIES:
+:EFFORT:   4:00
+:END:
+* DONE finished project
+DEADLINE: %s
+** NEXT stranded under a done parent
+:PROPERTIES:
+:EFFORT:   8:00
+:END:
+* NEXT all its work is done
+DEADLINE: %s
+** DONE the only leaf
+:PROPERTIES:
+:EFFORT:   8:00
+:END:
+" (org-foresight-test--stamp 3) (org-foresight-test--stamp 3)
+  (org-foresight-test--stamp 3))
+    (should (equal '(("live" 60.0 1)) (org-foresight-test--units)))))
+
+(ert-deftest org-foresight-test-private-work-is-not-demand ()
+  "Life is not a deliverable, and its hours are already spoken for.
+
+Twice over, which is the arithmetic reason as well as the obvious one: the
+supply side subtracts private commitments from the hours available before
+anything is asked of them, so counting them as demand would charge the same
+hours to both sides of the comparison."
+  (org-foresight-test--with-units
+      (format "* NEXT move house
+DEADLINE: %s
+:PROPERTIES:
+:CATEGORY: family
+:END:
+** NEXT pack the kitchen
+:PROPERTIES:
+:EFFORT:   4:00
+:END:
+* NEXT dentist
+DEADLINE: %s
+:PROPERTIES:
+:CATEGORY: family
+:EFFORT:   2:00
+:END:
+* NEXT the audit
+DEADLINE: %s
+** NEXT read the file
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+** NEXT school run
+:PROPERTIES:
+:CATEGORY: family
+:EFFORT:   3:00
+:END:
+" (org-foresight-test--stamp 3) (org-foresight-test--stamp 3)
+  (org-foresight-test--stamp 3))
+    (let ((org-foresight-private-categories '("family")))
+      ;; A private tree is not a unit; a lone private commitment with a date
+      ;; of its own is not one either; and a private errand filed inside a
+      ;; work project does not add its hours to that project's demand.  The
+      ;; last is the one that needs saying: the project is work, so it is
+      ;; counted, and only the leaf's own category keeps the errand out.
+      (should (equal '(("the audit" 60.0 1)) (org-foresight-test--units))))))
+
+(ert-deftest org-foresight-test-a-leaf-with-no-estimate-is-counted-and-owned-up-to ()
+  "An unestimated leaf is a guess, not a zero, and the guess is declared.
+
+Falling back to the default keeps the arithmetic honest -- work with no
+figure on it still takes hours -- but a total built out of defaults is a
+different kind of number from one built out of estimates, and a reader who
+is not told cannot tell them apart."
+  (org-foresight-test--with-units
+      (format "* NEXT the project
+DEADLINE: %s
+** NEXT measured
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+** NEXT guessed at
+" (org-foresight-test--stamp 3))
+    (let ((u (car (plist-get (org-foresight-project-scan) :units))))
+      ;; 1:00 measured plus the 0:30 default, not 1:00 plus nothing
+      (should (= 90.0 (plist-get u :remaining-min)))
+      (should (= 1 (plist-get u :unestimated))))))
+
+(ert-deftest org-foresight-test-a-lone-dated-task-is-its-own-unit ()
+  "A commitment with a date does not need children to be a commitment.
+
+It is not a project and it is counted anyway: an invoice due Friday takes
+its hour out of the same week whether or not anybody broke it into steps.
+Excluding it would make every answer about the week optimistic by exactly
+the work nobody decomposed."
+  (org-foresight-test--with-units
+      (format "* NEXT send the invoice
+DEADLINE: %s
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+* NEXT no date on this one
+:PROPERTIES:
+:EFFORT:   9:00
+:END:
+" (org-foresight-test--stamp 2))
+    (should (equal '(("send the invoice" 60.0 1)) (org-foresight-test--units)))))
+
+(ert-deftest org-foresight-test-an-overdue-unit-is-tested-against-today ()
+  "A date that has gone is folded onto today, and says so.
+
+Left where it was written, its window is empty: the shortfall is the whole
+of the demand, and every later deadline inherits a debt that can never be
+paid, so the view would report the same failure forever.  The work is real
+and takes hours that exist -- it is the window that does not."
+  (org-foresight-test--with-units
+      (format "* NEXT late
+DEADLINE: %s
+** NEXT still owed
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+" (org-foresight-test--stamp -9))
+    (let ((u (car (plist-get (org-foresight-project-scan) :units))))
+      (should (plist-get u :overdue))
+      (should (equal (org-foresight--day-start 0) (plist-get u :due-day)))
+      ;; and the date it was written with is kept, for the row to name
+      (should (time-less-p (plist-get u :due) (plist-get u :due-day))))))
+
+(ert-deftest org-foresight-test-a-repeating-deadline-is-due-next-time ()
+  "A repeater means the next occurrence, not the day it was first written.
+
+`org-get-deadline-time' answers with the stamp as written.  A weekly review
+set up eighteen months ago answers with a date eighteen months gone, which
+the overdue rule then folds onto today -- so the whole of it would be
+demanded this morning, and again tomorrow, forever.  The remaining effort is
+the effort for one occurrence, so one occurrence is what it is tested at."
+  (org-foresight-test--with-units
+      (format "* NEXT weekly review
+DEADLINE: %s
+** NEXT write it up
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+" (concat (substring (org-foresight-test--stamp -70) 0 -1) " +1w>"))
+    (let ((u (car (plist-get (org-foresight-project-scan) :units))))
+      (should-not (plist-get u :overdue))
+      (should-not (time-less-p (plist-get u :due-day)
+                               (org-foresight--day-start 0))))))
+
+(ert-deftest org-foresight-test-a-project-is-due-when-its-last-part-is ()
+  "A project with no date of its own is due at the latest of its parts.
+
+Not the earliest.  A project is not finished until all of it is, and taking
+the earliest would pull every undated sibling onto the tightest child's date
+and report a shortfall the week does not actually have."
+  (org-foresight-test--with-units
+      (format "* NEXT the project
+** NEXT soon
+DEADLINE: %s
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+** NEXT later
+DEADLINE: %s
+:PROPERTIES:
+:EFFORT:   1:00
+:END:
+" (org-foresight-test--stamp 2) (org-foresight-test--stamp 9))
+    (let ((u (car (plist-get (org-foresight-project-scan) :units))))
+      (should (equal "the project" (plist-get u :title)))
+      ;; `org-foresight--day-start' counts days *back*, so nine days ahead
+      ;; is -9.  Written out because the sign is easy to get wrong and a
+      ;; wrong sign here reads as the rule being broken.
+      (should (equal (org-foresight--day-start -9) (plist-get u :due-day))))))
+
+(defmacro org-foresight-test--with-landing (text &rest body)
+  "Run BODY over TEXT with a short, fully predictable working day.
+
+Four hours a day, every day, read from eight in the morning so today counts
+whole; no reserve, no estimate correction.  Supply is then exactly four
+hours per day between now and any deadline, which is what lets these tests
+say what they mean in figures a reader can check by hand."
+  (declare (indent 1))
+  `(org-foresight-test--with-org ,text
+     (let ((org-foresight-awake '("07:00" . "23:00"))
+           (org-foresight-work '(("09:00" . "13:00")))
+           (org-foresight-workdays '(0 1 2 3 4 5 6))
+           (org-foresight--shape-cache nil)
+           (org-foresight-day-file nil)
+           (org-foresight-bias-enabled nil)
+           (org-foresight-surge-cache-file "/nonexistent/surge.eld")
+           (org-foresight-leak-cache-file "/nonexistent/leak.eld")
+           (org-foresight-surge-default "0:00")
+           (org-foresight-leak-default "0:00")
+           (org-foresight-lost-default "0:00")
+           (org-foresight-check-in nil)
+           (org-foresight-check-out nil)
+           (org-foresight-now (time-add (org-foresight--day-start 0)
+                                        (* 3600 8))))
+       ,@body)))
+
+(defun org-foresight-test--verdicts ()
+  "Return (DAY-OFFSET VERDICT DEMAND) per deadline, earliest first."
+  (let ((today (org-foresight--day-start 0)))
+    (mapcar (lambda (e)
+              (list (org-foresight--day-of (plist-get e :day) today)
+                    (plist-get e :verdict)
+                    (plist-get e :demand-min)))
+            (plist-get (org-foresight-landing) :deadlines))))
+
+(defun org-foresight-test--dated-tree (title offset effort &rest leaves)
+  "Return a project TITLE due OFFSET days out whose leaf needs EFFORT.
+LEAVES are extra (TITLE EFFORT SCHEDULED-OFFSET) lists."
+  (concat (format "* NEXT %s\nDEADLINE: %s\n" title
+                  (org-foresight-test--stamp offset))
+          (format "** NEXT %s work\n:PROPERTIES:\n:EFFORT: %s\n:END:\n"
+                  title effort)
+          (mapconcat
+           (lambda (l)
+             (format "** NEXT %s\n%s:PROPERTIES:\n:EFFORT: %s\n:END:\n"
+                     (nth 0 l)
+                     (if (nth 2 l)
+                         (format "SCHEDULED: %s\n"
+                                 (org-foresight-test--stamp (nth 2 l)))
+                       "")
+                     (nth 1 l)))
+           leaves "")))
+
+(ert-deftest org-foresight-test-landing-tests-cumulatively ()
+  "Two commitments that each fit alone need not fit together.
+
+This is the whole reason the test is cumulative, and it is the ordinary way
+a fortnight goes wrong rather than a corner case: nothing is individually
+impossible, and the month is still lost.  Asked one at a time both answer
+yes -- seven hours by Tuesday out of eight available, seven by Wednesday out
+of twelve.  Asked in order, Wednesday owes fourteen hours and has twelve."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "first" 1 "7:00")
+              (org-foresight-test--dated-tree "second" 2 "7:00"))
+    (should (equal '((1 lands 420.0) (2 over 840.0))
+                   (org-foresight-test--verdicts)))
+    ;; and each one, alone, fits its own window -- which is what a
+    ;; per-deadline test would have reported
+    (let ((e (cadr (plist-get (org-foresight-landing) :deadlines))))
+      (should (> (plist-get e :hard-min) 420.0)))))
+
+(ert-deftest org-foresight-test-landing-reports-the-soonest-failure ()
+  "The first date that cannot be met is the one to act on.
+
+A later failure is a consequence of the earlier one as often as not, and the
+decision -- work longer, hand some over, do less of it -- has to be taken
+before the first date, not the worst."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "early" 1 "9:00")
+              (org-foresight-test--dated-tree "late" 5 "1:00"))
+    (let* ((l (org-foresight-landing))
+           (fail (plist-get l :first-fail)))
+      (should fail)
+      (should (= 1 (org-foresight--day-of (plist-get fail :day)
+                                          (org-foresight--day-start 0))))
+      ;; nine hours owed by tomorrow, eight available: one short
+      (should (= 60.0 (plist-get fail :short-min)))
+      (should (equal "early" (plist-get (car (plist-get fail :units)) :title))))))
+
+(ert-deftest org-foresight-test-soft-and-hard-differ-by-what-can-be-deferred ()
+  "Two answers, because there are two different things to do about a shortfall.
+
+Work with no deadline can wait; that is what having no deadline means.  So a
+commitment that does not fit beside today's other promises may still fit if
+they move, and telling the two apart is the difference between rearranging a
+week and giving work away."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "the deadline" 1 "6:00")
+              (format "* NEXT undated but promised
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 4:00
+:END:
+" (org-foresight-test--stamp 0)))
+    (let ((e (car (plist-get (org-foresight-landing) :deadlines))))
+      ;; eight hours of working time; four are promised to work with no date
+      (should (= 240.0 (plist-get e :soft-min)))
+      (should (= 480.0 (plist-get e :hard-min)))
+      (should (eq 'defer (plist-get e :verdict)))
+      (should (= 120.0 (plist-get e :soft-short-min)))
+      (should (= 0.0 (plist-get e :short-min))))))
+
+(ert-deftest org-foresight-test-a-unit-s-own-dated-hours-are-not-counted-twice ()
+  "A project that has been carefully scheduled must not read as the one in trouble.
+
+`:spare-min' is already net of `:committed-min', so an hour a project has
+put in Thursday has left Thursday's spare -- while the same hour is still in
+what the project needs.  Compared as they stand, the question asked is
+whether the work fits in the hours *not* set aside for it, and the better
+the planning the worse the answer.
+
+Here every hour of a nine-hour project is placed inside its own window, on
+days that hold it.  It lands.  Without the correction the same arrangement
+reads as three hours of room against nine hours of need, and the tool tells
+somebody who has planned correctly to delegate."
+  (org-foresight-test--with-landing
+      (format "* NEXT placed
+DEADLINE: %s
+** NEXT monday
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 3:00
+:END:
+** NEXT tuesday
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 3:00
+:END:
+** NEXT wednesday
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 3:00
+:END:
+" (org-foresight-test--stamp 2) (org-foresight-test--stamp 0)
+  (org-foresight-test--stamp 1) (org-foresight-test--stamp 2))
+    (let ((e (car (plist-get (org-foresight-landing) :deadlines))))
+      (should (= 540.0 (plist-get e :demand-min)))
+      (should (eq 'lands (plist-get e :verdict)))
+      ;; the hours it placed are its own to spend, so they are in the soft
+      ;; figure too -- not only in the one that assumes everything moves
+      (should (>= (plist-get e :soft-min) 540.0)))))
+
+(ert-deftest org-foresight-test-non-working-days-supply-nothing ()
+  "A weekend adds no hours, and the deadline after it is no easier for it.
+
+The sum still runs *through* the closed days to reach the deadline, so a
+Sunday deadline means \"by Friday\" with no calendar arithmetic anywhere."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "over the weekend" 6 "20:00")
+    (let* ((org-foresight-workdays '(1 2 3 4 5))
+           (org-foresight--shape-cache nil)
+           (open (seq-count
+                  (lambda (i)
+                    (org-foresight-work-intervals
+                     (org-foresight--day-start (- i))))
+                  (number-sequence 0 6)))
+           (e (car (plist-get (org-foresight-landing) :deadlines))))
+      ;; four hours for each working day in the window, and no more
+      (should (= (* 240.0 open) (plist-get e :hard-min)))
+      (should (< open 7)))))
+
+(ert-deftest org-foresight-test-a-day-already-over-takes-nothing-from-later ()
+  "An overcommitted day contributes no hours, and does not remove any either.
+
+`:spare-min' goes negative when a day is promised more than it holds.  Added
+up unclipped, that day would *subtract* from the pool a later deadline draws
+on -- charging the overrun a second time, against work that has nothing to
+do with it, on a day it has not reached.  The capacity verdict already
+reports the overrun where it happened; here the day simply gives nothing.
+
+Twelve hours of undated promises sit on a four-hour day.  Tomorrow is clear,
+and the three hours due tomorrow fit in it."
+  (org-foresight-test--with-landing
+      (format "* NEXT the deadline
+DEADLINE: %s
+** NEXT its work
+:PROPERTIES:
+:EFFORT: 3:00
+:END:
+* NEXT far too much promised for today
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 12:00
+:END:
+" (org-foresight-test--stamp 1) (org-foresight-test--stamp 0))
+    (let ((e (car (plist-get (org-foresight-landing) :deadlines))))
+      ;; today gives nothing, tomorrow gives its four hours
+      (should (= 240.0 (plist-get e :soft-min)))
+      (should (eq 'lands (plist-get e :verdict))))))
+
+(ert-deftest org-foresight-test-a-deadline-today-shrinks-through-the-day ()
+  "Today's supply is what is left of today, which is a moving figure.
+
+No special case makes this work: capacity measures from NOW, so a commitment
+that fits at nine and does not at noon is reported as fitting at nine and not
+at noon.  That is the truth, and the model already told it."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "due today" 0 "3:00")
+    (should (eq 'lands (plist-get (car (plist-get (org-foresight-landing)
+                                                  :deadlines))
+                                  :verdict)))
+    (let ((org-foresight-now (time-add (org-foresight--day-start 0)
+                                       (* 3600 12))))
+      (should (eq 'over (plist-get (car (plist-get (org-foresight-landing)
+                                                   :deadlines))
+                                   :verdict))))))
+
+(ert-deftest org-foresight-test-a-deadline-beyond-the-horizon-is-not-a-failure ()
+  "Falling short of a fortnight says nothing about a date six weeks out.
+
+Supply only grows as the window lengthens, so the scanned pool is a lower
+bound past its end: work that does not fit in it may fit comfortably in week
+five.  Calling that a failure would be the one lie this is built to avoid,
+so it is `beyond' -- and a date nobody can compute must never be allowed to
+become the failure the line reports, or it would own that line forever."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "far off" 40 "200:00")
+    (let* ((l (org-foresight-landing))
+           (e (car (plist-get l :deadlines))))
+      (should (eq 'beyond (plist-get e :verdict)))
+      (should (null (plist-get l :first-fail)))
+      (should (= 1 (plist-get l :beyond))))))
+
+(ert-deftest org-foresight-test-a-deadline-beyond-the-horizon-can-still-land ()
+  "The other half: `lands' stays sound past the horizon, and is worth saying.
+
+A window that already holds the work will still hold it when it grows, so a
+fortnight's pool proving sufficient proves it for good.  Only the negative
+answer is out of reach out there."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "far off" 40 "2:00")
+    (let ((e (car (plist-get (org-foresight-landing) :deadlines))))
+      (should (eq 'lands (plist-get e :verdict))))))
+
+(ert-deftest org-foresight-test-landing-takes-no-survey-of-its-own ()
+  "Handed both surveys, it walks no files.
+
+That is what makes it safe to call from anywhere -- a verdict that quietly
+re-read every agenda file would be a verdict nobody could afford to put in a
+redraw."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "something" 3 "1:00")
+    (let* ((today (org-foresight--day-start 0))
+           (projects (org-foresight-project-scan))
+           (scan (org-foresight-scan org-foresight-horizon-days today))
+           (walks 0))
+      (cl-letf* ((real-scan (symbol-function 'org-foresight-scan))
+                 (real-proj (symbol-function 'org-foresight-project-scan))
+                 ((symbol-function 'org-foresight-scan)
+                  (lambda (&rest a) (setq walks (1+ walks)) (apply real-scan a)))
+                 ((symbol-function 'org-foresight-project-scan)
+                  (lambda (&rest a) (setq walks (1+ walks)) (apply real-proj a))))
+        (should (org-foresight-landing projects scan))
+        (should (= 0 walks))))))
+
+(defun org-foresight-test--landing-line ()
+  "Return the Load block's landing line, properties and all, or nil."
+  (let* ((block (org-foresight-report-load
+                 nil nil nil (org-foresight-landing)))
+         (line (car (last (split-string (or block "") "\n")))))
+    (and line (string-match-p "↳" line) line)))
+
+(ert-deftest org-foresight-test-the-landing-line-names-the-failure ()
+  "It names one heading, dates it, and says how much is missing.
+
+One heading, because the line exists to send somebody to it -- and it
+carries that heading's marker so `RET' works, which is the difference
+between reporting a problem and being able to act on it."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "the annual report" 1 "9:00")
+    (let ((line (org-foresight-test--landing-line)))
+      (should line)
+      (should (string-match-p "the annual report" line))
+      ;; the window, not the day: the figure is what everything due by then
+      ;; needs against the hours before then
+      (should (string-match-p " by " line))
+      (should (string-match-p "1:00 short" line))
+      ;; one commitment in the window, so nothing is counted beside it
+      (should-not (string-match-p "\\+[0-9]" line))
+      ;; and the agenda's own commands can act on it
+      (should (get-text-property (1- (length line)) 'org-marker line)))))
+
+(ert-deftest org-foresight-test-the-landing-line-owns-up-to-the-window ()
+  "A shortfall belongs to the window, not to the heading the line names.
+
+The test is cumulative, so the figure is what *everything* due by that date
+needs against the hours before it.  The line names one heading because
+somebody has to be sent somewhere, and naming one while stating a collective
+figure beside it -- with nothing between them -- reads as a sentence about
+that one project which the arithmetic never made.
+
+Two commitments fall due the same day and neither is short on its own.  The
+date is given as a window, and the second is counted."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "the larger one" 1 "5:00")
+              (org-foresight-test--dated-tree "the smaller one" 1 "4:00"))
+    (let ((line (org-foresight-test--landing-line)))
+      (should line)
+      ;; the bigger of the two is named, and the other is counted
+      (should (string-match-p "the larger one" line))
+      (should (string-match-p "\\+1" line))
+      (should (string-match-p " by " line))
+      ;; nine hours owed against eight available: the pair is short, and
+      ;; neither of them is short alone
+      (should (string-match-p "1:00 short" line)))))
+
+(ert-deftest org-foresight-test-the-landing-line-counts-what-lands ()
+  "When nothing fails it says so, and says how much room the tightest has.
+
+The good news is the point of the exercise: a day that is OVER can still be
+a day whose deadlines are all safe, and knowing that is what lets somebody
+stop working."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "small one" 3 "1:00")
+              (org-foresight-test--dated-tree "other one" 5 "1:00"))
+    (let ((line (org-foresight-test--landing-line)))
+      (should line)
+      (should (string-match-p "2 deadlines land" line))
+      (should (string-match-p "spare at the tightest" line)))))
+
+(ert-deftest org-foresight-test-the-landing-line-separates-defer-from-over ()
+  "Fitting only if other work moves is not the same as not fitting.
+
+They lead to different actions -- rearranging a week against giving work
+away -- so the line must not spend the same words on them.  A shortfall that
+only the soft figure sees is said in the ordinary face and qualified; one
+the hard figure sees too is said in the overrun's own colour."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "the deadline" 1 "6:00")
+              (format "* NEXT undated but promised
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 4:00
+:END:
+" (org-foresight-test--stamp 0)))
+    (let ((line (org-foresight-test--landing-line)))
+      (should line)
+      (should (string-match-p "2:00 short of what is free" line)))))
+
+(ert-deftest org-foresight-test-the-landing-line-is-silent-with-no-deadlines ()
+  "Nothing dated, nothing said.
+
+A block that reports zero every morning is a block that stops being read,
+and the Load rows above it still answer their own question."
+  (org-foresight-test--with-landing
+      "* NEXT no date anywhere
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+"
+    (should (null (org-foresight-landing)))
+    (should (null (org-foresight-test--landing-line)))
+    ;; and the block itself is still drawn
+    (should (org-foresight-report-load nil nil nil (org-foresight-landing)))))
+
+(ert-deftest org-foresight-test-the-landing-line-holds-eighty-columns ()
+  "Every qualifier at once, on a title long enough to want the whole line.
+
+The Load rows are wide already; a line that wrapped would take the block's
+alignment with it.  The answer is kept and the footnotes are dropped, in
+that order, which is what `org-foresight-report--fit-terms' is for."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree
+               "a title long enough that it has to be cut somewhere" 1 "9:00")
+              ;; overdue, and unestimated, and past the horizon
+              (format "* NEXT gone by\nDEADLINE: %s\n** NEXT no estimate on this\n"
+                      (org-foresight-test--stamp -3))
+              (org-foresight-test--dated-tree "far off" 40 "300:00"))
+    (let ((line (org-foresight-test--landing-line)))
+      (should line)
+      (should (org-foresight-test--within-80 line))
+      ;; the answer survives whatever else had to go
+      (should (string-match-p "short" line)))))
+
+(ert-deftest org-foresight-test-the-projects-are-surveyed-once-a-redraw ()
+  "One walk of the outline per redraw, whichever blocks are drawn.
+
+This is the fourth full walk of the agenda files, and the guard matters for
+the reason the third one needed it: the last regression of this shape cost
+four seconds a redraw, and nothing about a slow redraw says which of the
+walks was the extra one."
+  (org-foresight-test--with-agenda
+      (concat "* NEXT a project\nDEADLINE: " (org-foresight-test--stamp 2)
+              "\n** NEXT its work\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
+    (dolist (style '(daily review))
+      (let ((org-foresight-report-style style)
+            (walks 0))
+        (cl-letf* ((real (symbol-function 'org-foresight-project-scan))
+                   ((symbol-function 'org-foresight-project-scan)
+                    (lambda (&rest args)
+                      (setq walks (1+ walks))
+                      (apply real args))))
+          (org-foresight-test--agenda)
+          (should (= 1 walks)))))))
 
 (provide 'org-foresight-test)
 

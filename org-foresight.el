@@ -16,7 +16,7 @@
 ;; agenda logs all answer "what happened"; almost nothing answers "what can
 ;; still be promised".  org-foresight adds that missing axis.
 ;;
-;; It answers three questions:
+;; It answers four questions:
 ;;
 ;;   How much can I still take on today?
 ;;     available time - what is already committed - a reserve for work that has
@@ -29,6 +29,13 @@
 ;;   When *could* I take this on?
 ;;     the same calculation over the next fortnight, which is what turns "I'm
 ;;     busy" into a date
+;;
+;;   Will it be finished in time?
+;;     what each DEADLINE still needs against the hours before it, taken
+;;     cumulatively so that two commitments which each fit alone are not both
+;;     reported as fitting.  Fitting and being enough are different questions:
+;;     a day that fits can be a day of admin, and a day that is over can be
+;;     the only arrangement that lands the tree due on Friday
 ;;
 ;; The reserve is the interesting part.  Interruptions are not controllable, but
 ;; their volume is remarkably stable, and it is measurable: time spent active at

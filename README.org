@@ -1609,6 +1609,129 @@ Capacity is worked out only for the days actually drawn
 (=org-foresight-load-rows=, five by default) rather than for the whole
 horizon.
 
+** Will it land?
+
+Fitting and being enough are different questions, and their answers can
+disagree. A day that fits can be a day of admin. A day that is =OVER= can be
+the only arrangement that lands the one tree due on Friday. Everything above
+answers the first; one line under the rows answers the second:
+
+#+begin_example
+ Sun 08-23   OVER by 12:51  ███████████┃█████████████████████████████████████…
+ Mon 08-24 1:40 to promise  ██████████████████████████     ·········
+ Tue 08-25 3:30 to promise  ████████████████     ···················
+ ↳ Write the vendor comp… +1 by Mon · 0:18 short · 1 unestimated
+#+end_example
+
+or, when nothing is in trouble:
+
+: ↳ 3 deadlines land · 6:10 spare at the tightest
+
+*It names the soonest date that cannot be met*, not the worst. A later
+failure is usually a consequence of an earlier one, and the decision — work
+longer, hand some over, do less of it — has to be taken before the first
+date. The row carries that heading's marker, so =RET= goes there.
+
+*Read the figure as belonging to the window, not to the heading.* =+1 by
+Mon · 0:18 short= says: everything due on or before Monday needs eighteen
+minutes more than the hours between now and Monday hold. It does not say
+that the vendor comparison is eighteen minutes short — that project may be
+comfortable on its own and still be part of a Monday that is not. The
+heading is named so there is somewhere to go; =by= and =+N= are what keep
+the sentence true.
+
+*** What is a project
+
+No new property. The outline and the keyword are the whole model:
+
+| Heading                        | What it is                    |
+|--------------------------------+-------------------------------|
+| no TODO keyword                | neither; scaffolding          |
+| a TODO with no TODO descendant | a task                        |
+| a TODO with a TODO descendant  | a project                     |
+
+A heading with no keyword is *transparent*: a TODO grandchild under a
+keyword-less =** Notes= still makes its grandparent a project. Projects
+nest, and that is ordinary — a heading with TODO children is a project
+however small it looks and whatever its title calls it.
+
+A project is a *deadline project* when a =DEADLINE= is on it or on one of
+its TODO children. *It stops there.* A deadline on a grandchild belongs to
+the child it sits under — which is a project in its own right — and letting
+it travel further would make one date the due date of every tree the work
+happens to be filed in.
+
+#+begin_example
+** NEXT A                    non-deadline project
+*** NEXT B                   deadline project — its child has one
+**** NEXT C   DEADLINE       task
+
+** NEXT D                    non-deadline project
+*** NEXT E                   deadline project — its child project has one
+**** NEXT F   DEADLINE       deadline project
+***** NEXT G  DEADLINE       task
+#+end_example
+
+A project with no date of its own is due at the *latest* of its children's
+dates. Not the earliest: a project is not finished until its parts are, and
+the earliest would drag every undated sibling onto the tightest child's date
+and report a shortfall the week does not have.
+
+*** Demand and supply
+
+Demand is what is still owed by a date: the remaining effort of every leaf
+that answers to it, plus lone TODOs that carry a =DEADLINE= and no children
+— an invoice due Friday takes its hour out of the week whether or not
+anybody broke it into steps. Each leaf is charged to the *nearest* enclosing
+deadline project, so nested projects never count the same hour twice.
+
+Supply is the working hours between now and the date, in two figures:
+
+| Figure | What it assumes                              |
+|--------+----------------------------------------------|
+| soft   | today's other promises stay where they are   |
+| hard   | anything without a deadline gives way        |
+
+and the verdict is which side of them the demand falls:
+
+| Condition           | Meaning                                       |
+|---------------------+-----------------------------------------------|
+| demand ≤ soft       | it lands as things stand                      |
+| soft < demand ≤ hard | it lands only if other work is deferred      |
+| demand > hard       | overtime, delegation, or less of it           |
+
+*The test is cumulative.* Deadlines are taken in order and the demand is
+added up as they pass, so each date is asked whether /everything/ due by
+then fits before it. Two projects that each fit in the same fortnight and
+together need three weeks of it is the ordinary way a month goes wrong, and
+one-at-a-time tests pass both.
+
+Nothing is scheduled and nothing is written. That is not restraint, it is a
+theorem: for one resource that can be interrupted, if the cumulative test
+holds at every deadline then some order of the work meets all of them. The
+tool never has to say which order.
+
+*** What it will not claim
+
+A deadline past the end of the horizon (=org-foresight-horizon-days=, a
+fortnight) cannot have its supply computed. Supply only grows as a window
+lengthens, so the fortnight's pool is a *lower bound* out there — which
+makes exactly two conclusions sound:
+
+- *lands* and *defer* still hold. A window that already holds the work will
+  hold it when it grows.
+- *falling short does not.* It may land comfortably in week five, so it is
+  reported as =· 1 beyond 09-06= — a count and the date the horizon ends,
+  which is the number to raise if you want an answer — and it can never
+  become the failure the line names.
+
+Two more qualifiers appear when they apply. =· N overdue= counts dates that
+have already gone; they are tested against today rather than against a window
+that no longer exists, because the work is real and its window is not.
+=· N unestimated= counts leaves with no =EFFORT=, which fall back to
+=org-foresight-default-effort= — a total built partly from defaults is a
+different kind of number, and a reader who is not told cannot tell.
+
 * Placement
 
 =M-x org-foresight-plan-fill= proposes times for work that has been accepted
