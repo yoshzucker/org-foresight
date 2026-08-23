@@ -487,7 +487,8 @@ someone wrote down and walked away from."
 Being in two places at once is not a scheduling preference to be weighed
 against others -- the day as written cannot happen, and no amount of working
 harder at it will help.  Worth saying before anything else on the board."
-  (let ((ledger (aref (plist-get scan :ledger) 0))
+  (let ((ledger (org-foresight-scan-day scan :ledger
+                                        (org-foresight--day-start 0)))
         (seen (make-hash-table :test 'equal))
         out)
     (dolist (tb (seq-filter (lambda (e) (eq (plist-get e :kind) 'travel)) ledger))
@@ -552,7 +553,7 @@ in a day with ninety minutes left of it, whatever the morning looked like."
                     0.0))
          (sitting (org-foresight--longest-sitting))
          fits oversized)
-    (dolist (e (and work (aref (plist-get scan :ledger) 0)))
+    (dolist (e (and work (org-foresight-scan-day scan :ledger today)))
       (let ((need (or (plist-get e :effort-adj) (plist-get e :effort))))
         (when (and (eq (plist-get e :kind) 'promised) (> need longest))
           ;; A week with no working hours in it at all bounds nothing, and
@@ -1205,8 +1206,8 @@ Neither is required.  A stretch that went on something nobody had written
 down is the whole reason the day has holes in it, and a prompt that refused
 to accept one would send its answer somewhere else."
   (let* ((scan (or scan (org-foresight-scan 1 (org-foresight--day-start 0))))
-         (ledger (and (> (plist-get scan :days) 0)
-                      (aref (plist-get scan :ledger) 0)))
+         (ledger (org-foresight-scan-day scan :ledger
+                                         (org-foresight--day-start 0)))
          (out nil))
     (dolist (task (plist-get clock :today-tasks))
       (when-let ((marker (plist-get task :marker)))

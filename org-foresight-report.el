@@ -2068,9 +2068,7 @@ step afterwards."
              ;; a survey of one day costs: the walk is the price, and the days
              ;; are only how many buckets it sorts the answers into.
              (scan (org-foresight-report--guarded
-                    (lambda ()
-                      (org-foresight-scan org-foresight-horizon-days
-                                          (org-foresight--day-start 0)))))
+                    #'org-foresight-redraw-scan))
              (scan (and (not (stringp scan)) scan))
              ;; The clock history, surveyed once for both halves as well.
              ;; The elapsed bar above the agenda and the `Spent' block below
@@ -2118,6 +2116,9 @@ step afterwards."
           (goto-char (point-max)))
         (org-foresight-report--insert body)))))
 
+(add-hook 'org-foresight-report-invalidate-functions
+          #'org-foresight-invalidate-scan)
+
 (defvar org-foresight-report-invalidate-functions nil
   "Functions called before a refresh to drop anything memoized.
 A registry so that a file loaded later can clear its own caches -- the signals
@@ -2154,6 +2155,18 @@ a signal and acting on it is not interrupted by the display jumping."
 ;; this file and adds its own hook at the front.
 (add-hook 'org-agenda-finalize-hook #'org-foresight-report-render t)
 
+;; Last, after everything that draws.  The survey the redraw shared is only
+;; true of the settings it was taken under, so it must not outlive the redraw
+;; and be handed to the next one -- which may be answering a different
+;; question about the same files.
+(add-hook 'org-agenda-finalize-hook #'org-foresight-invalidate-scan t)
+
+;; And first, before anything reads.  `org-agenda-prepare' runs at the head of
+;; every build, whether the buffer is new or being redrawn in place -- which
+;; `org-agenda-mode-hook' does not, since the mode is only entered once and a
+;; redraw of an existing agenda would have gone on reading the old survey.
+(advice-add 'org-agenda-prepare :before #'org-foresight-invalidate-scan)
+
 ;; Everything that can change what a day costs.  The time commands are on the
 ;; list for the same reason as the rest: they edit the entry and leave the
 ;; agenda buffer alone, so without this the row moves while the figure above
@@ -2182,7 +2195,8 @@ itself."
   (seq-filter (lambda (e)
                 (and (plist-get e :start)
                      (not (memq (plist-get e :kind) '(travel check)))))
-              (and scan (aref (plist-get scan :ledger) 0))))
+              (and scan (org-foresight-scan-day
+                         scan :ledger (org-foresight--day-start 0)))))
 
 (defun org-foresight--diagnose-state (day)
   "Return DAY's configuration as an alist of (LABEL . TEXT) lines."
