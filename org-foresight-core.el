@@ -359,6 +359,28 @@ work is finished, and inventing one would be invention."
                 (car occ)))))
         written)))
 
+(defun org-foresight-project-p ()
+  "Non-nil when the heading at point is a project: a TODO with TODO children.
+
+The same rule `org-foresight-project-scan\=' applies over a whole corpus,
+asked of one heading instead.  Two evaluations of one rule, and a test holds
+them to the same answers -- what would be worse than either is two rules,
+which is how \"is this a project\" comes to mean different things in
+different blocks of the same report.
+
+Descendants at any depth, so a grouping heading with no keyword is
+transparent here as it is there.  Stops at the first one found: the question
+is whether any exists, not how many."
+  (save-excursion
+    (org-back-to-heading t)
+    (and (org-get-todo-state)
+         (let ((end (save-excursion (org-end-of-subtree t t) (point)))
+               found)
+           (forward-line 1)
+           (while (and (not found) (re-search-forward org-heading-regexp end t))
+             (when (org-get-todo-state) (setq found t)))
+           found))))
+
 (defun org-foresight--project-record ()
   "Return the record for the TODO heading at point, or nil if it has no keyword.
 
@@ -537,6 +559,10 @@ without counting an hour twice.
   :remaining-min  what its leaves still need
   :unestimated    how many of them carry no EFFORT of their own, and so are
                   standing on the default rather than on anything measured
+  :largest-min    what its largest single leaf still needs.  A leaf longer
+                  than a day can hold is one nobody can report progress on
+                  until it is finished, so the figure the verdict rests on
+                  is the least checkable kind there is
   :overdue        its date has gone, and it is tested against today instead
 
 An overdue unit is folded onto today rather than left in the past.  The work
@@ -578,6 +604,9 @@ what still has to."
               (remaining (apply #'+ (mapcar (lambda (l)
                                               (or (plist-get l :remaining) 0.0))
                                             leaves)))
+              (largest (apply #'max 0.0
+                              (mapcar (lambda (l) (or (plist-get l :remaining) 0.0))
+                                      leaves)))
               (due (org-foresight--project-due rec))
               (due0 (and due (org-foresight--midnight due)))
               (overdue (and due0 (time-less-p due0 today))))
@@ -590,6 +619,7 @@ what still has to."
                        :due-day (if overdue today due0)
                        :overdue (and overdue t)
                        :remaining-min remaining
+                       :largest-min largest
                        :leaves (length leaves)
                        :leaf-markers (mapcar (lambda (l) (plist-get l :marker))
                                              leaves)
@@ -2111,6 +2141,30 @@ A list, not a window: the day may break, and code that took the first start
 and the last end would quietly hand back the break as working time."
   (plist-get (org-foresight-day-shape day) :work))
 
+(defun org-foresight--longest-sitting (&optional days)
+  "Return minutes in the longest unbroken stretch of working time.
+
+Not the longest gap left today, which shrinks as the day is booked and as it
+is spent, but the longest run the working hours themselves offer on the
+emptiest imaginable day.  Work longer than this cannot be done in one
+sitting whatever the calendar looks like, so the figure says something about
+the task rather than about the hour it was asked in.
+
+DAYS days are read, a week by default, and the longest run among them wins.
+A single day would make the answer depend on which day it was asked: a half
+Friday would shorten every verdict, and a day off would shorten it to
+nothing.  Working hours are declared per weekday, so a week sees them all.
+
+Zero when no day in the window has working hours at all.  Callers treat that
+as no bound rather than as a bound of zero, which would condemn everything."
+  (let ((days (or days 7))
+        (best 0.0))
+    (dotimes (i days)
+      (dolist (iv (org-foresight-work-intervals (org-foresight--day-start (- i))))
+        (setq best (max best (/ (float-time (time-subtract (cdr iv) (car iv)))
+                                60.0)))))
+    best))
+
 (defun org-foresight-day-place (day)
   "Return the place DAY is worked from.
 
@@ -2362,6 +2416,92 @@ both."
             (_ nil)))))
     out))
 
+(defun org-foresight--landing-window (caps dated units day last)
+  "Return the hours available through day index LAST, for UNITS due by DAY.
+
+  :soft       what is free beside today's other promises
+  :hard       the same once anything without a deadline gives way
+  :unclaimed  waking hours outside the working day that nothing has claimed
+
+`:unclaimed' and not the whole of the day off.  The hours outside work are
+mostly spoken for -- dinner, a fixture, an evening that belongs to somebody
+else -- and offering those as somewhere to put late work would be answering
+\"can I stay late\" with hours that are not available to stay in.  Only what
+nothing has claimed is honestly free, which is the same figure the `Off' row
+draws under that name.
+
+Clipped as a sum rather than term by term: `:spare-min' alone goes negative
+on a day already promised more than it holds, while spare plus what could be
+deferred may still be hours somebody has.  Clipping at zero also stops an
+overrun being charged twice -- once where it happened, and again against a
+deadline it has nothing to do with."
+  (let ((soft 0.0) (hard 0.0) (unclaimed 0.0))
+    (dotimes (i (1+ last))
+      (when-let ((cap (aref caps i)))
+        (let ((spare (or (plist-get cap :spare-min) 0.0))
+              (committed (or (plist-get cap :committed-min) 0.0))
+              (own 0.0) (own-timed 0.0))
+          ;; Only the units in play give their hours back: one due later has
+          ;; not been asked for yet, and its Thursday is not this deadline's
+          ;; to spend.
+          (dolist (u units)
+            (unless (time-less-p day (plist-get u :due-day))
+              (when-let ((cell (gethash u dated)))
+                (setq own (+ own (aref (car cell) i))
+                      own-timed (+ own-timed (aref (cdr cell) i))))))
+          (setq soft (+ soft (max 0.0 (+ spare own)))
+                hard (+ hard (max 0.0 (+ spare committed own-timed)))
+                unclaimed (+ unclaimed
+                             (max 0.0 (or (plist-get cap :unclaimed-min)
+                                          0.0)))))))
+    (list :soft soft :hard hard :unclaimed unclaimed)))
+
+(defun org-foresight--landing-deferrable (scan units last)
+  "Return the promised work in the first LAST+1 days that owes nobody a date.
+
+Work with no deadline is the only work a deadline can take hours from
+without anything else giving way -- that is what having no deadline means.
+So this is what `defer' is about, and naming it is the difference between
+being told to rearrange the week and being shown what to move.
+
+Anything belonging to a unit is excluded: its hours are the demand, and
+offering the work as its own way out would be circular."
+  (let ((theirs (make-hash-table :test #'equal))
+        (out (make-hash-table :test #'equal)))
+    (dolist (u units)
+      (dolist (m (plist-get u :leaf-markers))
+        (when m (puthash (cons (marker-buffer m) (marker-position m)) t theirs))))
+    (dotimes (i (1+ last))
+      (dolist (e (aref (plist-get scan :ledger) i))
+        (when (eq (plist-get e :kind) 'promised)
+          (when-let* ((m (plist-get e :marker))
+                      (key (cons (marker-buffer m) (marker-position m)))
+                      ((not (gethash key theirs))))
+            (let ((cell (gethash key out)))
+              (puthash key
+                       (list :title (plist-get e :title)
+                             :marker m
+                             :minutes (+ (or (plist-get cell :minutes) 0.0)
+                                         (or (plist-get e :remaining) 0.0)))
+                       out))))))
+    (let (rows)
+      (maphash (lambda (_ v) (when (> (plist-get v :minutes) 0.0) (push v rows)))
+               out)
+      (seq-sort-by (lambda (r) (plist-get r :minutes)) #'< rows))))
+
+(defun org-foresight--landing-enough (candidates short key)
+  "Return CANDIDATES that would close a gap of SHORT, smallest first.
+
+The smallest that is on its own enough, which is the order
+`org-foresight-report--frees' already uses for the same question about a
+single day: the point is to give up the least that still works.  Nil when
+nothing alone would do it -- the question has stopped being which one and
+become how many, and that is a different sentence."
+  (when (> short 0)
+    (seq-sort-by key #'<
+                 (seq-filter (lambda (c) (>= (funcall key c) short))
+                             candidates))))
+
 (defun org-foresight--landing-verdict (demand soft hard covered)
   "Return what DEMAND against SOFT and HARD means.
 
@@ -2420,6 +2560,14 @@ Each entry of `:deadlines':
   :units           the units due exactly on that day, biggest first
   :count :unestimated  the same, cumulative to that day
 
+and, where it does not fit, the four ways out -- each a subtraction on
+figures already in hand, none of them a proposed schedule:
+
+  :lands-day    when it would fit if nothing changed, or nil past the horizon
+  :drop         units that would close the gap on their own, smallest first
+  :move         work owing nobody a date that would close it, smallest first
+  :unclaimed-min  hours off that nothing has claimed, in the same window
+
 Nil when nothing is dated: a report with no deadlines in it has nothing to
 say about deadlines, and saying so every morning is how a line stops being
 read."
@@ -2447,30 +2595,17 @@ read."
                  (idx (org-foresight--day-of day today))
                  (covered (< idx days))
                  (last (min (1- days) (max -1 idx)))
-                 (soft 0.0) (hard 0.0))
+                 (w (org-foresight--landing-window caps dated units day last))
+                 (soft (plist-get w :soft))
+                 (hard (plist-get w :hard))
+                 (verdict nil))
             (setq rest (nthcdr (length here) rest))
             (dolist (u here)
               (setq demand (+ demand (plist-get u :remaining-min))
                     unestimated (+ unestimated (plist-get u :unestimated))
                     count (1+ count)))
-            (dotimes (i (1+ last))
-              (when-let ((cap (aref caps i)))
-                (let ((spare (or (plist-get cap :spare-min) 0.0))
-                      (committed (or (plist-get cap :committed-min) 0.0))
-                      (own 0.0) (own-timed 0.0))
-                  ;; Only the units in play give their hours back: one due
-                  ;; later has not been asked for yet, and its Thursday is
-                  ;; not this deadline's to spend.
-                  (dolist (u units)
-                    (unless (time-less-p day (plist-get u :due-day))
-                      (when-let ((cell (gethash u dated)))
-                        (setq own (+ own (aref (car cell) i))
-                              own-timed (+ own-timed (aref (cdr cell) i))))))
-                  ;; Clipped as a sum: spare alone goes negative on a day
-                  ;; that is already over, while spare plus what could be
-                  ;; deferred may still be hours somebody has.
-                  (setq soft (+ soft (max 0.0 (+ spare own)))
-                        hard (+ hard (max 0.0 (+ spare committed own-timed)))))))
+            (setq verdict (org-foresight--landing-verdict
+                           demand soft hard covered))
             (push (list :day day
                         :demand-min demand
                         :soft-min soft
@@ -2478,13 +2613,44 @@ read."
                         :short-min (max 0.0 (- demand hard))
                         :soft-short-min (max 0.0 (- demand soft))
                         :spare-min (- hard demand)
-                        :verdict (org-foresight--landing-verdict
-                                  demand soft hard covered)
+                        :verdict verdict
                         :units (seq-sort-by (lambda (u)
                                               (plist-get u :remaining-min))
                                             #'> here)
                         :count count
-                        :unestimated unestimated)
+                        :unestimated unestimated
+                        ;; The ways out, worked out only where there is
+                        ;; something to get out of.  Every one of them is a
+                        ;; subtraction on figures already in hand -- nothing
+                        ;; here proposes a schedule.
+                        :unclaimed-min (plist-get w :unclaimed)
+                        :lands-day
+                        (when (memq verdict '(over defer))
+                          (let ((k last) (found nil))
+                            (while (and (not found) (< k (1- days)))
+                              (setq k (1+ k))
+                              (let ((wk (org-foresight--landing-window
+                                         caps dated units day k)))
+                                (when (<= demand (plist-get wk (if (eq verdict 'over)
+                                                                   :hard :soft)))
+                                  (setq found
+                                        (time-add today (days-to-time k))))))
+                            found))
+                        :drop
+                        (when (eq verdict 'over)
+                          (org-foresight--landing-enough
+                           (seq-filter (lambda (u)
+                                         (not (time-less-p day
+                                                           (plist-get u :due-day))))
+                                       units)
+                           (- demand hard)
+                           (lambda (u) (plist-get u :remaining-min))))
+                        :move
+                        (when (eq verdict 'defer)
+                          (org-foresight--landing-enough
+                           (org-foresight--landing-deferrable scan units last)
+                           (- demand soft)
+                           (lambda (r) (plist-get r :minutes)))))
                   out)))
         (let ((entries (nreverse out)))
           (list :deadlines entries
