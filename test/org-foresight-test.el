@@ -2408,24 +2408,55 @@ CLOCK: [2026-08-10 Mon 09:00]--[2026-08-10 Mon 10:00] =>  1:00
       (should (string-match-p "clashes with" (plist-get (car found) :note))))))
 
 (ert-deftest org-foresight-test-signal-wont-fit ()
-  "Work promised for today that no remaining gap can hold is called out.
-NOW is pinned to the morning, or the answer would depend on the hour the
-tests happen to run -- which is also the point of the signal: what fits
-shrinks as the day goes on."
+  "Work promised for today is split by what stopped it fitting.
+
+NOW is pinned, or the answer would depend on the hour the tests happen to
+run -- which is also the point of the first list: what fits shrinks as the
+day goes on, and by the evening everything is in it.  The second list does
+not move with the clock, and that is the whole reason it is kept apart: an
+entry in it is still there tomorrow morning, so it is asking to be broken
+up rather than to be moved."
   (org-foresight-test--with-signals
       (let ((today (format-time-string "<%Y-%m-%d %a>"
                                        (org-foresight--day-start 0))))
-        (concat "* NEXT a very long job\nSCHEDULED: " today
+        (concat "* NEXT longer than any day holds\nSCHEDULED: " today
                 "\n:PROPERTIES:\n:EFFORT:   12:00\n:END:\n"
+                "* NEXT ran out of afternoon\nSCHEDULED: " today
+                "\n:PROPERTIES:\n:EFFORT:   4:00\n:END:\n"
                 "* NEXT a short job\nSCHEDULED: " today
                 "\n:PROPERTIES:\n:EFFORT:   0:15\n:END:\n"))
     (let* ((day (org-foresight--day-start 0))
-           (morning (org-foresight--hhmm-on day "06:00"))
-           (titles (mapcar (lambda (f) (plist-get f :title))
-                           (org-foresight--wont-fit-findings
-                            (org-foresight-scan 1 day) morning))))
-      (should (member "a very long job" titles))
-      (should-not (member "a short job" titles)))))
+           (scan (org-foresight-scan 1 day))
+           (titles (lambda (at key)
+                     (mapcar (lambda (f) (plist-get f :title))
+                             (plist-get (org-foresight--fit-findings
+                                         scan (org-foresight--hhmm-on day at))
+                                        key)))))
+      ;; 09:00-17:30 declared, so 2:30 of it is left and the longest a day
+      ;; could ever offer is 8:30.  The four-hour job is between the two.
+      (should (equal '("ran out of afternoon") (funcall titles "15:00" :today)))
+      (should (equal '("longer than any day holds")
+                     (funcall titles "15:00" :oversized)))
+      ;; Before work starts the whole day is free, so nothing has run out of
+      ;; it -- and the oversized job is oversized anyway.  The bound is the
+      ;; working hours, not the hour it was asked at.
+      (should-not (funcall titles "06:00" :today))
+      (should (equal '("longer than any day holds")
+                     (funcall titles "06:00" :oversized)))
+      ;; The board gives a note 36 columns and truncates the overrun
+      ;; silently, on the screen only, where nothing else here would see the
+      ;; figure go.  What decides whether it fits is the widest estimate the
+      ;; note can be handed, and no corpus reliably holds one -- a run is at
+      ;; its widest when a correction and a whole day are both in it -- so
+      ;; the widest is handed to the real formatter instead of hoped for.
+      (cl-letf (((symbol-function 'org-foresight-report--effort-run)
+                 (lambda (_) "1d 2:00→1d 8:00")))
+        (let ((fit (org-foresight--fit-findings
+                    scan (org-foresight--hhmm-on day "15:00"))))
+          (dolist (key '(:today :oversized))
+            (should (plist-get fit key))
+            (dolist (f (plist-get fit key))
+              (should (<= (string-width (plist-get f :note)) 36)))))))))
 
 (ert-deftest org-foresight-test-signal-leaking-reads-only-the-cache ()
   "The leak signal must not reach for the network while an agenda is drawing."
@@ -3198,7 +3229,13 @@ SCHEDULED: <2026-08-10 Mon>
                 (org-todo-keywords
                  '((sequence "NEXT" "ONGO" "|" "DONE" "CANCEL")
                    (sequence "WAIT" "|" "DELEG")))
-                (org-foresight-work '(("09:00" . "17:30")))
+                ;; The same hours `org-foresight-demo-mode' declares, break
+                ;; included.  A single unbroken block here would describe a
+                ;; day the shipped corpus does not have, and the longest
+                ;; sitting -- which decides what can be done in one go --
+                ;; would come out nearly twice its real length.
+                (org-foresight-work '(("09:00" . "12:00")
+                                      ("13:00" . "17:30")))
                 ;; The demo is written relative to today, so today has to be
                 ;; a working day whatever day the tests are run on.  Its
                 ;; after-hours example is an evening, not a weekend, so
@@ -3322,11 +3359,177 @@ variable -- what matters is that Org agrees these headings are work."
       (org-foresight-demo-mode -1)
       (delete-directory org-foresight-demo-directory t))))
 
+(ert-deftest org-foresight-test-signal-notes-fit-their-column ()
+  "No signal writes a note wider than the column that draws it.
+
+The board gives a note 36 columns and truncates what overruns, silently and
+only on the screen -- so a note one column too long loses the figure it
+exists to carry and nothing else in this suite sees it go.
+
+Asserted over the demo corpus rather than a fixture of its own, because
+this is where the notes reach their full length.  A hand-written entry with
+no history behind it is drawn as a plain `2:00\='; the same entry with the
+estimate correction applied is drawn as `2:00->2:48\=', nearly twice as wide,
+and it is the second form that overruns."
+  (org-foresight-test--with-demo
+    (let ((seen 0))
+      (dolist (section (org-foresight-signals))
+        (dolist (f (cdr section))
+          (when-let ((note (plist-get f :note)))
+            (setq seen (1+ seen))
+            (should (<= (string-width note) 36)))))
+      ;; Or the loop above passes by finding nothing to look at.
+      (should (> seen 10)))))
+
+(ert-deftest org-foresight-test-every-signal-declares-its-kind ()
+  "No signal group reaches the board without being classified.
+
+The kind decides whether the group is counted in the figure the board is
+read for, so a group that never got one is a group silently counted as
+work the reader failed to do.  `org-foresight-signal-kind\=' answers `fix\='
+for anything unlisted, which is the safe way to be wrong -- over-reported
+rather than hidden -- but it is still wrong, and this is what notices."
+  (org-foresight-test--with-demo
+    (let ((titles (mapcar #'car (org-foresight-signals))))
+      (should (> (length titles) 5))
+      (dolist (title titles)
+        (should (assoc title org-foresight-signal-kinds))))))
+
+(ert-deftest org-foresight-test-the-partition-is-the-one-that-was-decided ()
+  "The three kinds, pinned, because nothing else can check them.
+
+Which kind a signal belongs to is a judgement about what its reader can do
+about it, and there is no measurement to derive it from.  An accidental
+edit to the table would change the one figure the board is read for and
+nothing would object, so the decision is written down twice: once where it
+is used, once here.
+
+The boundary that took deciding is `Kept moving\='.  It looks settleable --
+the entry is right there and its date can be typed over -- and doing that
+is precisely what does not settle it, because moving the task again is the
+count going up.  It clears when the work is done, dropped or handed on,
+which makes it owed rather than fixable.  `Gone quiet\=' sits beside it for
+the same reason: the check-in date can be edited, but only chasing the
+person makes the new date true."
+  (should (equal '((fix . 9) (owed . 3) (fact . 3))
+                 (mapcar (lambda (kind)
+                           (cons kind
+                                 (seq-count (lambda (c) (eq (cdr c) kind))
+                                            org-foresight-signal-kinds)))
+                         org-foresight--signal-order)))
+  (should (eq 'owed (org-foresight-signal-kind "Kept moving (not really NEXT)")))
+  (should (eq 'owed (org-foresight-signal-kind "Gone quiet (follow-up overdue)")))
+  (should (eq 'fix  (org-foresight-signal-kind "Won't fit today")))
+  (should (eq 'fact (org-foresight-signal-kind "Leaking (unclocked work)"))))
+
+(ert-deftest org-foresight-test-signals-are-ordered-by-kind ()
+  "What can be settled now is drawn first, then what is owed, then facts.
+
+The order is the argument: a reader who starts at the top is reading the
+part with an end to it, and the rule they meet is where that part stops."
+  (org-foresight-test--with-demo
+    (let* ((ordered (org-foresight--signals-in-order (org-foresight-signals)))
+           (kinds (mapcar (lambda (g) (org-foresight-signal-kind (car g)))
+                          ordered)))
+      ;; Written out rather than sorted by `org-foresight--signal-order\=',
+      ;; which is the constant under test: a check that sorts by it agrees
+      ;; with any order that constant happens to hold, reversed included.
+      (should (equal '(fix owed fact) (seq-uniq kinds)))
+      ;; Within a kind the authored order survives, so a group does not move
+      ;; about the page between redraws for reasons nobody can see.
+      (should (equal (seq-filter (lambda (g)
+                                   (eq (org-foresight-signal-kind (car g)) 'fix))
+                                 (org-foresight-signals))
+                     (seq-filter (lambda (g)
+                                   (eq (org-foresight-signal-kind (car g)) 'fix))
+                                 ordered))))))
+
+(ert-deftest org-foresight-test-the-board-counts-only-what-can-be-fixed ()
+  "The board\='s figure counts the settleable findings and nothing else.
+
+Counting the rest would make the number unreachable, and a target nobody
+can reach is one nobody aims at: see `org-foresight-signal-kinds\='."
+  (org-foresight-test--with-demo
+    (let* ((signals (org-foresight-signals))
+           (fix (seq-filter (lambda (g)
+                              (eq (org-foresight-signal-kind (car g)) 'fix))
+                            signals)))
+      (should (< (length fix) (length signals)))
+      (should (= (org-foresight-signals-to-fix signals)
+                 (apply #'+ (mapcar (lambda (g) (length (cdr g))) fix))))
+      ;; Findings, not groups: five estimates missing from one heading are
+      ;; five entries somebody has to open.
+      (should (> (org-foresight-signals-to-fix signals) (length fix))))))
+
+(ert-deftest org-foresight-test-the-board-says-when-it-is-satisfied ()
+  "With nothing left to settle the board says so, rather than going quiet.
+
+A view that prints a figure only when something is wrong cannot be used to
+confirm that nothing is: the reader cannot tell it from a view that failed
+to run."
+  (should (string-match-p
+           "nothing to fix"
+           (org-foresight-plan--board-verdict nil nil)))
+  (should (string-match-p
+           "all 2 deadlines land"
+           (org-foresight-plan--board-verdict
+            (list :deadlines (list (list :verdict 'lands)
+                                   (list :verdict 'lands)))
+            nil)))
+  (should (string-match-p
+           "1 of 2 deadlines short"
+           (org-foresight-plan--board-verdict
+            (list :deadlines (list (list :verdict 'lands)
+                                   (list :verdict 'over)))
+            nil))))
+
+(ert-deftest org-foresight-test-the-board-badge-holds-no-figures ()
+  "A badge names its section; what changes with the data goes in the body.
+
+Every other badge on the page is a fixed phrase, and a reader learns to
+skim them as labels rather than read them as content.  One badge whose text
+moved with the figures would be the single place that rule broke, and the
+figure would be the one thing on the page nobody looked at twice."
+  (org-foresight-test--with-demo
+    (org-foresight-board)
+    (unwind-protect
+        (with-current-buffer "*Org Foresight Board*"
+          (goto-char (point-min))
+          (let ((badge (buffer-substring-no-properties
+                        (line-beginning-position) (line-end-position))))
+            (should (string-match-p "Board" badge))
+            (should-not (string-match-p "[0-9]" badge)))
+          ;; And the figure is there, one line down, where the other
+          ;; sections put their contents.
+          (should (re-search-forward "^ [^ ].*to fix" nil t)))
+      (kill-buffer "*Org Foresight Board*"))))
+
+(ert-deftest org-foresight-test-board-rules-reach-the-same-edge ()
+  "Every full-width rule on the board ends in the same column.
+
+Two rules a column apart read as a mistake on a page whose whole argument
+is that the figures line up, and the eye finds the ragged one before it
+finds anything the rules were drawn to say."
+  (org-foresight-test--with-demo
+    (org-foresight-board)
+    (unwind-protect
+        (with-current-buffer "*Org Foresight Board*"
+          (let (widths)
+            (goto-char (point-min))
+            (while (re-search-forward "^ ──.*$" nil t)
+              (push (string-width (substring-no-properties (match-string 0)))
+                    widths))
+            (should (> (length widths) 2))
+            (should (equal (list org-foresight-report-columns)
+                           (seq-uniq widths)))))
+      (kill-buffer "*Org Foresight Board*"))))
+
 (ert-deftest org-foresight-test-demo-fires-every-signal ()
   "One of everything: each signal must find its example in the demo corpus."
   (org-foresight-test--with-demo
     (let ((labels (mapcar #'car (org-foresight-signals))))
       (dolist (expected '("Meetings without prep"
+                          "Too big for one sitting (needs breaking up)"
                           "Outside work hours (invisible to capacity)"
                           "Unplannable (deadline, no estimate)"
                           "Gone quiet (follow-up overdue)"
@@ -7558,6 +7761,85 @@ LEAVES are extra (TITLE EFFORT SCHEDULED-OFFSET) lists."
                      (nth 1 l)))
            leaves "")))
 
+(ert-deftest org-foresight-test-longest-sitting-is-a-run-not-a-total ()
+  "The bound is the longest unbroken run of working time, not the day's sum.
+
+A day broken for lunch offers two runs, and work longer than the longer of
+them has to be interrupted through however many hours the day adds up to.
+Taking the total instead would call a seven-and-a-half-hour day room enough
+for a six-hour job that no part of that day can actually hold."
+  (let ((org-foresight-day-file nil)
+        (org-foresight--shape-cache nil)
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:30"))))
+    (should (= 270.0 (org-foresight--longest-sitting))))
+  ;; A week is read rather than a day, so which day it is asked on cannot
+  ;; change the answer.  Here only one weekday works at all, and the bound
+  ;; is still that day's -- asked on any of the other six, a single-day
+  ;; reading would return zero and condemn every task on the board.
+  (let* ((today (string-to-number (format-time-string "%w")))
+         (org-foresight-day-file nil)
+         (org-foresight--shape-cache nil)
+         ;; Deliberately not today, whatever day the tests are run on: a
+         ;; reading that looked only at today would find no hours at all.
+         (org-foresight-workdays (list (mod (1+ today) 7)))
+         (org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:30"))))
+    (should (= 270.0 (org-foresight--longest-sitting)))))
+
+(ert-deftest org-foresight-test-landing-says-which-remedy-a-shortfall-needs ()
+  "Short of the time left and short of the whole week want different answers.
+
+Both used to print the same word, which left the reader to work out for
+themselves which week they were in -- and the cheaper of the two answers is
+the one they would stop looking for.
+
+Short of the hours not already spoken for is settled by moving other work:
+the time exists, it is promised elsewhere.  Short of the week with
+everything else already cleared out of it is settled by none of that,
+because there is nothing left to clear -- it takes overtime, another pair
+of hands, or less work."
+  ;; Four hours a day and two days to the deadline: eight hours exist, four
+  ;; of them are already promised to something else, and five are needed.
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "big" 1 "5:00")
+              "* NEXT unrelated\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 4:00\n:END:\n")
+    (should (equal '(defer) (mapcar #'cadr (org-foresight-test--verdicts))))
+    (should (string-match-p
+             "5:00 owed · 4:00 free of 8:00 · 1:00 must move"
+             (substring-no-properties (org-foresight-report-landing)))))
+  ;; Twenty hours needed and eight in the window however it is arranged.
+  ;; The same four hours are promised elsewhere, so that the two supplies
+  ;; differ and the line can be caught showing the wrong one.
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "big" 1 "20:00")
+              "* NEXT unrelated\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 4:00\n:END:\n")
+    (should (equal '(over) (mapcar #'cadr (org-foresight-test--verdicts))))
+    (should (string-match-p
+             "20:00 owed · 4:00 free of 8:00 · 12:00 short"
+             (substring-no-properties (org-foresight-report-landing))))))
+
+(ert-deftest org-foresight-test-landing-says-when-a-leaf-is-too-big ()
+  "A verdict resting on a leaf nobody can check says so on its own row.
+
+Four hours a day are declared here, so a five-hour leaf cannot be sat down
+to once.  Until it is broken up there is no moment before it is finished at
+which anybody can say how far along it is -- which makes the figure the
+whole row rests on the least checkable kind there is, and the row is where
+somebody arrives to fix it."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "big" 3 "5:00")
+    (should (string-match-p
+             "a leaf over 4:00"
+             (substring-no-properties (org-foresight-report-landing)))))
+  ;; And stays quiet otherwise: a note on every row is a note nobody reads.
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "small" 3 "2:00")
+    (should-not (string-match-p
+                 "a leaf over"
+                 (substring-no-properties (org-foresight-report-landing))))))
+
 (ert-deftest org-foresight-test-landing-tests-cumulatively ()
   "Two commitments that each fit alone need not fit together.
 
@@ -7770,12 +8052,22 @@ redraw."
         (should (org-foresight-landing projects scan))
         (should (= 0 walks))))))
 
-(defun org-foresight-test--landing-line ()
-  "Return the Load block's landing line, properties and all, or nil."
+(defun org-foresight-test--landing-lines ()
+  "Return the Load block's landing lines, properties and all, or nil.
+
+Everything from the first `↳' on: the verdict, and under it the ways out
+where there are any.  The Load rows above carry no `↳', so the split is
+unambiguous."
   (let* ((block (org-foresight-report-load
                  nil nil nil (org-foresight-landing)))
-         (line (car (last (split-string (or block "") "\n")))))
-    (and line (string-match-p "↳" line) line)))
+         (lines (split-string (or block "") "\n"))
+         (tail (seq-drop-while (lambda (l) (not (string-match-p "↳" l))) lines)))
+    (and tail (string-join tail "\n"))))
+
+(defun org-foresight-test--landing-line ()
+  "Return just the Load block's landing verdict line, or nil."
+  (when-let ((all (org-foresight-test--landing-lines)))
+    (car (split-string all "\n"))))
 
 (ert-deftest org-foresight-test-the-landing-line-names-the-failure ()
   "It names one heading, dates it, and says how much is missing.
@@ -7795,7 +8087,9 @@ between reporting a problem and being able to act on it."
       ;; one commitment in the window, so nothing is counted beside it
       (should-not (string-match-p "\\+[0-9]" line))
       ;; and the agenda's own commands can act on it
-      (should (get-text-property (1- (length line)) 'org-marker line)))))
+      (should (get-text-property (1- (length line)) 'org-marker line))
+      ;; and the way out is under it rather than crammed beside it
+      (should (string-match-p "\n" (org-foresight-test--landing-lines))))))
 
 (ert-deftest org-foresight-test-the-landing-line-owns-up-to-the-window ()
   "A shortfall belongs to the window, not to the heading the line names.
@@ -7852,7 +8146,200 @@ SCHEDULED: %s
 " (org-foresight-test--stamp 0)))
     (let ((line (org-foresight-test--landing-line)))
       (should line)
-      (should (string-match-p "2:00 short of what is free" line)))))
+      (should (string-match-p "2:00 more than is free" line)))))
+
+(ert-deftest org-foresight-test-a-shortfall-comes-with-a-way-out ()
+  "A figure with no lever is read once and then resented.
+
+Four answers, all of them subtractions on figures already worked out: leave
+it and it finishes on some later day; give up the smallest single thing that
+would close the gap; or work into the evenings, if the evenings are even
+long enough.  None of them proposes a schedule."
+  (org-foresight-test--with-landing
+      ;; Short titles on purpose: with long ones the line fills and the
+      ;; last term is budgeted away, which is correct and would make this
+      ;; test about `org-foresight-report--fit-terms' instead.
+      (concat (org-foresight-test--dated-tree "big" 1 "7:00")
+              (org-foresight-test--dated-tree "small" 1 "2:00"))
+    (let ((out (cadr (split-string (org-foresight-test--landing-lines) "\n"))))
+      (should out)
+      ;; nine hours owed by tomorrow, eight available: it lands the day after
+      (should (string-match-p "lands" out))
+      ;; and the smallest that would close a one-hour gap on its own is the
+      ;; two-hour project, not the seven-hour one
+      (should (string-match-p "drop any one of small" out))
+      ;; and the hours nothing has claimed are named, so staying late can be
+      ;; weighed rather than guessed at.  Only what nothing has claimed:
+      ;; dinner is not somewhere to put late work.
+      (should (string-match-p "unclaimed before then" out))
+      ;; the row points at what it says to drop, not at what is late
+      (should (get-text-property (1- (length out)) 'org-marker out)))))
+
+(ert-deftest org-foresight-test-the-defer-way-out-names-what-owes-nobody-a-date ()
+  "`defer' has its own lever, and it is never the deadline's own work.
+
+Work with no date is the only work a deadline can take hours from without
+anything else giving way -- that is what having no deadline means.  Naming it
+is the difference between being told to rearrange the week and being shown
+what to move.
+
+The deadline's own leaves must be excluded, and the exclusion only shows
+where one of them has been *scheduled*: an unscheduled leaf is in no day's
+promises and could never be offered anyway.  So the project here has placed
+two of its hours inside the window, and those two hours are smaller than the
+undated work -- meaning a version without the exclusion would pick them, and
+answer \"move the deadline's own work\" to \"the deadline is short\"."
+  (org-foresight-test--with-landing
+      (format "* NEXT the deadline
+DEADLINE: %s
+** NEXT placed
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+** NEXT the rest
+:PROPERTIES:
+:EFFORT: 4:00
+:END:
+* NEXT the undated one
+SCHEDULED: %s
+:PROPERTIES:
+:EFFORT: 3:00
+:END:
+" (org-foresight-test--stamp 1) (org-foresight-test--stamp 0)
+  (org-foresight-test--stamp 0))
+    (let* ((e (car (plist-get (org-foresight-landing) :deadlines)))
+           (out (cadr (split-string (org-foresight-test--landing-lines) "\n"))))
+      (should (eq 'defer (plist-get e :verdict)))
+      ;; the two placed hours are smaller and are still not offered
+      (should (equal '("the undated one")
+                     (mapcar (lambda (r) (plist-get r :title))
+                             (plist-get e :move))))
+      (should out)
+      (should (string-match-p "move any one of the undated one" out))
+      (should-not (string-match-p "placed" out))
+      ;; and nothing about staying late: the hours exist inside the working
+      ;; day, they are merely spoken for
+      (should-not (string-match-p "unclaimed" out)))))
+
+(ert-deftest org-foresight-test-when-it-would-land-answers-the-question-asked ()
+  "`lands' is read against the figure that failed, not against the other one.
+
+For `over' the shortfall is against the hard figure, so the day it lands is
+the day the hard figure catches up.  For `defer' the work already fits the
+hard figure -- that is what makes it `defer' rather than `over' -- so
+answering with the hard figure would say \"tomorrow\" about a thing that will
+not be done tomorrow unless something else moves.  It has to be read against
+soft: leave everything as it is, and this is when it finishes.
+
+Here the next three days are each mostly promised to work with no deadline,
+so the soft figure creeps up an hour a day while the hard one is sufficient
+from the start.  They answer different days, and only one of them is true of
+somebody who changes nothing."
+  (org-foresight-test--with-landing
+      (format "* NEXT the deadline
+DEADLINE: %s
+** NEXT its work
+:PROPERTIES:
+:EFFORT: 6:00
+:END:
+%s" (org-foresight-test--stamp 1)
+      (mapconcat
+       (lambda (d)
+         (format "* NEXT undated %d\nSCHEDULED: %s\n:PROPERTIES:\n:EFFORT: 3:00\n:END:\n"
+                 d (org-foresight-test--stamp d)))
+       '(0 1 2) ""))
+    (let ((e (car (plist-get (org-foresight-landing) :deadlines))))
+      (should (eq 'defer (plist-get e :verdict)))
+      ;; the hard figure is already enough, and would have said the day after
+      (should (>= (plist-get e :hard-min) (plist-get e :demand-min)))
+      ;; soft only reaches it on the fourth day
+      (should (= 3 (org-foresight--day-of (plist-get e :lands-day)
+                                          (org-foresight--day-start 0)))))))
+
+(ert-deftest org-foresight-test-a-report-row-answers-the-agenda-at-its-margin ()
+  "A row that names a heading has to carry its marker at the first character.
+
+`org-agenda-goto', `org-agenda-schedule' and the rest all read through
+`org-get-at-bol', which looks at the *beginning of the line*.  The margin is
+added last and is a bare space, so for a long time every row in every report
+block was marked carefully and then answered nothing: `RET' and `TAB' found
+no marker and reported an error on a line plainly about a heading.
+
+Asserted at the margin rather than anywhere in the row, because anywhere in
+the row is exactly what used to pass."
+  (org-foresight-test--with-landing
+      ;; Two, so the way out names a *different* heading from the verdict and
+      ;; both rows have somewhere of their own to go
+      (concat (org-foresight-test--dated-tree "big" 1 "7:00")
+              (org-foresight-test--dated-tree "small" 1 "2:00"))
+    (let* ((block (org-foresight-report-load
+                   nil nil nil (org-foresight-landing)))
+           (lines (seq-filter (lambda (l) (string-match-p "↳" l))
+                              (split-string block "\n"))))
+      (should (= 2 (length lines)))
+      ;; and they point at different headings
+      (should-not (equal (get-text-property 0 'org-marker (car lines))
+                         (get-text-property 0 'org-marker (cadr lines))))
+      (dolist (l lines)
+        ;; column zero, not column one: the margin is the character the
+        ;; agenda reads
+        (should (get-text-property 0 'org-marker l))
+        (should (get-text-property 0 'org-agenda-type l))))))
+
+(ert-deftest org-foresight-test-the-way-out-counts-the-alternatives ()
+  "The least that works is not always the one that can go.
+
+Every candidate is on its own enough and they are sorted smallest-first, so
+the named one is the cheapest way out -- but a project may be the cheapest
+and still be the one thing that cannot be cut.  A reader who cannot see that
+there are others will not go looking for them."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "big" 1 "5:00")
+              (org-foresight-test--dated-tree "mid" 1 "4:00")
+              (org-foresight-test--dated-tree "sml" 1 "3:00"))
+    (let ((out (cadr (split-string (org-foresight-test--landing-lines) "\n"))))
+      (should out)
+      ;; twelve owed against eight: four short, and both `mid' and `big'
+      ;; would close it on their own -- `sml' would not
+      (should (string-match-p "any one of mid" out))
+      (should (string-match-p "\\+1" out)))))
+
+(ert-deftest org-foresight-test-the-way-out-does-not-name-the-same-thing-twice ()
+  "\"What is late is X, so drop X\" answers nothing.
+
+The verdict names the biggest commitment due that day, and the way out names
+the smallest one that would close the gap.  When those are the same heading
+the line says the title twice and reads as a circle -- and it happens
+whenever one large project is late on its own, which is not a rare shape.
+
+What it actually means is worth keeping: nothing smaller would have done, so
+there is no partial way out.  That is what is said instead."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "the only one" 1 "20:00")
+    (let ((out (cadr (split-string (org-foresight-test--landing-lines) "\n"))))
+      (should out)
+      (should (string-match-p "only by dropping it" out))
+      (should-not (string-match-p "drop any one of" out))
+      ;; the title appears once, on the verdict above
+      (should-not (string-match-p "the only one" out)))))
+
+(ert-deftest org-foresight-test-nothing-alone-is-enough-says-nothing ()
+  "Where no single thing closes the gap, none is named.
+
+The question has stopped being which one and become how many, and that is a
+different sentence than one line can hold.  Naming the biggest anyway would
+read as a recommendation that does not work."
+  (org-foresight-test--with-landing
+      ;; eighteen hours owed by tomorrow against eight available: ten short,
+      ;; and neither nine-hour project would close it on its own
+      (concat (org-foresight-test--dated-tree "one" 1 "9:00")
+              (org-foresight-test--dated-tree "two" 1 "9:00"))
+    (let ((out (cadr (split-string (org-foresight-test--landing-lines) "\n"))))
+      (should-not (and out (string-match-p "drop any one of" out)))
+      ;; the levers that still apply are still offered
+      (should out)
+      (should (string-match-p "unclaimed before then" out)))))
 
 (ert-deftest org-foresight-test-the-landing-line-is-silent-with-no-deadlines ()
   "Nothing dated, nothing said.
@@ -7885,7 +8372,8 @@ that order, which is what `org-foresight-report--fit-terms' is for."
               (org-foresight-test--dated-tree "far off" 40 "300:00"))
     (let ((line (org-foresight-test--landing-line)))
       (should line)
-      (should (org-foresight-test--within-80 line))
+      (should (org-foresight-test--within-80
+               (org-foresight-test--landing-lines)))
       ;; the answer survives whatever else had to go
       (should (string-match-p "short" line)))))
 
@@ -7909,6 +8397,208 @@ walks was the extra one."
                       (apply real args))))
           (org-foresight-test--agenda)
           (should (= 1 walks)))))))
+
+(ert-deftest org-foresight-test-the-board-lists-every-dated-commitment ()
+  "The list the day's one-line verdict is a summary of.
+
+The Load line names the soonest date that cannot be met and counts the
+rest with `+N'.  That count is unreadable and unreachable on its own -- the
+others have no name there and nowhere to go -- so the board holds the list,
+in date order, one commitment a row."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "first" 1 "2:00")
+              (org-foresight-test--dated-tree "second" 1 "1:00")
+              (org-foresight-test--dated-tree "later" 5 "1:00"))
+    (let ((rows (split-string (substring-no-properties
+                               (org-foresight-report-landing))
+                              "\n")))
+      ;; every unit is named, and in the order they fall due
+      (should (seq-find (lambda (r) (string-match-p "first" r)) rows))
+      (should (seq-find (lambda (r) (string-match-p "second" r)) rows))
+      (should (seq-find (lambda (r) (string-match-p "later" r)) rows))
+      (should (< (seq-position rows (seq-find (lambda (r)
+                                                (string-match-p "first" r))
+                                              rows))
+                 (seq-position rows (seq-find (lambda (r)
+                                                (string-match-p "later" r))
+                                              rows)))))))
+
+(ert-deftest org-foresight-test-every-board-commitment-can-be-acted-on ()
+  "A list of deadlines you cannot act on from is one you have to find again.
+
+The marker sits at the first character, because that is where the agenda
+reads it -- see
+`org-foresight-test-a-report-row-answers-the-agenda-at-its-margin'."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree "something" 3 "1:00")
+    (let ((rows (seq-filter (lambda (r) (string-match-p "something" r))
+                            (split-string (org-foresight-report-landing) "\n"))))
+      (should (= 1 (length rows)))
+      (should (get-text-property 0 'org-marker (car rows)))
+      (should (get-text-property 0 'org-agenda-type (car rows))))))
+
+(ert-deftest org-foresight-test-the-board-rules-only-where-it-does-not-fit ()
+  "A rule saying a date is comfortable explains a problem nobody has.
+
+Drawn under the last commitment of a window that does not fit, and nowhere
+else.  A board that comments on every line stops being read, which is the
+same reason the agenda's own key names only the marks the day used."
+  (org-foresight-test--with-landing
+      (concat (org-foresight-test--dated-tree "tight" 1 "9:00")
+              (org-foresight-test--dated-tree "roomy" 9 "1:00"))
+    (let* ((rows (split-string (substring-no-properties
+                                (org-foresight-report-landing))
+                               "\n"))
+           (rules (seq-filter (lambda (r) (string-match-p "owed" r)) rows)))
+      (should (= 1 (length rules)))
+      (should (string-match-p "1:00 short" (car rules)))
+      ;; and it is under the window that failed, not under the other one
+      (should (< (seq-position rows (car rules))
+                 (seq-position rows (seq-find (lambda (r)
+                                                (string-match-p "roomy" r))
+                                              rows)))))))
+
+(ert-deftest org-foresight-test-the-board-says-so-when-nothing-is-dated ()
+  "An empty section says it is empty rather than being absent.
+
+The board's other sections do the same: a heading with nothing under it
+reads as something failing to load, and the reader cannot tell that from
+having no deadlines."
+  (org-foresight-test--with-landing
+      "* NEXT no date anywhere\n:PROPERTIES:\n:EFFORT: 2:00\n:END:\n"
+    (should (string-match-p "nothing is dated"
+                            (substring-no-properties
+                             (org-foresight-report-landing))))))
+
+(ert-deftest org-foresight-test-the-board-holds-eighty-columns ()
+  "Long titles are cut, and the rule fills the line without passing it."
+  (org-foresight-test--with-landing
+      (org-foresight-test--dated-tree
+       "a title long enough that it has to be cut somewhere or it will run on"
+       1 "9:00")
+    (should (org-foresight-test--within-80
+             (substring-no-properties (org-foresight-report-landing))))))
+
+(ert-deftest org-foresight-test-the-two-project-tests-agree ()
+  "One rule, evaluated two ways, held to the same answers.
+
+The corpus-wide scan reads the outline once with a level stack; the
+predicate reads one subtree at point.  Both are needed -- a signal cannot
+afford a whole-corpus survey to ask about the heading it is standing on --
+and the danger of having both is that they drift, so \"is this a project\"
+quietly means two things in two blocks of the same report.
+
+Run over the author's own specification, so the thing they agree on is the
+rule as written rather than whatever they happen to share."
+  (let ((due (org-foresight-test--stamp 1)))
+    (org-foresight-test--with-org
+        (format org-foresight-test--project-fixture due due due due due due)
+      (let ((batch (make-hash-table :test #'equal)))
+        (dolist (r (plist-get (org-foresight-project-scan) :headings))
+          (puthash (plist-get r :title) (and (plist-get r :project-p) t) batch))
+        (with-current-buffer (find-file-noselect (car org-agenda-files))
+          (org-with-wide-buffer
+           (org-map-entries
+            (lambda ()
+              (let ((title (org-get-heading t t t t)))
+                ;; keyword-less headings are in neither: no record, and the
+                ;; predicate says no
+                (should (eq (gethash title batch)
+                            (and (org-foresight-project-p) t)))))
+            nil nil)))))))
+
+(ert-deftest org-foresight-test-scaffolding-alone-does-not-make-a-project ()
+  "Notes under a task are notes, not children.
+
+A project is a TODO with *TODO* descendants.  A heading whose only
+descendants carry no keyword has nothing under it that anybody is going to
+do, and counting them would make a project of every task somebody wrote a
+paragraph under -- which is most of them.
+
+Asserted on both readings of the rule, because this is the case that tells
+them apart: the author's own specification has no task with scaffolding
+beneath it, so a version counting any heading at all passes it."
+  (org-foresight-test--with-org
+      "* NEXT has only notes under it
+** notes
+*** more notes
+* NEXT has a real child
+** NEXT the child
+"
+    (let ((recs (plist-get (org-foresight-project-scan) :headings)))
+      (should-not (plist-get (car recs) :project-p))
+      (should (plist-get (cadr recs) :project-p)))
+    (with-current-buffer (find-file-noselect (car org-agenda-files))
+      (org-with-wide-buffer
+       (goto-char (point-min))
+       (should-not (org-foresight-project-p))
+       (re-search-forward "^\\* NEXT has a real child")
+       (should (org-foresight-project-p))))))
+
+(ert-deftest org-foresight-test-a-decomposed-project-is-not-unplannable ()
+  "A project heading has no EFFORT because its children carry it.
+
+Asking one for its own estimate would be asking for the same hours twice, so
+a signal that read a missing EFFORT there fired on every properly decomposed
+tree in the file -- naming correct work as a problem, which is how a board
+teaches somebody to stop reading it.
+
+The genuine case survives: a dated commitment nobody has broken down and
+nobody has sized is a deadline that cannot be planned for, and that is what
+the signal is for."
+  (org-foresight-test--with-signals
+      (format "* NEXT decomposed
+DEADLINE: %s
+** NEXT its work
+:PROPERTIES:
+:EFFORT: 2:00
+:END:
+* NEXT never broken down
+DEADLINE: %s
+" (org-foresight-test--stamp 2) (org-foresight-test--stamp 2))
+    (let ((titles (mapcar (lambda (f) (plist-get f :title))
+                          (org-foresight-test--signal
+                           "Unplannable (deadline, no estimate)"))))
+      (should (member "never broken down" titles))
+      (should-not (member "decomposed" titles)))))
+
+(ert-deftest org-foresight-test-a-guessed-figure-says-so-on-its-own-row ()
+  "The row carrying a figure is the row that has to admit it is a guess.
+
+The day's line counts them in total, which is enough to know the answer is
+soft and not enough to know *which* answer.  This is the list somebody comes
+to in order to go and put the estimate in, so it is the list that has to say
+where the estimate is missing."
+  (org-foresight-test--with-landing
+      (format "* NEXT half sized
+DEADLINE: %s
+** NEXT measured
+:PROPERTIES:
+:EFFORT: 1:00
+:END:
+** NEXT not measured
+* NEXT sized properly
+DEADLINE: %s
+** NEXT measured too
+:PROPERTIES:
+:EFFORT: 1:00
+:END:
+* NEXT nothing sized
+DEADLINE: %s
+" (org-foresight-test--stamp 2) (org-foresight-test--stamp 2)
+  (org-foresight-test--stamp 2))
+    (let ((rows (split-string (substring-no-properties
+                               (org-foresight-report-landing))
+                              "\n")))
+      (should (seq-find (lambda (r) (string-match-p "half sized · 1 of 2 unestimated" r))
+                        rows))
+      (should (seq-find (lambda (r) (string-match-p "nothing sized · all unestimated" r))
+                        rows))
+      ;; and the one that is properly sized says nothing at all
+      (should (seq-find (lambda (r)
+                          (and (string-match-p "sized properly" r)
+                               (not (string-match-p "unestimated" r))))
+                        rows)))))
 
 (provide 'org-foresight-test)
 

@@ -366,8 +366,17 @@ than asking for one."
                      ((and place sched
                            (= 0 (org-foresight--day-of sched today)))
                       (push (org-foresight--finding
-                             title (format "needs %s · today: %s" place
-                                           (org-foresight--places-phrase places)))
+                             title
+                             ;; Where today is actually being worked from is
+                             ;; the same answer on every row of this
+                             ;; section, and the section it is read under
+                             ;; has already given it once.  Repeating it
+                             ;; here cost more columns than the note has --
+                             ;; three places and the place needed was cut
+                             ;; off the end of the line.
+                             (format "needs %s · not there today"
+                                     (truncate-string-to-width
+                                      (format "%s" place) 13 nil nil t)))
                             elsewhere)))))
                 ;; (b) A decision that keeps not being made.
                 (when (and todo (not done))
@@ -377,8 +386,16 @@ than asking for one."
                              title (format "rescheduled %d times" n))
                             procrastinated))))
                 ;; (c) A deadline that cannot be planned for.
+                ;;
+                ;; Leaves only.  A project heading carries no EFFORT because
+                ;; its estimate is its children's -- asking one for its own
+                ;; would be asking for the same hours twice -- so a signal
+                ;; that read a missing EFFORT there fired on every properly
+                ;; decomposed tree in the file.  Naming correct work as a
+                ;; problem is how a board teaches people to stop reading it.
                 (when (and todo (not done) dead (null effort)
-                           (time-less-p dead horizon))
+                           (time-less-p dead horizon)
+                           (not (org-foresight-project-p)))
                   (push (org-foresight--finding
                          title
                          (format "due %s, no estimate"
@@ -411,7 +428,8 @@ than asking for one."
     ;; Orphans can only be judged once every UID in the agenda has been seen.
     (let ((orphans (seq-keep (lambda (c)
                                (unless (gethash (car c) uids) (cdr c)))
-                             orphan-candidates)))
+                             orphan-candidates))
+          (fit (org-foresight--fit-findings scan)))
       (list
        :here (org-foresight--here-sort (nreverse here))
        ;; Kept beside the rows it decided, so the section that shows them can
@@ -428,7 +446,9 @@ than asking for one."
                    (nreverse unreadable))
              (cons "Outside work hours (invisible to capacity)"
                    (nreverse outside-work))
-             (cons "Won't fit today" (org-foresight--wont-fit-findings scan))
+             (cons "Won't fit today" (plist-get fit :today))
+             (cons "Too big for one sitting (needs breaking up)"
+                   (plist-get fit :oversized))
              (cons "Unplannable (deadline, no estimate)" (nreverse unplannable))
              (cons "Gone quiet (follow-up overdue)" (nreverse followups))
              (cons "Kept moving (not really NEXT)" (nreverse procrastinated))
@@ -494,8 +514,25 @@ harder at it will help.  Worth saying before anything else on the board."
                     out))))))
     (nreverse out)))
 
-(defun org-foresight--wont-fit-findings (scan &optional now)
-  "Return findings for work promised today that no remaining gap can hold.
+(defun org-foresight--fit-findings (scan &optional now)
+  "Return work promised today that no gap can hold, split by what caused it.
+
+  :today      it fits the working hours as they are declared, and no longer
+              fits what is left of today
+  :oversized  it does not fit the longest unbroken stretch of working time
+              the week offers, so no day will hold it whole
+
+The two wear the same symptom and are different problems.  The first is a
+fact about the hour it is read at -- the morning held a run this long and
+the afternoon does not -- and it clears itself overnight.  The second is a
+fact about the task, as true next week as today; left in the first list it
+would sit there every morning forever, and a list whose top entries never
+change is one that stops being read.
+
+Reported apart because the answers differ.  Work that ran out of day is
+moved.  Work too big to sit down to once is broken up, and until it is, the
+estimate on it cannot be checked against anything.
+
 Measured from NOW, the current time by default: a two-hour job does not fit
 in a day with ninety minutes left of it, whatever the morning looked like."
   (let* ((today (org-foresight--day-start 0))
@@ -513,18 +550,30 @@ in a day with ninety minutes left of it, whatever the morning looked like."
                                         free))
                          60.0)
                     0.0))
-         out)
+         (sitting (org-foresight--longest-sitting))
+         fits oversized)
     (dolist (e (and work (aref (plist-get scan :ledger) 0)))
-      (when (and (eq (plist-get e :kind) 'promised)
-                 (> (or (plist-get e :effort-adj) (plist-get e :effort)) longest))
-        (push (list :file nil :point nil
-                    :marker (plist-get e :marker)
-                    :title (plist-get e :title)
-                    :note (format "needs %s, longest gap %s"
-                                  (org-foresight-report--effort-run e)
-                                  (org-duration-from-minutes longest)))
-              out)))
-    (nreverse out)))
+      (let ((need (or (plist-get e :effort-adj) (plist-get e :effort))))
+        (when (and (eq (plist-get e :kind) 'promised) (> need longest))
+          ;; A week with no working hours in it at all bounds nothing, and
+          ;; comparing against zero would call every task oversized.
+          (let* ((big (and (> sitting 0) (> need sitting)))
+                 (f (list :file nil :point nil
+                          :marker (plist-get e :marker)
+                          :title (plist-get e :title)
+                          ;; Two figures and the name of what the second
+                          ;; one is, because the note has 36 columns and an
+                          ;; estimate can spend fifteen of them on its own
+                          ;; (`1d 2:00->1d 8:00\=' is a legal run).  Spelling
+                          ;; out "longest gap" cost more than was left, and
+                          ;; the figure it introduced was what got cut.
+                          :note (format "needs %s · %s %s"
+                                        (org-foresight-report--effort-run e)
+                                        (if big "sitting" "gap")
+                                        (org-duration-from-minutes
+                                         (if big sitting longest))))))
+            (if big (push f oversized) (push f fits))))))
+    (list :today (nreverse fits) :oversized (nreverse oversized))))
 
 (defun org-foresight--borrow-findings (&optional scan)
   "Return a finding when this week has taken too much from private time.
@@ -575,14 +624,105 @@ decision nobody else can make.  The few that are not have to be said out
 loud -- a board that names a problem and not the thing that answers it sends
 its reader off to find one, and a reader who has to go looking stops reading.")
 
-(defun org-foresight-report-signals (&optional signals)
-  "Return the signal blocks, or a note when nothing is outstanding."
+(defconst org-foresight-signal-kinds
+  '(("Impossible (travel clashes with a meeting)"     . fix)
+    ("Meetings without prep"                          . fix)
+    ("Unreadable estimate (breaks the agenda itself)" . fix)
+    ("Won't fit today"                                . fix)
+    ("Too big for one sitting (needs breaking up)"    . fix)
+    ("Unplannable (deadline, no estimate)"            . fix)
+    ("Cannot be done from here"                       . fix)
+    ("Undecided (captured, not decided)"              . fix)
+    ("Orphaned prep"                                  . fix)
+    ("Gone quiet (follow-up overdue)"                 . owed)
+    ("Kept moving (not really NEXT)"                  . owed)
+    ("Too much in flight"                             . owed)
+    ("Outside work hours (invisible to capacity)"     . fact)
+    ("Borrowed from private time"                     . fact)
+    ("Leaking (unclocked work)"                       . fact))
+  "What kind of thing each signal is, and so whether emptying it is the point.
+
+One question separates them: can it be settled by editing the plan, without
+doing any of the work, and without writing anything untrue?
+
+  fix   Yes.  A clash is rescheduled, an estimate is typed, a lump is broken
+        into steps.  Minutes of work at most, and none of it the work
+        itself.  This is the only kind with a target, and the target is
+        none left.
+
+  owed  No -- only finishing, dropping or handing on the work clears it.  A
+        task that keeps moving is not answered by moving it again; that is
+        the count going up.  Zero here would mean owing nobody anything,
+        which is not a state a working week passes through.
+
+  fact  No, and it is not a fault.  A call with another timezone is at
+        seven in the evening because that is when the other end is awake,
+        and last week\='s unclocked hours already happened.  Reported so the
+        figures elsewhere can be read, and driving them to zero would mean
+        refusing the call.
+
+Naming the kinds is what gives the board an answer to \"what does good look
+like\", which a flat list of fifteen headings does not have: emptying it is
+impossible, so a reader who tries once learns the board cannot be satisfied
+and stops reading it.
+
+Anything not named here counts as `fix\=', so a signal added and left out of
+this list is over-reported rather than quietly filed away as weather."
+  )
+
+(defconst org-foresight--signal-order '(fix owed fact)
+  "The kinds of `org-foresight-signal-kinds\=', in the order they are read.
+
+What can be settled now comes first, because it is the part with an end to
+it.  What is owed comes next: still the reader\='s, but not answerable at a
+keyboard.  What is merely true comes last.")
+
+(defconst org-foresight--signal-banners
+  '((owed . "below here, nothing clears without doing the work")
+    (fact . "below here, nothing is a fault: these are facts about the week"))
+  "The rule drawn where the board stops asking to be emptied.
+
+Nothing above `owed\=', because the top of the list needs no explaining: it is
+the part a reader is meant to drive to nothing, and the badge has said so.")
+
+(defun org-foresight-signal-kind (title)
+  "Return the kind of the signal group called TITLE.
+See `org-foresight-signal-kinds\=' for what the kinds mean."
+  (or (cdr (assoc title org-foresight-signal-kinds)) 'fix))
+
+(defun org-foresight-signals-to-fix (&optional signals)
+  "Return how many findings in SIGNALS could be settled by editing the plan.
+
+The board\='s one figure, and the only one of the three kinds with a target.
+Counts findings rather than groups: it is the number of entries somebody has
+to go and touch, and five estimates missing from one group is five pieces of
+work, not one."
   (let ((signals (or signals (org-foresight-signals))))
-    (if (null signals)
-        (propertize "(nothing unaccounted for)" 'face 'org-table)
-      (mapconcat
-       (lambda (group)
-         (concat
+    (seq-reduce (lambda (n group)
+                  (if (eq (org-foresight-signal-kind (car group)) 'fix)
+                      (+ n (length (cdr group)))
+                    n))
+                signals 0)))
+
+(defun org-foresight--signals-in-order (signals)
+  "Return SIGNALS grouped by kind, in `org-foresight--signal-order\='.
+Stable within a kind, so the order each group was written in survives."
+  (apply #'append
+         (mapcar (lambda (kind)
+                   (seq-filter (lambda (g)
+                                 (eq (org-foresight-signal-kind (car g)) kind))
+                               signals))
+                 org-foresight--signal-order)))
+
+(defun org-foresight-report--signal-rule (text)
+  "Return a full-width rule introducing TEXT."
+  (let* ((lead (format " %s %s " (make-string 2 ?\u2500) text))
+         (pad (max 2 (- org-foresight-report-columns (string-width lead)))))
+    (propertize (concat lead (make-string pad ?\u2500)) 'face 'shadow)))
+
+(defun org-foresight-report--signal-group (group)
+  "Return one signal GROUP: its heading, and a row per finding."
+  (concat
           ;; A group heading belongs to the badge above it, so it sits at the
           ;; margin rather than at the frame edge: only a badge is outdented,
           ;; or an eye running down the left edge stops finding sections.
@@ -612,7 +752,28 @@ its reader off to find one, and a reader who has to go looking stops reading.")
                        (propertize (plist-get f :note) 'face 'shadow) 36))
               (plist-get f :marker)))
            (cdr group) "\n")))
-       signals "\n\n"))))
+
+(defun org-foresight-report-signals (&optional signals)
+  "Return the signal blocks, or a note when nothing is outstanding.
+
+Grouped by kind rather than in the order the walk happened to find them, so
+the part with an end to it comes first and a rule says where that part
+stops.  See `org-foresight-signal-kinds\=' for why a flat list cannot be
+read: three different things wearing one heading, only one of which anybody
+is meant to empty."
+  (let ((signals (org-foresight--signals-in-order
+                  (or signals (org-foresight-signals)))))
+    (if (null signals)
+        (propertize "(nothing unaccounted for)" 'face 'org-table)
+      (let (out (prev nil))
+        (dolist (group signals)
+          (let ((kind (org-foresight-signal-kind (car group))))
+            (unless (eq kind prev)
+              (when-let ((banner (cdr (assq kind org-foresight--signal-banners))))
+                (push (org-foresight-report--signal-rule banner) out))
+              (setq prev kind)))
+          (push (org-foresight-report--signal-group group) out))
+        (string-join (nreverse out) "\n\n")))))
 
 (defconst org-foresight-here-urgent "⚠"
   "The mark for work whose need falls before you are next in this place.")
@@ -702,6 +863,45 @@ the day to be told so -- by tomorrow the answer is Wednesday again."
 (add-hook 'org-foresight-report-invalidate-functions
           #'org-foresight--invalidate-signals)
 
+(defun org-foresight-plan--board-verdict (landing signals)
+  "Return what good would look like on this board, and how far off it is.
+
+The board had no such line, and without one it could not be finished.  The
+day\='s views each say plainly when they are satisfied -- capacity when
+nothing is over, the grid when the work lands before the evening -- and a
+reader who has those turns to a list of fifteen headings and reasonably
+asks what emptying it would mean.  Emptying it means nothing, because two
+thirds of it is not the reader\='s fault to begin with: see
+`org-foresight-signal-kinds\='.
+
+So the line carries the two halves that do have an answer.  Every dated
+commitment lands, and there is nothing left to fix.  Both are reachable on
+an ordinary Tuesday, which is what makes them worth printing."
+  (let* ((entries (plist-get landing :deadlines))
+         (short (seq-count (lambda (e) (not (eq (plist-get e :verdict) 'lands)))
+                           entries))
+         (n (org-foresight-signals-to-fix signals))
+         ;; Settled reads as plainly as the rest of the page; unsettled is
+         ;; the only thing here worth a colour, and it wears the same one
+         ;; the day\='s own figures use when they will not fit.
+         (say (lambda (ok text)
+                (propertize text 'face
+                            (if ok 'shadow
+                              'org-foresight-report-overcommitted)))))
+    (string-join
+     (delq nil
+           (list
+            (cond ((null entries) nil)
+                  ((zerop short)
+                   (funcall say t (format "all %d deadlines land"
+                                          (length entries))))
+                  (t (funcall say nil (format "%d of %d deadlines short"
+                                              short (length entries)))))
+            (if (zerop n)
+                (funcall say t "nothing to fix")
+              (funcall say nil (format "%d to fix" n)))))
+     (propertize " · " 'face 'shadow))))
+
 ;;;###autoload
 (defun org-foresight-board (&optional _match)
   "Show what has not been settled: what only here can do, and what is unplanned.
@@ -710,10 +910,13 @@ Not an agenda view.  The day has one of those and it is the day; this is the
 other question, and it is not about the timeline at all -- which is why it
 stopped being a second copy of the agenda with a different tail underneath.
 
-Two sections.  The first is the one that decides whether you can walk out:
-work this place, and only this place, can do, with the day that place comes
-round again.  The second is everything that exists and has not been planned
-for.
+Three sections, in the order the questions get asked.  The first decides
+whether you can walk out: work this place, and only this place, can do, with
+the day that place comes round again.  The second is everything with a date
+on it, and where the week stops holding it -- the list the day\='s one-line
+verdict is a summary of.  The third is everything that exists and has not
+been planned for at all, which is the longest and the least urgent: a
+deadline that will be missed outranks work nobody has looked at yet.
 
 Every row carries its entry\'s marker, so \\[org-agenda-schedule] and the rest
 of the agenda\'s vocabulary work here as they do in the agenda itself.
@@ -734,15 +937,31 @@ nothing but drop it."
         (erase-buffer)
         (unless (derived-mode-p 'org-agenda-mode) (org-agenda-mode))
         (setq-local org-agenda-type 'agenda)
+        ;; Read once and handed to both the line that summarises them and the
+        ;; sections that show them, or the board answers its own question
+        ;; twice from two walks of every file.
+        (let ((landing (org-foresight-landing))
+              (signals (org-foresight-signals)))
         (insert (org-foresight-report--badge
+                 "Board" "what settled would look like, and how far off it is")
+                "\n\n"
+                (org-foresight-report--indent
+                 (org-foresight-plan--board-verdict landing signals))
+                "\n\n"
+                (org-foresight-report--badge
                  "Here" "what only this place can do")
                 "\n\n"
                 (org-foresight-report-here)
                 "\n\n"
                 (org-foresight-report--badge
-                 "Signals" "work that exists but is not planned")
+                 "Landing" "what has a date, and whether it will be met")
                 "\n\n"
-                (org-foresight-report-signals))
+                (org-foresight-report-landing landing)
+                "\n\n"
+                (org-foresight-report--badge
+                 "Signals" "everything unsettled, the fixable part first")
+                "\n\n"
+                (org-foresight-report-signals signals)))
         (put-text-property (point-min) (point-max) 'org-agenda-type 'agenda)
         (goto-char (point-min))
         (setq buffer-read-only t)))

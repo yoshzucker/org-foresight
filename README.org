@@ -1525,7 +1525,41 @@ answering either way.
 
 ** Signals
 
-Work that exists but has not been planned for.
+Everything unsettled, the part you can settle first.
+
+Fifteen headings, and emptying them is not the goal — two thirds of the list
+is not a fault to begin with. They are drawn in three groups, divided by one
+question: /can it be settled by editing the plan, without doing any of the
+work, and without writing anything untrue?/
+
+- *fix* — yes. A clash is rescheduled, an estimate is typed, a lump is broken
+  into steps. Minutes at most, and none of it the work itself. This is the
+  only group with a target, and the target is none left.
+- *owed* — no; only finishing, dropping or handing on the work clears it. A
+  task that keeps moving is not answered by moving it again — that is the
+  count going up.
+- *fact* — no, and it is not a fault. A call with another timezone is at seven
+  in the evening because that is when the other end is awake. Driving these
+  to zero would mean refusing the call.
+
+A rule is drawn where each group ends, so the top of the list is the finite
+part. The board says how far off it is in one line, in the same register the
+day's own views use:
+
+#+begin_example
+ Board  what settled would look like, and how far off it is
+
+ all 5 deadlines land · nothing to fix
+#+end_example
+
+The badge names the section and the figure sits in its body, as everywhere
+else on the page — a badge whose words moved with the data would be the one
+place that rule broke.
+
+Both halves are reachable on an ordinary Tuesday, which is what makes them
+worth printing. =[Here]= is not counted in it: that is a worklist, not a
+problem list, and an empty one is not the goal — its measure is the day's
+capacity and where the work lands.
 
 | Signal              | What it catches                                          |
 |---------------------+----------------------------------------------------------|
@@ -1538,7 +1572,10 @@ Work that exists but has not been planned for.
 |                     | agenda outright (see below)                              |
 | Cannot be done here | planned for today, but today is worked from somewhere    |
 |                     | that cannot do it                                        |
-| Won't fit today     | promised for today, and longer than any gap that remains  |
+| Won't fit today     | promised for today, and longer than the gap that remains; |
+|                     | it fits the working hours, so it is moved, not broken up  |
+| Too big for a sitting| longer than the longest unbroken run of working hours, so |
+|                     | no day holds it whole and no estimate on it is checkable  |
 | Meetings, unprepared| an invitation implies preparation and follow-up that no    |
 |                     | one has budgeted for                                      |
 | Unplannable         | a near deadline with no estimate cannot be placed at all  |
@@ -1621,7 +1658,11 @@ answers the first; one line under the rows answers the second:
  Mon 08-24 1:40 to promise  ██████████████████████████     ·········
  Tue 08-25 3:30 to promise  ████████████████     ···················
  ↳ Write the vendor comp… +1 by Mon · 0:18 short · 1 unestimated
+   ↳ lands Tue · drop any one of Get the contract sta… 0:15
 #+end_example
+
+The second line takes as many of the four as the width allows, dropping from
+the right — so a long title costs the evenings term, never the answer.
 
 or, when nothing is in trouble:
 
@@ -1631,6 +1672,63 @@ or, when nothing is in trouble:
 failure is usually a consequence of an earlier one, and the decision — work
 longer, hand some over, do less of it — has to be taken before the first
 date. The row carries that heading's marker, so =RET= goes there.
+
+*A figure with no lever is read once and then resented*, so the line under it
+names what would answer the shortfall. Four things, all of them subtractions
+on figures already worked out — none of them proposes a schedule or writes
+anything:
+
+| Term                  | The decision it serves                        |
+|-----------------------+-----------------------------------------------|
+| =lands Tue=           | leave it, and it finishes then — the case for moving the date, and the only one that costs nothing |
+| =drop any one of X=   | the smallest single commitment that would close the gap, which is what delegating or cutting scope means in hours |
+| =move any one of X=   | the same for work that owes nobody a date — the answer to a shortfall only the soft figure sees, and only offered there |
+| =7:00 unclaimed before then= | the hours outside work that nothing has claimed — what staying late would have to come out of. Weighed against the shortfall on the line above, which is why that figure is not repeated |
+
+Ranked smallest-first, for the reason the day's own way out is: give up the
+least that still works. *Where nothing alone is enough, nothing is named* —
+the question has stopped being which one and become how many, and that is a
+different sentence than one line can hold.
+
+Where the smallest thing that would close the gap is the very commitment the
+verdict just named, the title is not repeated: =only by dropping it=. "What
+is late is X, so drop X" answers nothing, and it is the ordinary shape of one
+large project being late on its own.
+
+*Not the whole of the evening.* The hours outside work are mostly spoken for
+— dinner, a fixture, an evening that belongs to somebody else — and offering
+those as somewhere to put late work would answer "can I stay late" with hours
+that are not available to stay in. Only =unclaimed= counts, which is the same
+figure the =Off= row draws under that name.
+
+Both lines carry a marker, and they point at different headings: the verdict
+at what is late, the way out at what it says to give up. =TAB= on either goes
+where that line is talking about. A cut title keeps the whole of itself as
+=help-echo=, so it is recoverable without leaving the row.
+
+The marker sits on the *margin*, not merely somewhere in the row. Every
+agenda command reads through =org-get-at-bol=, which looks at the first
+character of the line — so a row whose margin is a bare space answers
+nothing, however carefully the rest of it was marked. That was true of every
+row in every block here for a long time.
+
+Only one candidate is named, with =+N= for the rest. They are sorted
+smallest-first and each is on its own enough, so the named one is the
+cheapest way out — but the cheapest is not always the one that /can/ go, and
+a reader who cannot see there are others will not look for them.
+
+*The =+N= is a count, not a list.* What it counts is on the board, under
+=Landing= — see below.
+
+=lands= is read against whichever figure failed. For =over= that is the hard
+one; for =defer= it must be the soft one, because the work already fits the
+hard figure — that is what makes it =defer= — and answering with it would
+promise tomorrow about something that will not be done tomorrow unless
+something else moves.
+
+The =move= candidates never include the deadline's own work, scheduled or
+not. Its hours are the demand; offering them as the way out would be
+circular.
 
 *Read the figure as belonging to the window, not to the heading.* =+1 by
 Mon · 0:18 short= says: everything due on or before Monday needs eighteen
@@ -1694,11 +1792,25 @@ Supply is the working hours between now and the date, in two figures:
 
 and the verdict is which side of them the demand falls:
 
-| Condition           | Meaning                                       |
-|---------------------+-----------------------------------------------|
-| demand ≤ soft       | it lands as things stand                      |
-| soft < demand ≤ hard | it lands only if other work is deferred      |
-| demand > hard       | overtime, delegation, or less of it           |
+| Condition           | What the line says      | Meaning                |
+|---------------------+-------------------------+------------------------|
+| demand ≤ soft       | nothing, or =N deadlines land= | it lands as things stand |
+| soft < demand ≤ hard | =4:00 free of 8:00 · 1:00 must move= | it lands once other work gives way |
+| demand > hard       | =1:21 free of 2:10 · 0:18 short= | overtime, delegation, or less of it |
+
+Both supplies are on every line, in the same shape, so the verdict can be
+read off rather than looked up: =4:00 free of 8:00= says four hours are
+going spare and eight is the most the window could ever hold. Owed above the
+first figure and under the second is work that fits once something else
+gives way; owed above /both/ is work that does not fit at all.
+
+=of 8:00= is not the working day. It is the working day less the things that
+do not move by deciding to work on something else — meetings, the travel to
+them, life that falls inside working hours, and the reserve held for work
+that has not arrived yet. Work already put at a particular hour stays too:
+only what was promised for a day without an hour on it is treated as
+displaceable, because that is the only kind you can move without breaking an
+arrangement with somebody.
 
 *The test is cumulative.* Deadlines are taken in order and the demand is
 added up as they pass, so each date is asked whether /everything/ due by
@@ -1731,6 +1843,39 @@ that no longer exists, because the work is real and its window is not.
 =· N unestimated= counts leaves with no =EFFORT=, which fall back to
 =org-foresight-default-effort= — a total built partly from defaults is a
 different kind of number, and a reader who is not told cannot tell.
+
+*** The list is on the board
+
+One line cannot hold the dated work, and the day has no room for it. The
+board does: it is already the place for what has not been settled, it is
+opened deliberately rather than met on the way past, and its rows already
+answer to the agenda's own commands.
+
+#+begin_example
+Landing  what has a date, and whether it will be met
+
+ Mon 08-24   2:00  Write the vendor comparison
+ Mon 08-24   0:15  Get the contract stamped
+ ── 2:15 owed · 2:10 free of 3:30 · 0:05 must move ──────────────────
+ Tue 08-25  14:30  Prepare the quarterly board pack
+ ── 16:45 owed · 4:51 free of 5:40 · 11:05 short ────────────────────
+ Wed 08-26   1:00  Design the housing
+ Fri 08-28   0:45  Write the launch note
+#+end_example
+
+One commitment a row, earliest first, each carrying its own marker — so =s=
+gives it a date, =RET= visits it, and the whole agenda vocabulary works
+without leaving the list.
+
+A rule is drawn under the last commitment of a window that does not fit,
+carrying what is owed by then, what is free before then, and the difference.
+*Under the ones that fit there is nothing.* A rule saying a date is
+comfortable is explaining a problem the reader does not have, and a board
+that comments on every line stops being read — the same reason the agenda's
+key names only the marks the day actually used.
+
+Nothing here costs a redraw: the board is its own command, so the survey it
+takes is paid for when it is opened and at no other time.
 
 * Placement
 
