@@ -359,39 +359,44 @@ work is finished, and inventing one would be invention."
                 (car occ)))))
         written)))
 
-(defun org-foresight--project-record (now)
+(defun org-foresight--project-record ()
   "Return the record for the TODO heading at point, or nil if it has no keyword.
 
 A heading with no TODO keyword gets no record at all.  That absence is the
 answer to \"is this a project\": it is scaffolding, a place to put things,
 and the outline is full of it.
 
-`:remaining' is read for every open heading, not only for the leaves,
-because whether a heading is a leaf is not known until its children have
-been seen -- and going back for them would be a second traversal to save a
-constant factor."
+Structure only.  What a heading *is* -- its keyword, its level, its date, who
+its parent is -- is read here, for every heading, because the shape of the
+outline cannot be known from a part of it.  What a heading still *needs* is
+not read here at all: that is a question about a handful of leaves, and which
+handful is not known until the whole file has been seen.  See
+`org-foresight--project-units', which asks it of the leaves that turn out to
+matter.
+
+The split is worth having for its own sake.  A record describes the outline;
+a unit describes an amount.  Keeping the amount out of the record is what
+stops the two being confused, and it happens to be most of the cost as
+well -- on an ordinary corpus about one leaf in six answers to a deadline,
+and the rest were being priced for nobody."
   (let ((todo (org-get-todo-state)))
     (when todo
-      (let* ((done (org-entry-is-done-p))
-             (cat (org-entry-get (point) "CATEGORY" t)))
+      (let ((cat (org-entry-get (point) "CATEGORY" t)))
         (list :title (org-get-heading t t t t)
               :marker (point-marker)
               :level (org-current-level)
               :todo todo
-              :done done
+              :done (org-entry-is-done-p)
               :deadline (org-foresight--entry-deadline)
               :category cat
               :private (and (member cat org-foresight-private-categories) t)
-              :estimated (and (org-entry-get (point) "EFFORT") t)
-              :remaining (unless done
-                           (org-foresight--entry-remaining-minutes now))
               ;; Filled in as the walk goes past: a heading learns it is a
               ;; project from its children, never from itself.
               :todo-parent nil
               :has-todo-child nil
               :child-deadlines nil)))))
 
-(defun org-foresight--project-walk (now)
+(defun org-foresight--project-walk ()
   "Return a record for every TODO heading in `org-agenda-files', linked to its
 nearest TODO ancestor.
 
@@ -424,7 +429,7 @@ of asking where a subtree ends."
                 (let ((level (org-current-level)))
                   (while (and stack (>= (car (car stack)) level))
                     (pop stack))
-                  (when-let ((rec (org-foresight--project-record now)))
+                  (when-let ((rec (org-foresight--project-record)))
                     (when-let ((parent (cdr (car stack))))
                       (plist-put parent :has-todo-child t)
                       (when-let ((d (plist-get rec :deadline)))
@@ -504,7 +509,20 @@ only place that says so."
           (setq p (plist-get p :todo-parent)))))
     found))
 
-(defun org-foresight--project-units (records)
+(defun org-foresight--leaf-cost (leaf now)
+  "Read what LEAF still needs, at NOW, and remember it on the record.
+
+Asked of the leaves that turned out to answer to a deadline, and of no
+others.  Going back is a jump to a marker, not a walk: the position is
+already known, so the file is not searched again and nothing is re-parsed
+that was parsed on the way past."
+  (unless (plist-member leaf :remaining)
+    (org-with-point-at (plist-get leaf :marker)
+      (plist-put leaf :estimated (and (org-entry-get (point) "EFFORT") t))
+      (plist-put leaf :remaining (org-foresight--entry-remaining-minutes now))))
+  leaf)
+
+(defun org-foresight--project-units (records now)
   "Return the dated commitments among RECORDS, earliest due first.
 
 A unit is one thing with one date and one figure for what it still needs:
@@ -555,7 +573,8 @@ what still has to."
             (plist-put unit :leaves (cons leaf (plist-get unit :leaves)))))))
     (maphash
      (lambda (rec unit)
-       (let* ((leaves (plist-get unit :leaves))
+       (let* ((leaves (mapcar (lambda (l) (org-foresight--leaf-cost l now))
+                              (plist-get unit :leaves)))
               (remaining (apply #'+ (mapcar (lambda (l)
                                               (or (plist-get l :remaining) 0.0))
                                             leaves)))
@@ -584,7 +603,11 @@ what still has to."
 (defun org-foresight-project-scan (&optional now)
   "Return the shape of the work in `org-agenda-files'.
 
-  :headings  a record per TODO heading, in document order
+  :headings  a record per TODO heading, in document order.  Structure, not
+             amounts: a record says what a heading is and where it sits.
+             `:remaining' appears on the leaves a deadline turned out to
+             need and on no others -- see `org-foresight--project-units'
+
   :units     the dated commitments, earliest due first -- see
              `org-foresight--project-units'
   :now       the moment it was read at
@@ -614,9 +637,9 @@ Projects nest, and that is ordinary: a heading with TODO children is a
 project however small it looks and whatever its title calls it."
   (let* ((now (or now org-foresight-now (current-time)))
          (records (org-foresight--project-classify
-                   (org-foresight--project-walk now))))
+                   (org-foresight--project-walk))))
     (list :headings records
-          :units (org-foresight--project-units records)
+          :units (org-foresight--project-units records now)
           :now now)))
 
 ;;;; Day scan

@@ -4516,7 +4516,21 @@ Dates in TEXT are written by the caller, so they are relative to nothing --
 assertion about \"tomorrow\" survive being run tomorrow."
   (declare (indent 1))
   `(org-foresight-test--with-org ,text
-     (let ((org-agenda-sticky nil)
+     ;; Pinned, and not to the wall clock.  These tests write timestamps at
+     ;; named hours -- a meeting at three, an errand at four -- and every
+     ;; figure the package draws is measured from NOW.  Left to the real
+     ;; time, such a test passes all morning and fails from three o'clock:
+     ;; the meeting has started, the journey to it is behind us, the gap it
+     ;; sat in has gone.  A suite that fails in the afternoon is a suite
+     ;; nobody trusts in the afternoon.
+     ;;
+     ;; Org's own `now' rule goes with it, for the same reason
+     ;; `org-foresight-demo-mode' turns it off: with an hour pinned there
+     ;; would otherwise be two present moments on one page, one of them the
+     ;; wall clock's.
+     (let ((org-foresight-now (time-add (org-foresight--day-start 0) (* 3600 8)))
+           (org-agenda-show-current-time-in-grid nil)
+           (org-agenda-sticky nil)
            (org-agenda-buffer-name "*org-foresight-test-agenda*")
            (org-agenda-span 'day)
            (org-agenda-start-on-weekday nil)
