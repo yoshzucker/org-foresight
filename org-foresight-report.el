@@ -1276,6 +1276,228 @@ benchmark and always shows in a keystroke."
   (let ((off (org-foresight--day-of day (org-foresight--day-start 0))))
     (format-time-string (if (and (>= off 0) (< off 7)) "%a" "%a %m-%d") day)))
 
+(defun org-foresight-report--landing-name (item width)
+  "Return ITEM's title cut to WIDTH, carrying the whole of it as help.
+
+A cut title is unreadable exactly when it matters -- two projects whose names
+differ after the twentieth character read as the same row.  The full text
+goes on as `help-echo', which is what the mode line and a tooltip show, so
+the row stays one line and the name is still recoverable without leaving it."
+  (let ((title (or (plist-get item :title) "?")))
+    (propertize (truncate-string-to-width title width nil nil "…")
+                'help-echo title)))
+
+(defun org-foresight-report-landing (&optional landing)
+  "Return the dated commitments, earliest first, as rows for the board.
+
+The list the one-line verdict in `Load\=' is a summary of.  That line names
+the soonest date that cannot be met and counts the rest; this is the rest --
+every commitment with a date, what it still needs, and where the week stops
+holding them.
+
+Every row carries its own marker, so \[org-agenda-schedule] and the rest of
+the agenda\='s vocabulary work here as they do everywhere else on the board.
+That is the point of the section rather than a courtesy: a list of deadlines
+you cannot act on from is a list you have to go and find again somewhere
+else.
+
+A rule is drawn under the last commitment of any window that does not fit,
+carrying what is owed by then, what is free before then, and the difference.
+Under the ones that do fit there is nothing: a rule saying a date is
+comfortable is explaining a problem the reader does not have, and a board
+that says so on every line stops being read."
+  (let* ((landing (or landing (org-foresight-landing)))
+         (entries (plist-get landing :deadlines))
+         (sitting (org-foresight--longest-sitting)))
+    (if (null entries)
+        (propertize "(nothing is dated)" 'face 'org-table)
+      (string-join
+       (apply
+        #'append
+        (mapcar
+         (lambda (e)
+           (append
+            (mapcar
+             (lambda (u)
+               (org-foresight-report--actionable
+                (format " %-9s %6s  %s%s"
+                        (format-time-string "%a %m-%d" (plist-get u :due-day))
+                        (org-duration-from-minutes (plist-get u :remaining-min))
+                        (org-foresight-report--landing-name u 40)
+                        ;; Where the figure is partly a guess, the row that
+                        ;; carries the figure says so.  The day's line counts
+                        ;; them in total, which is enough to know the answer
+                        ;; is soft but not enough to know which answer -- and
+                        ;; this is the list somebody comes to in order to go
+                        ;; and put the estimate in.
+                        (let* ((n (plist-get u :unestimated))
+                               (all (plist-get u :leaves))
+                               ;; Two ways the same verdict can be soft, and
+                               ;; they are not exclusive: nobody estimated
+                               ;; this, and nobody can check the estimate.
+                               (note
+                                (concat
+                                 (when (> n 0)
+                                   (format " · %s unestimated"
+                                           (if (= n all) "all"
+                                             (format "%d of %d" n all))))
+                                 (when (and (> sitting 0)
+                                            (> (or (plist-get u :largest-min) 0)
+                                               sitting))
+                                   (format " · a leaf over %s"
+                                           (org-duration-from-minutes sitting))))))
+                          (if (string-empty-p note)
+                              ""
+                            (propertize
+                             note 'face 'org-foresight-report-overcommitted))))
+                (plist-get u :marker)))
+             (plist-get e :units))
+            (unless (eq (plist-get e :verdict) 'lands)
+              (list (org-foresight-report--landing-rule e)))))
+         entries))
+       "\n"))))
+
+(defun org-foresight-report--landing-rule (entry)
+  "Return the rule drawn under ENTRY\='s commitments when they do not fit."
+  (let* ((dur #'org-duration-from-minutes)
+         (text
+          (format
+           ;; Both supplies, always, in the same shape.  Showing one of them
+           ;; and naming it for the verdict made the reader learn which word
+           ;; went with which arithmetic before the line said anything; with
+           ;; the pair in front of them the verdict is visible instead --
+           ;; owed above the first figure and under the second is work that
+           ;; fits once something else gives way, owed above both is work
+           ;; that does not fit at all.
+           "%s owed · %s free of %s · %s"
+           (funcall dur (plist-get entry :demand-min))
+           ;; What nothing else has been promised.
+           (funcall dur (plist-get entry :soft-min))
+           ;; And the most the window could hold, once everything without a
+           ;; date of its own has been moved out of the way.  Not the whole
+           ;; of the working day: meetings, travel and work already put at
+           ;; an hour stay where they are, because none of those move by
+           ;; deciding to work on something else.
+           (funcall dur (plist-get entry :hard-min))
+           (pcase (plist-get entry :verdict)
+             ('beyond "more than the fortnight holds")
+             ;; Beaten by the window itself: no rearranging reaches it, so
+             ;; the answer is overtime, another pair of hands, or less work.
+             ('over (format "%s short" (funcall dur (plist-get entry :short-min))))
+             ;; Beaten only by what is already promised elsewhere, which
+             ;; says what to do rather than that there is nothing to do.
+             (_ (format "%s must move"
+                        (funcall dur (plist-get entry :soft-short-min)))))))
+         (rule (make-string 2 ?─)))
+    (concat " " (propertize rule 'face 'shadow) " "
+            (propertize text 'face
+                        (if (eq (plist-get entry :verdict) 'over)
+                            'org-foresight-report-overcommitted
+                          'shadow))
+            " "
+            (propertize
+             (make-string
+              ;; 5, not 6: the three spaces and the two opening dashes are
+              ;; what precede TEXT, and counting a sixth left the rule a
+              ;; column short of every other full-width line on the page.
+              (max 2 (- org-foresight-report-columns 5 (string-width text)))
+              ?─)
+             'face 'shadow))))
+
+(defun org-foresight-report--landing-out (worst over named)
+  "Return the line under a failing deadline naming what can be done about it.
+
+A figure with no lever is a figure that is read once and then resented.  The
+verdict above says how much is missing; this says the four things that would
+answer it, in the order somebody actually considers them:
+
+  lands Wed        leave it and it finishes then -- the case for moving the
+                   date, and the only one of the four that costs nothing
+  drop any one of  the smallest single commitment that would close the gap,
+                   which is what delegating or cutting scope means in hours
+  move any one of  the same, for work that owes nobody a date -- the answer
+                   to a shortfall only the soft figure sees, and only offered
+                   there
+  7:00 unclaimed before then   the hours outside work that nothing has
+                   claimed, which is what staying late would have to come
+                   out of.  Weighed against the shortfall on the line above,
+                   which is why that figure is not repeated here
+
+NAMED is the unit the verdict above already named.  Where the smallest thing
+that would close the gap turns out to be that same unit, the title is not
+repeated -- \"what is late is X, so drop X\" is a sentence that answers
+nothing.  What it means is said instead: nothing smaller would have done, so
+there is no partial way out of this one.
+
+Each is a subtraction on figures already worked out; none of them proposes a
+schedule or writes anything.  Ranked smallest-first for the same reason
+`org-foresight-report--frees' is: the point is to give up the least that
+still works.  Where nothing alone is enough, nothing is named -- the question
+has stopped being which one and become how many, and that is a different
+sentence than this line can hold."
+  (let* ((candidates (if over (plist-get worst :drop) (plist-get worst :move)))
+         (pick (car candidates))
+         (itself (and pick named (eq pick named)))
+         (unclaimed (or (plist-get worst :unclaimed-min) 0.0))
+         (terms
+          (delq nil
+                (list
+                 (when-let ((day (plist-get worst :lands-day)))
+                   (concat "↳ lands "
+                           (org-foresight-report--due-text day)))
+                 (cond
+                  ;; The smallest thing that would close the gap is the very
+                  ;; commitment named above.  Saying its title again reads as
+                  ;; a circle -- what is late is X, so drop X -- when what it
+                  ;; means is that nothing short of the whole of it would do.
+                  (itself (format " · only by %s it"
+                                  (if over "dropping" "moving")))
+                  (pick
+                   ;; One is named and the rest are counted.  They are sorted
+                   ;; smallest-first and every one of them is on its own
+                   ;; enough, so the named one is the least that works -- but
+                   ;; the least is not always the one that *can* go, and a
+                   ;; reader who cannot see that there are others will not
+                   ;; look for them.  `TAB' goes to the one named.
+                   (format " · %s any one of %s %s%s"
+                           (if over "drop" "move")
+                           (org-foresight-report--landing-name pick 22)
+                           (org-duration-from-minutes
+                            (or (plist-get pick :remaining-min)
+                                (plist-get pick :minutes) 0.0))
+                           (let ((others (1- (length candidates))))
+                             (if (> others 0) (format " +%d" others) "")))))
+                 ;; The resource, not a comparison: what it is being weighed
+                 ;; against is the shortfall on the line above, and repeating
+                 ;; that here would spend the width saying it twice.
+                 (when (and over (> unclaimed 0))
+                   (format " · %s unclaimed before then"
+                           (org-duration-from-minutes unclaimed)))))))
+    (when terms
+      ;; Nothing to lead with means nothing to say: a line that opened with a
+      ;; qualifier would be a footnote to a sentence that was never written.
+      (unless (string-prefix-p "↳" (car terms))
+        (setq terms (cons "↳" terms)))
+      (let ((line (propertize
+                   (org-foresight-report--fit-terms
+                    terms 1
+                    (- org-foresight-report-columns
+                       (string-width org-foresight-report-margin) 2))
+                   'face 'shadow)))
+        ;; Pointed at what it names, which is a different heading from the
+        ;; one above: this row says what to give up, so `TAB' should arrive
+        ;; at the thing to be given up.  The lead spaces carry the marker
+        ;; too, because the agenda reads the first character of the line.
+        (let* ((row (if (and pick (not itself) (plist-get pick :marker))
+                        (org-foresight-report--actionable
+                         line (plist-get pick :marker))
+                      line))
+               (lead (concat (org-foresight-report--margin-for row) "  ")))
+          (concat (if (text-properties-at 0 row)
+                      (apply #'propertize lead (text-properties-at 0 row))
+                    lead)
+                  row))))))
+
 (defun org-foresight-report--landing-line (landing)
   "Return one line saying whether the dated work will be finished in time.
 
@@ -1315,20 +1537,25 @@ answer here at all, only a count -- see `org-foresight-landing'."
             (cond
              (worst
               (concat
-               (propertize
-                (truncate-string-to-width (or (plist-get unit :title) "?")
-                                          22 nil nil "…")
-                'face 'default)
+               (propertize (org-foresight-report--landing-name unit 22)
+                           'face 'default)
                (let ((others (1- (or (plist-get worst :count) 1))))
                  (if (> others 0) (format " +%d" others) ""))
                " by " (org-foresight-report--due-text (plist-get worst :day))
+               ;; "short of X" is English for "less than X", which is the
+               ;; opposite of what the soft case means -- it read as though
+               ;; the work fitted with time to spare.  The two are said in
+               ;; parallel instead: one is missing hours outright, the other
+               ;; needs more than is going spare.
                (propertize
-                (format " · %s short"
-                        (org-duration-from-minutes
-                         (if fail (plist-get worst :short-min)
+                (if fail
+                    (format " · %s short"
+                            (org-duration-from-minutes
+                             (plist-get worst :short-min)))
+                  (format " · %s more than is free"
+                          (org-duration-from-minutes
                            (plist-get worst :soft-short-min))))
-                'face (if fail 'org-foresight-report-overcommitted 'shadow))
-               (if fail "" " of what is free")))
+                'face (if fail 'org-foresight-report-overcommitted 'shadow))))
              (t (format "%d deadline%s land" (plist-get landing :count)
                         (if (= 1 (plist-get landing :count)) "" "s")))))
            (terms
@@ -1351,10 +1578,15 @@ answer here at all, only a count -- see `org-foresight-landing'."
                   terms 1
                   (- org-foresight-report-columns
                      (string-width org-foresight-report-margin)))))
-      (concat org-foresight-report-margin
-              (if (and worst (plist-get unit :marker))
-                  (org-foresight-report--actionable line (plist-get unit :marker))
-                line)))))
+      (concat (let ((row (if (and worst (plist-get unit :marker))
+                             (org-foresight-report--actionable
+                              line (plist-get unit :marker))
+                           line)))
+                (concat (org-foresight-report--margin-for row) row))
+              (when worst
+                (when-let ((out (org-foresight-report--landing-out
+                                 worst (and fail t) unit)))
+                  (concat "\n" out)))))))
 
 (defun org-foresight-report-capacity-line (&optional day scan now behind)
   "Return DAY's capacity verdict as one line, or nil on a non-working day.
@@ -1409,6 +1641,33 @@ observation that work is dated to it at all."
        (format " · ends %s" (format-time-string "%H:%M" lands))
      (propertize " · not today" 'face 'org-foresight-report-overcommitted))))
 
+(defconst org-foresight-report--carried
+  '(org-marker org-hd-marker org-agenda-type)
+  "Text properties the margin has to carry for a row to answer to the agenda.
+
+`org-agenda-goto\=', `org-agenda-schedule\=' and the rest all read through
+`org-get-at-bol\=', which looks at the *first character of the line*.  A row
+whose margin is a bare space therefore answers nothing, however carefully the
+rest of it was marked -- the commands find no marker and report an error on a
+line that is plainly about a heading.")
+
+(defun org-foresight-report--margin-for (line)
+  "Return the margin, carrying whatever LINE answers to the agenda with.
+
+The margin is put on last and is a space, so it is easy to forget that it is
+also the character every agenda command looks at.  Copying the row's own
+markers onto it is what makes `RET\=' and `TAB\=' work where the row says
+they should."
+  (let ((props (text-properties-at 0 line))
+        (out org-foresight-report-margin)
+        carried)
+    (dolist (key org-foresight-report--carried)
+      (when-let ((v (plist-get props key)))
+        (setq carried (append carried (list key v)))))
+    (when carried
+      (setq out (apply #'propertize out carried)))
+    out))
+
 (defun org-foresight-report--indent (text)
   "Return TEXT with every line moved off the frame edge by the margin.
 Applied to the blocks whose lines do not already carry it, rather than to
@@ -1419,7 +1678,7 @@ agenda can act on belongs."
                  ;; A blank line stays blank: padding it would leave trailing
                  ;; whitespace on a line that says nothing.
                  (if (string-empty-p line) line
-                   (concat org-foresight-report-margin line)))
+                   (concat (org-foresight-report--margin-for line) line)))
                (split-string text "\n") "\n")))
 
 (defun org-foresight-report--actionable (string marker &optional stamp)
