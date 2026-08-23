@@ -916,6 +916,18 @@ left exactly as it was; a wrong insertion is worse than a missing one."
                (concat (substring item 0 tail) text (substring item tail))))))
        list))))
 
+(defun org-foresight-agenda--scan-for (day)
+  "Return a survey covering DAY, shared with the rest of the redraw if it can be.
+
+The redraw\='s own survey reaches a fortnight out, which is every day an
+agenda span normally shows, so each day of the span is drawn from the one
+walk.  A day beyond it -- the agenda jumped to next month -- gets a survey
+of its own rather than being drawn from buckets that do not exist."
+  (let ((shared (org-foresight-redraw-scan)))
+    (if (org-foresight-scan-covers-p shared day)
+        shared
+      (org-foresight-scan 1 day))))
+
 (defun org-foresight-agenda--augment (list day &optional scan)
   "Return LIST marked and extended with what foresight knows about DAY.
 
@@ -923,12 +935,10 @@ Order is Org's business: every added row carries a time, and
 `org-agenda-finalize-entries' sorts the whole list by it.  Rows sharing a
 minute keep the order given here, because Emacs sorts lists stably -- which
 is what puts a gap above the candidates hanging off it."
-  (let* ((scan (or scan (org-foresight-scan 1 day)))
+  (let* ((scan (or scan (org-foresight-agenda--scan-for day)))
          (bands (org-foresight-day-blocks day scan))
          (cap (org-foresight-capacity day scan))
-         (idx (org-foresight--day-of day (plist-get scan :from)))
-         (ledger (and (>= idx 0) (< idx (plist-get scan :days))
-                      (aref (plist-get scan :ledger) idx)))
+         (ledger (org-foresight-scan-day scan :ledger day))
          ;; Marks first, then the corrections.  The mark column is read off
          ;; where the headings start, and an estimate annotated before that is
          ;; measured would push its own heading right and take the column with

@@ -48,7 +48,7 @@ unreliable machine until the runs are put side by side."
   :group 'org-foresight)
 
 (defconst org-foresight-profile--phases
-  '((scan    org-foresight-scan            "survey of the agenda files")
+  '((scan    org-foresight-scan           "survey of the agenda files")
     (clock   org-foresight-clock-scan      "clock history")
     (project org-foresight-project-scan    "survey of the project trees")
     (watcher org-foresight-observe--get-json "requests to ActivityWatch")
