@@ -50,6 +50,7 @@ unreliable machine until the runs are put side by side."
 (defconst org-foresight-profile--phases
   '((scan    org-foresight-scan            "survey of the agenda files")
     (clock   org-foresight-clock-scan      "clock history")
+    (project org-foresight-project-scan    "survey of the project trees")
     (watcher org-foresight-observe--get-json "requests to ActivityWatch")
     (spine   org-foresight-agenda--draw-spine "drawing the brackets"))
   "The parts of a redraw that are timed, and what each is.
