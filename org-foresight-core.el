@@ -315,6 +315,310 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
             :today-tasks (seq-sort-by (lambda (e) (plist-get e :minutes)) #'> tasks)
             :intervals-byday intervals-byday))))
 
+;;;; Project scan
+;; The outline axis.  The day scan asks when work is dated; this asks how the
+;; work is shaped -- which headings are projects, which are the tasks inside
+;; them, and which deadline each task is really working towards.
+;;
+;; A third walk of the agenda files, and the reason it cannot ride on either
+;; of the other two: the day scan buckets by day and keeps nothing about
+;; entries dated outside its horizon, while undated work under a deadline is
+;; precisely what this has to see; the clock scan is a regexp sweep of
+;; LOGBOOKs and never looks at a heading.  A shared `--walk-entries' that both
+;; this and the signals walk consume would put the count back to two, and is
+;; the next move here -- after the classification is known to be right.
+
+(defun org-foresight--entry-deadline ()
+  "Return when the entry at point is next due, or nil.
+
+`org-get-deadline-time\=' returns the stamp as written, which for a repeating
+deadline is whenever it was first set -- a weekly review written eighteen
+months ago answers with a date eighteen months gone.  Read as an overdue
+commitment that is the whole of the work demanded today, every day, forever.
+
+So a repeater is walked forward to its next occurrence at or after today,
+which is the only date it actually means.  The remaining effort is the
+effort for one occurrence, so counting it once, there, is exactly right.
+
+A `.+\=' restart repeater is left as written, for the reason
+`org-foresight--ts-occurrences\=' gives: its next date depends on when the
+work is finished, and inventing one would be invention."
+  (when-let ((written (org-get-deadline-time (point))))
+    (or (save-excursion
+          (org-back-to-heading t)
+          (let ((meta-end (save-excursion (org-end-of-meta-data t) (point))))
+            (when (and (re-search-forward (concat "\\<" org-deadline-string)
+                                          meta-end t)
+                       (re-search-forward org-ts-regexp (line-end-position) t))
+              (goto-char (match-beginning 0))
+              (let* ((el (org-element-timestamp-parser))
+                     (today (org-foresight--day-start 0))
+                     (occ (car (org-foresight--ts-occurrences
+                                el today
+                                (time-add today (days-to-time 3660))))))
+                (car occ)))))
+        written)))
+
+(defun org-foresight--project-record (now)
+  "Return the record for the TODO heading at point, or nil if it has no keyword.
+
+A heading with no TODO keyword gets no record at all.  That absence is the
+answer to \"is this a project\": it is scaffolding, a place to put things,
+and the outline is full of it.
+
+`:remaining' is read for every open heading, not only for the leaves,
+because whether a heading is a leaf is not known until its children have
+been seen -- and going back for them would be a second traversal to save a
+constant factor."
+  (let ((todo (org-get-todo-state)))
+    (when todo
+      (let* ((done (org-entry-is-done-p))
+             (cat (org-entry-get (point) "CATEGORY" t)))
+        (list :title (org-get-heading t t t t)
+              :marker (point-marker)
+              :level (org-current-level)
+              :todo todo
+              :done done
+              :deadline (org-foresight--entry-deadline)
+              :category cat
+              :private (and (member cat org-foresight-private-categories) t)
+              :estimated (and (org-entry-get (point) "EFFORT") t)
+              :remaining (unless done
+                           (org-foresight--entry-remaining-minutes now))
+              ;; Filled in as the walk goes past: a heading learns it is a
+              ;; project from its children, never from itself.
+              :todo-parent nil
+              :has-todo-child nil
+              :child-deadlines nil)))))
+
+(defun org-foresight--project-walk (now)
+  "Return a record for every TODO heading in `org-agenda-files', linked to its
+nearest TODO ancestor.
+
+One pass per file, in document order, carrying a stack of the TODO-keyworded
+headings still open above the point.  The stack gives the parent link in one
+step, where comparing subtree bounds across every pair of headings would cost
+a walk of its own for each.
+
+The rule the stack encodes has two halves and one line does both:
+
+  the stack is popped by level, unconditionally, for every heading
+  only TODO-keyworded headings are ever pushed
+
+Popping by level for a heading with no keyword is what closes the subtree it
+ends -- without it the next heading would find a stale ancestor from a
+sibling tree on top and adopt it, which is wrong and silent.  Never pushing
+it is what makes it transparent, so a TODO grandchild under a keyword-less
+child still finds its TODO grandparent.  A grouping heading is a hole in the
+outline for the purpose of asking who owns what, and a wall for the purpose
+of asking where a subtree ends."
+  (let (out)
+    (dolist (file (org-agenda-files) (nreverse out))
+      (when (file-exists-p file)
+        (with-current-buffer (find-file-noselect file)
+          (org-with-wide-buffer
+           ;; Per file: containment never crosses one.
+           (let (stack)
+             (org-map-entries
+              (lambda ()
+                (let ((level (org-current-level)))
+                  (while (and stack (>= (car (car stack)) level))
+                    (pop stack))
+                  (when-let ((rec (org-foresight--project-record now)))
+                    (when-let ((parent (cdr (car stack))))
+                      (plist-put parent :has-todo-child t)
+                      (when-let ((d (plist-get rec :deadline)))
+                        (plist-put parent :child-deadlines
+                                   (cons d (plist-get parent :child-deadlines))))
+                      (plist-put rec :todo-parent parent))
+                    (push (cons level rec) stack)
+                    (push rec out))))
+              nil nil))))))))
+
+(defun org-foresight--project-classify (records)
+  "Set `:project-p', `:leaf-p' and `:deadline-project-p' on RECORDS.
+
+A second pass, and it has to be: a heading becomes a deadline project when a
+*later* child turns out to carry a DEADLINE, so anything decided at the
+moment a heading is visited is decided too early.
+
+  * NEXT P
+  ** NEXT leaf one     <- P is not a deadline project yet
+  ** NEXT leaf two
+  DEADLINE: <...>      <- and now it is
+
+`leaf one' belongs to P, and only a pass that runs after the whole file can
+say so.
+
+`:has-todo-child' is enough for \"has a TODO descendant at any depth\".  From
+any descendant, walking `:todo-parent' strictly decreases the outline level
+and stays inside the ancestor, so the chain reaches it in finitely many
+steps and the last link before it is a TODO child of it.  Having a TODO
+child and having a TODO descendant are therefore the same claim, and the
+walk already recorded the cheap one."
+  (dolist (rec records records)
+    (let ((project (and (plist-get rec :has-todo-child) t)))
+      (plist-put rec :project-p project)
+      (plist-put rec :leaf-p (not project))
+      (plist-put rec :deadline-project-p
+                 (and project
+                      (or (plist-get rec :deadline)
+                          (plist-get rec :child-deadlines))
+                      t)))))
+
+(defun org-foresight--latest-time (times)
+  "Return the latest of TIMES, or nil."
+  (let (latest)
+    (dolist (d times latest)
+      (when (or (null latest) (time-less-p latest d))
+        (setq latest d)))))
+
+(defun org-foresight--project-due (rec)
+  "Return when deadline project REC is due.
+
+Its own DEADLINE if it carries one; otherwise the *latest* of its TODO
+children's.  Latest, because a project is not finished until its parts are,
+and the earliest would pull every undated sibling onto the tightest child's
+date and report a shortfall the day does not have.  A view that cries wolf
+stops being read."
+  (or (plist-get rec :deadline)
+      (org-foresight--latest-time (plist-get rec :child-deadlines))))
+
+(defun org-foresight--project-unit-of (leaf)
+  "Return the record whose deadline LEAF is working towards, or nil.
+
+Up the `:todo-parent' chain to the first deadline project.  The *first*,
+which is what makes a leaf count once: a deadline project nested inside
+another takes its own leaves, and the outer one never sees them.
+
+A done ancestor stops the walk with nothing.  Work filed under something
+already closed is not work anybody is waiting for, and the outline is the
+only place that says so."
+  (let ((p (plist-get leaf :todo-parent))
+        found)
+    (while (and p (not found))
+      (if (plist-get p :done)
+          (setq p nil)
+        (if (plist-get p :deadline-project-p)
+            (setq found p)
+          (setq p (plist-get p :todo-parent)))))
+    found))
+
+(defun org-foresight--project-units (records)
+  "Return the dated commitments among RECORDS, earliest due first.
+
+A unit is one thing with one date and one figure for what it still needs:
+either a deadline project, holding the leaves that answer to it, or a lone
+TODO with a DEADLINE and no children of its own.  The second is not a
+project and is counted anyway -- an invoice due Friday takes its hour out of
+the same week whether or not anybody broke it into steps.
+
+Each open leaf is charged to exactly one unit, so the totals may be added
+without counting an hour twice.
+
+  :remaining-min  what its leaves still need
+  :unestimated    how many of them carry no EFFORT of their own, and so are
+                  standing on the default rather than on anything measured
+  :overdue        its date has gone, and it is tested against today instead
+
+An overdue unit is folded onto today rather than left in the past.  The work
+is real and takes hours that exist; its window is not.  Tested where it was
+written, the window from now to then is empty, the shortfall is the whole of
+the demand, and it poisons every later date with a debt that can never be
+paid -- so the view would be nailed to it forever.
+
+A unit whose leaves are all done is dropped.  That is not a deadline which
+lands, it is one which has landed, and counting it would pad every tally of
+what still has to."
+  (let ((today (org-foresight--day-start 0))
+        (units (make-hash-table :test #'eq))
+        out)
+    ;; Every deadline project is a unit, whether or not it has open leaves --
+    ;; the empty ones are dropped at the end, once their leaves are known.
+    (dolist (rec records)
+      (when (and (plist-get rec :deadline-project-p)
+                 (not (plist-get rec :done))
+                 (not (plist-get rec :private)))
+        (puthash rec (list :kind 'project :record rec) units)))
+    (dolist (leaf records)
+      (when (and (plist-get leaf :leaf-p)
+                 (not (plist-get leaf :done))
+                 (not (plist-get leaf :private)))
+        (let* ((owner (org-foresight--project-unit-of leaf))
+               (unit (cond (owner (gethash owner units))
+                           ;; No project is waiting on it, but a date is.
+                           ((plist-get leaf :deadline)
+                            (or (gethash leaf units)
+                                (puthash leaf (list :kind 'task :record leaf)
+                                         units))))))
+          (when unit
+            (plist-put unit :leaves (cons leaf (plist-get unit :leaves)))))))
+    (maphash
+     (lambda (rec unit)
+       (let* ((leaves (plist-get unit :leaves))
+              (remaining (apply #'+ (mapcar (lambda (l)
+                                              (or (plist-get l :remaining) 0.0))
+                                            leaves)))
+              (due (org-foresight--project-due rec))
+              (due0 (and due (org-foresight--midnight due)))
+              (overdue (and due0 (time-less-p due0 today))))
+         (when (and due (> remaining 0.0))
+           (push (list :kind (plist-get unit :kind)
+                       :title (plist-get rec :title)
+                       :marker (plist-get rec :marker)
+                       :category (plist-get rec :category)
+                       :due due
+                       :due-day (if overdue today due0)
+                       :overdue (and overdue t)
+                       :remaining-min remaining
+                       :leaves (length leaves)
+                       :leaf-markers (mapcar (lambda (l) (plist-get l :marker))
+                                             leaves)
+                       :unestimated (seq-count
+                                     (lambda (l) (not (plist-get l :estimated)))
+                                     leaves))
+                 out))))
+     units)
+    (seq-sort-by (lambda (u) (float-time (plist-get u :due-day))) #'< out)))
+
+(defun org-foresight-project-scan (&optional now)
+  "Return the shape of the work in `org-agenda-files'.
+
+  :headings  a record per TODO heading, in document order
+  :units     the dated commitments, earliest due first -- see
+             `org-foresight--project-units'
+  :now       the moment it was read at
+
+Each record carries, besides what was read off the heading:
+
+  :todo-parent         the record of its nearest TODO ancestor, or nil
+  :has-todo-child      whether any TODO descendant exists, at any depth
+  :child-deadlines     the DEADLINEs of its TODO children
+  :project-p           it has a TODO descendant
+  :leaf-p              it has none
+  :deadline-project-p  a project, and a DEADLINE is on it or on a TODO child
+
+The three classes the outline sorts into, and the rules exactly:
+
+  a heading with no TODO keyword   neither project nor task; no record
+  a TODO with no TODO descendant   a task
+  a TODO with a TODO descendant    a project
+
+and a project is a *deadline* project when the DEADLINE is on the project
+itself or on one of its TODO children.  It stops there.  A deadline on a
+grandchild belongs to the child it sits under, which is a project in its own
+right, and saying it also belongs to the grandparent would make one date the
+due date of every tree it is filed in.
+
+Projects nest, and that is ordinary: a heading with TODO children is a
+project however small it looks and whatever its title calls it."
+  (let* ((now (or now org-foresight-now (current-time)))
+         (records (org-foresight--project-classify
+                   (org-foresight--project-walk now))))
+    (list :headings records
+          :units (org-foresight--project-units records)
+          :now now)))
+
 ;;;; Day scan
 (defcustom org-foresight-surge-property "SURGE"
   "Property marking work that arrived rather than was planned.
@@ -1979,6 +2283,205 @@ else should not become the reserve every ordinary day is planned around."
           (message "Arriving work takes %s on a day it arrives, from %d day(s)"
                    (org-duration-from-minutes median) (length samples))
           median)))))
+
+;;;; Landing
+;; Whether the dated work will be finished by its dates.  The day asks whether
+;; today's work fits in today; this asks whether the week's work fits before
+;; the week's deadlines, which is a different question with a different answer:
+;; a day that fits can be a day of admin, and a day that is OVER can be the
+;; only arrangement that lands the one tree due on Friday.
+;;
+;; Not to be confused with `:lands' in `org-foresight-capacity', which is the
+;; hour today's work runs out.  Same word, different question -- that one is
+;; about a clock, this one about a calendar.
+
+(defun org-foresight--landing-dated (units scan days)
+  "Return a hash from each unit to a DAYS-vector of its own dated minutes.
+
+The correction without which this whole comparison punishes good practice.
+
+A day's `:spare-min' is already net of `:committed-min', so an hour a unit
+has scheduled for Thursday has *left* Thursday's spare.  The same hour is in
+the unit's remaining.  Compared naively, the question being asked is whether
+a project fits in the hours not already set aside for it -- and a project
+whose every leaf has been carefully placed inside its window reads as the
+one most certain to fail.
+
+So each unit's own dated hours are handed back to the supply on the day they
+sit.  Two kinds, kept apart because they are given back on different terms:
+untimed promises are deferrable and count towards both figures, while an
+hour fixed at a time is in `:booked-min' and only the hard figure -- the one
+that assumes everything moveable moves -- can claim it.
+
+Joined on the marker, which both surveys make with `point-marker' at the
+heading inside `org-map-entries', so the same entry has the same position in
+both."
+  (let ((where (make-hash-table :test #'equal))
+        (out (make-hash-table :test #'eq)))
+    (dolist (u units)
+      (puthash u (cons (make-vector days 0.0) (make-vector days 0.0)) out)
+      (dolist (m (plist-get u :leaf-markers))
+        (when m
+          (puthash (cons (marker-buffer m) (marker-position m)) u where))))
+    (dotimes (i days)
+      (dolist (e (aref (plist-get scan :ledger) i))
+        (when-let* ((m (plist-get e :marker))
+                    (u (gethash (cons (marker-buffer m) (marker-position m))
+                                where))
+                    (cell (gethash u out)))
+          (pcase (plist-get e :kind)
+            ('promised (aset (car cell) i
+                             (+ (aref (car cell) i)
+                                (or (plist-get e :remaining) 0.0))))
+            ('task (aset (cdr cell) i
+                         (+ (aref (cdr cell) i)
+                            (or (plist-get e :effort) 0.0))))
+            (_ nil)))))
+    out))
+
+(defun org-foresight--landing-verdict (demand soft hard covered)
+  "Return what DEMAND against SOFT and HARD means.
+
+  lands   it fits in the hours nothing else has claimed
+  defer   it fits only if work without a deadline gives way
+  over    it does not fit at all: overtime, delegation, or less of it
+  beyond  more than the scanned horizon holds, and the horizon is not the
+          deadline -- COVERED nil
+
+The last is the one that has to be resisted.  Supply only grows as the
+window lengthens, so a fortnight's pool is a *lower bound* for a deadline
+six weeks out: falling short of it says nothing except that the answer is
+further away than the scan can see.  Calling that a failure would be exactly
+the lie this is built to stop telling -- and `lands' and `defer' remain
+sound past the horizon for the same reason, since a window that already
+holds the work will still hold it when it grows."
+  (cond ((<= demand soft) 'lands)
+        ((<= demand hard) 'defer)
+        (covered 'over)
+        (t 'beyond)))
+
+(defun org-foresight-landing (&optional projects scan now days)
+  "Return whether the dated work in PROJECTS will be finished in time.
+
+Takes both surveys rather than making either, so it may be called wherever
+they are already to hand -- and so that it costs nothing to ask twice.
+
+The test is cumulative, and cumulative is the whole of it.  Deadlines are
+taken in order and the demand is added up as they pass, so each date is
+asked whether *everything* due by then fits in the hours before it.  Asking
+each deadline about its own work alone would pass two projects that each fit
+in the same fortnight and together need three weeks of it -- which is the
+ordinary way a month goes wrong, not a corner case.
+
+That the answer needs no schedule is a theorem rather than a shortcut: for
+one resource that can be interrupted, if the cumulative test holds at every
+deadline then some order of the work meets all of them.  So nothing here
+allocates, nothing is written, and no day is told what to do.  It reports.
+
+  :deadlines    one entry per distinct due day, earliest first
+  :first-fail   the soonest entry that cannot be made to fit, or nil
+  :first-defer  the soonest that fits only by deferring other work, or nil
+  :tightest     among those that land, the one with least room to spare
+  :count        how many due days were tested
+  :overdue      units whose date has already gone
+  :unestimated  leaves standing on the default rather than an estimate
+  :beyond       due days past the end of the scan
+  :horizon-day  the last day the scan covers
+
+Each entry of `:deadlines':
+
+  :day :demand-min :soft-min :hard-min :verdict
+  :short-min       what is missing against the hard figure
+  :soft-short-min  what is missing against the soft one
+  :spare-min       hard less demand; negative when short
+  :units           the units due exactly on that day, biggest first
+  :count :unestimated  the same, cumulative to that day
+
+Nil when nothing is dated: a report with no deadlines in it has nothing to
+say about deadlines, and saying so every morning is how a line stops being
+read."
+  (let* ((now (or now org-foresight-now (current-time)))
+         (days (or days org-foresight-horizon-days))
+         (today (org-foresight--day-start 0))
+         (projects (or projects (org-foresight-project-scan now)))
+         (scan (or scan (org-foresight-scan days today now)))
+         (units (plist-get projects :units)))
+    (when units
+      (let* ((dated (org-foresight--landing-dated units scan days))
+             (caps (make-vector days nil))
+             (horizon (time-add today (days-to-time (1- days))))
+             (demand 0.0) (unestimated 0) (count 0)
+             (rest units)
+             out)
+        (dotimes (i days)
+          (let ((day (time-add today (days-to-time i))))
+            (aset caps i (and (org-foresight-work-intervals day)
+                              (org-foresight-capacity day scan now)))))
+        (while rest
+          (let* ((day (plist-get (car rest) :due-day))
+                 (here (seq-take-while
+                        (lambda (u) (equal day (plist-get u :due-day))) rest))
+                 (idx (org-foresight--day-of day today))
+                 (covered (< idx days))
+                 (last (min (1- days) (max -1 idx)))
+                 (soft 0.0) (hard 0.0))
+            (setq rest (nthcdr (length here) rest))
+            (dolist (u here)
+              (setq demand (+ demand (plist-get u :remaining-min))
+                    unestimated (+ unestimated (plist-get u :unestimated))
+                    count (1+ count)))
+            (dotimes (i (1+ last))
+              (when-let ((cap (aref caps i)))
+                (let ((spare (or (plist-get cap :spare-min) 0.0))
+                      (committed (or (plist-get cap :committed-min) 0.0))
+                      (own 0.0) (own-timed 0.0))
+                  ;; Only the units in play give their hours back: one due
+                  ;; later has not been asked for yet, and its Thursday is
+                  ;; not this deadline's to spend.
+                  (dolist (u units)
+                    (unless (time-less-p day (plist-get u :due-day))
+                      (when-let ((cell (gethash u dated)))
+                        (setq own (+ own (aref (car cell) i))
+                              own-timed (+ own-timed (aref (cdr cell) i))))))
+                  ;; Clipped as a sum: spare alone goes negative on a day
+                  ;; that is already over, while spare plus what could be
+                  ;; deferred may still be hours somebody has.
+                  (setq soft (+ soft (max 0.0 (+ spare own)))
+                        hard (+ hard (max 0.0 (+ spare committed own-timed)))))))
+            (push (list :day day
+                        :demand-min demand
+                        :soft-min soft
+                        :hard-min hard
+                        :short-min (max 0.0 (- demand hard))
+                        :soft-short-min (max 0.0 (- demand soft))
+                        :spare-min (- hard demand)
+                        :verdict (org-foresight--landing-verdict
+                                  demand soft hard covered)
+                        :units (seq-sort-by (lambda (u)
+                                              (plist-get u :remaining-min))
+                                            #'> here)
+                        :count count
+                        :unestimated unestimated)
+                  out)))
+        (let ((entries (nreverse out)))
+          (list :deadlines entries
+                :first-fail (seq-find (lambda (e) (eq (plist-get e :verdict) 'over))
+                                      entries)
+                :first-defer (seq-find (lambda (e)
+                                         (eq (plist-get e :verdict) 'defer))
+                                       entries)
+                :tightest (car (seq-sort-by
+                                (lambda (e) (plist-get e :spare-min)) #'<
+                                (seq-filter (lambda (e)
+                                              (eq (plist-get e :verdict) 'lands))
+                                            entries)))
+                :count (length entries)
+                :overdue (seq-count (lambda (u) (plist-get u :overdue)) units)
+                :unestimated unestimated
+                :beyond (seq-count
+                         (lambda (e) (eq (plist-get e :verdict) 'beyond))
+                         entries)
+                :horizon-day horizon))))))
 
 ;;;; Estimate bias
 ;; Estimates are systematically wrong, and always in the same direction for

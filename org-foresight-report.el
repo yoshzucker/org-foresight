@@ -1198,7 +1198,7 @@ first day with room in it."
   :type 'integer
   :group 'org-foresight)
 
-(defun org-foresight-report-load (&optional days scan now)
+(defun org-foresight-report-load (&optional days scan now landing)
   "Return the coming days drawn as today is, so that they can be compared.
 
 This is the block that turns \"I'm busy\" into a date.  Each row is one
@@ -1243,7 +1243,8 @@ benchmark and always shows in a keystroke."
                   (if today-cap
                       (org-foresight-report--bar-scale today-cap)
                     0.0))))
-        (mapconcat
+        (concat
+         (mapconcat
          (lambda (r)
            (let ((head (plist-get (cdr r) :headroom-min)))
              (concat
@@ -1266,7 +1267,94 @@ benchmark and always shows in a keystroke."
                      (- org-foresight-report-columns
                         (string-width (format org-foresight-report--load-stub
                                               "" ""))))))))
-         rows "\n")))))
+          rows "\n")
+         (when-let ((line (org-foresight-report--landing-line landing)))
+           (concat "\n" line)))))))
+
+(defun org-foresight-report--due-text (day)
+  "Return DAY as a due date: the weekday within the week, the date past it."
+  (let ((off (org-foresight--day-of day (org-foresight--day-start 0))))
+    (format-time-string (if (and (>= off 0) (< off 7)) "%a" "%a %m-%d") day)))
+
+(defun org-foresight-report--landing-line (landing)
+  "Return one line saying whether the dated work will be finished in time.
+
+Nil when nothing is dated.  A block that reports \"0 deadlines\" every
+morning is a block that stops being read.
+
+The failing case names one heading and carries its marker, because the whole
+purpose of the line is to send somebody to that heading -- `RET' should work
+on it.
+
+But the shortfall belongs to the *window*, not to that heading.  It is the
+cumulative test: everything due on or before that date, against the hours
+between now and it.  So the date is given as `by Mon' rather than `Mon', and
+where more than one commitment falls inside the window the rest are counted
+with `+N'.  Naming one and stating a collective figure beside it, with
+nothing to say they are not the same claim, reads as \"this project is
+eighteen minutes short\" -- which is a sentence about a project the
+arithmetic never made.
+
+Which of the three answers is being given is the first thing said, and the
+qualifiers fall off the right as the line fills:
+
+  a shortfall against the hard figure  overtime, delegation, or less of it
+  a shortfall against the soft one     it fits if other promises move
+  neither                              it fits as things stand
+
+`beyond' is not among them.  A deadline past the end of the scan has no
+answer here at all, only a count -- see `org-foresight-landing'."
+  (when-let* ((landing landing)
+              (entries (plist-get landing :deadlines)))
+    (let* ((fail (plist-get landing :first-fail))
+           (defer (and (not fail) (plist-get landing :first-defer)))
+           (worst (or fail defer))
+           (unit (car (plist-get worst :units)))
+           (tight (plist-get landing :tightest))
+           (head
+            (cond
+             (worst
+              (concat
+               (propertize
+                (truncate-string-to-width (or (plist-get unit :title) "?")
+                                          22 nil nil "…")
+                'face 'default)
+               (let ((others (1- (or (plist-get worst :count) 1))))
+                 (if (> others 0) (format " +%d" others) ""))
+               " by " (org-foresight-report--due-text (plist-get worst :day))
+               (propertize
+                (format " · %s short"
+                        (org-duration-from-minutes
+                         (if fail (plist-get worst :short-min)
+                           (plist-get worst :soft-short-min))))
+                'face (if fail 'org-foresight-report-overcommitted 'shadow))
+               (if fail "" " of what is free")))
+             (t (format "%d deadline%s land" (plist-get landing :count)
+                        (if (= 1 (plist-get landing :count)) "" "s")))))
+           (terms
+            (list (concat (propertize "↳ " 'face 'shadow) head)
+                  (and (not worst) tight
+                       (format " · %s spare at the tightest"
+                               (org-duration-from-minutes
+                                (max 0.0 (plist-get tight :spare-min)))))
+                  (and (> (plist-get landing :overdue) 0)
+                       (format " · %d overdue" (plist-get landing :overdue)))
+                  (and (> (plist-get landing :unestimated) 0)
+                       (format " · %d unestimated"
+                               (plist-get landing :unestimated)))
+                  (and (> (plist-get landing :beyond) 0)
+                       (format " · %d beyond %s"
+                               (plist-get landing :beyond)
+                               (format-time-string
+                                "%m-%d" (plist-get landing :horizon-day))))))
+           (line (org-foresight-report--fit-terms
+                  terms 1
+                  (- org-foresight-report-columns
+                     (string-width org-foresight-report-margin)))))
+      (concat org-foresight-report-margin
+              (if (and worst (plist-get unit :marker))
+                  (org-foresight-report--actionable line (plist-get unit :marker))
+                line)))))
 
 (defun org-foresight-report-capacity-line (&optional day scan now behind)
   "Return DAY's capacity verdict as one line, or nil on a non-working day.
@@ -1569,17 +1657,18 @@ to act on.")
   "Return where STYLE's report belongs, `top' or `bottom'."
   (or (plist-get (org-foresight-report--renderer style) :place) 'bottom))
 
-(defun org-foresight-report--body (&optional scan clock)
+(defun org-foresight-report--body (&optional scan clock landing)
   "Return the report text for the current `org-foresight-report-style'.
 
 Dispatches through `org-foresight-report-renderers'; an unknown style simply
-renders nothing.  SCAN is a survey of the horizon and CLOCK a survey of the
-clock history, both offered so a renderer reads them rather than taking its
-own -- see `org-foresight-report-render'."
+renders nothing.  SCAN is a survey of the horizon, CLOCK a survey of the
+clock history and LANDING the deadline verdict, all offered so a renderer
+reads them rather than taking its own -- see `org-foresight-report-render'.
+A renderer must work when any of them is nil."
   (when-let ((fn (plist-get (org-foresight-report--renderer) :body)))
-    (funcall fn scan clock)))
+    (funcall fn scan clock landing)))
 
-(defun org-foresight-report--daily (&optional scan clock)
+(defun org-foresight-report--daily (&optional scan clock landing)
   "Return the day looked back on: where the hours went, against where they were
 meant to go.
 
@@ -1600,14 +1689,14 @@ one afternoon."
             ;; happened.  What is done with is read last, and least often.
             (org-foresight-report--badge "Load" "when I could take this on")
             "\n"
-            (org-foresight-report-load nil scan)
+            (org-foresight-report-load nil scan nil landing)
             "\n\n"
             (org-foresight-report--badge "Spent" "where the hours actually went")
             "\n"
             (org-foresight-report--indent (org-foresight-report-spent clock))
             "\n")))
 
-(defun org-foresight-report--review (&optional _scan clock)
+(defun org-foresight-report--review (&optional _scan clock _landing)
   "Return the weekly review: where the last seven days went, and how far the
 estimates that shaped them were out.
 
@@ -1741,8 +1830,20 @@ step afterwards."
                          (org-foresight--day-start 0) clock
                          (org-foresight-observe-coverage clock)))))
              (behind (and (not (stringp behind)) behind))
+             ;; The outline axis: which headings are projects, what each
+             ;; deadline still needs, and whether the hours before it exist.
+             ;; A third walk of the files, and the one thing that cannot ride
+             ;; on either of the others -- the day scan keeps nothing about
+             ;; work dated outside its horizon, and undated work under a
+             ;; deadline is precisely what this counts.
+             (projects (org-foresight-report--guarded
+                        (lambda () (org-foresight-project-scan))))
+             (projects (and (not (stringp projects)) projects))
+             (landing (org-foresight-report--guarded
+                       (lambda () (org-foresight-landing projects scan))))
+             (landing (and (not (stringp landing)) landing))
              (body (org-foresight-report--guarded
-                    #'org-foresight-report--body scan clock))
+                    #'org-foresight-report--body scan clock landing))
              (line (org-foresight-report--guarded
                     #'org-foresight-report-capacity-line nil scan nil behind)))
         (org-foresight-report--clear)
