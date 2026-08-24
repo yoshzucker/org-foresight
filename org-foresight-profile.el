@@ -47,6 +47,16 @@ unreliable machine until the runs are put side by side."
   :type 'integer
   :group 'org-foresight)
 
+(defun org-foresight-profile--native-in-use-p ()
+  "Non-nil when this package\='s own code is running natively compiled.
+
+Asked of a function that is always defined and always in the redraw, so the
+answer is about the code the figures below were measured on and not about
+what the machine could do in principle."
+  (and (fboundp 'subr-native-elisp-p)
+       (subr-native-elisp-p (symbol-function 'org-foresight-scan))
+       t))
+
 (defconst org-foresight-profile--phases
   '((scan    org-foresight-scan           "survey of the agenda files")
     (clock   org-foresight-clock-scan      "clock history")
@@ -170,11 +180,21 @@ of the answer."
      ;; cases want opposite answers: one needs a library, the other needs a
      ;; different Emacs.  Reporting only the second sends a reader after the
      ;; wrong one.
-     (format "  native-comp     built in %s, usable %s\n"
+     ;; Three, because the first two can both say yes while nothing at all
+     ;; has been compiled.  `native-comp-available-p' answers whether
+     ;; libgccjit loads; libgccjit then invokes a gcc driver to assemble and
+     ;; link, and where that driver is missing or is from another toolchain
+     ;; every compilation fails, each with a warning nobody keeps.  What is
+     ;; left is byte-code, several times slower, under a header that said it
+     ;; was native -- which turns every figure below into a puzzle.  So the
+     ;; last field asks the only question the timings care about, and asks it
+     ;; of this package rather than in the abstract.
+     (format "  native-comp     built in %s, usable %s, in use %s\n"
              (if (featurep 'native-compile) "yes" "no")
              (if (and (fboundp 'native-comp-available-p)
                       (native-comp-available-p))
-                 "yes" "no"))
+                 "yes" "no")
+             (if (org-foresight-profile--native-in-use-p) "yes" "no"))
      (format "  gc-cons-threshold %d\n" gc-cons-threshold)
      "\n"
      (format "  agenda files    %d (of %d listed, visited)\n"

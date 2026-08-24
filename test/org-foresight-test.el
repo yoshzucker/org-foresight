@@ -5619,6 +5619,22 @@ cache, which is once in every four or five redraws."
         (org-foresight-signals t (funcall real 14 (org-foresight--day-start 0)))
         (should (= 0 surveys))))))
 
+(ert-deftest org-foresight-test-the-profile-says-whether-code-is-really-native ()
+  "The header reports what is running, not what the machine could run.
+
+`native-comp-available-p\=' answers whether libgccjit loads.  It can load and
+still fail every compilation -- it goes on to invoke a gcc driver, and where
+that driver is missing or belongs to another toolchain each file falls back
+to byte-code with a warning nobody keeps.  A header that read the first
+question and printed it as the second told a reader their timings were
+native when they were several times slower than native, which is the one
+misreading that makes the rest of the page useless."
+  (require 'org-foresight-profile)
+  (cl-letf (((symbol-function 'subr-native-elisp-p) (lambda (_) nil)))
+    (should-not (org-foresight-profile--native-in-use-p)))
+  (cl-letf (((symbol-function 'subr-native-elisp-p) (lambda (_) t)))
+    (should (org-foresight-profile--native-in-use-p))))
+
 (ert-deftest org-foresight-test-every-profiled-phase-names-a-real-function ()
   "The profiler measures functions that exist.
 
