@@ -5619,6 +5619,84 @@ cache, which is once in every four or five redraws."
         (org-foresight-signals t (funcall real 14 (org-foresight--day-start 0)))
         (should (= 0 surveys))))))
 
+(ert-deftest org-foresight-test-one-meeting-can-be-prepared-alone ()
+  "Preparation can be filed for the meeting under the cursor and no other.
+
+Offering every unprepared meeting at once is right for a Monday morning and
+wrong for the invitation that just arrived: most meetings need nothing, and
+a command that files for all of them is one that gets answered `no\=' and
+then never run.  So the same filing is reachable one meeting at a time."
+  (org-foresight-test--with-signals
+      (concat "* chosen\n:PROPERTIES:\n:CATEGORY: outlook\n:END:\n"
+              (org-foresight-test--stamp 1 "10:00" "11:00") "\n"
+              "* the other one\n:PROPERTIES:\n:CATEGORY: outlook\n:END:\n"
+              (org-foresight-test--stamp 1 "14:00" "15:00") "\n")
+    (let ((org-foresight-task-file (car org-agenda-files))
+          (org-foresight-task-datetree nil))
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (re-search-forward "^\\* chosen")
+         (org-foresight-prepare-meeting))
+        ;; The one chosen is marked and has its two tasks; the other is
+        ;; untouched, which is the whole point of the command.
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (should (re-search-forward "Prep: chosen" nil t))
+         (should (re-search-forward "Follow up: chosen" nil t))
+         (goto-char (point-min))
+         (should-not (re-search-forward "Prep: the other one" nil t)))
+        ;; And running it again says so rather than filing a second pair.
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (re-search-forward "^\\* chosen")
+         (org-foresight-prepare-meeting))
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (should (= 1 (cl-loop while (re-search-forward "Prep: chosen" nil t)
+                               count t))))))))
+
+(ert-deftest org-foresight-test-a-meeting-without-an-hour-is-refused ()
+  "A date with no time of day has no side to put preparation on.
+
+The two tasks are placed before and after the meeting; an all-day entry
+gives nothing to place them around, and filing them at an invented hour
+would put work in the day that nobody agreed to."
+  (org-foresight-test--with-signals
+      (concat "* all day\n:PROPERTIES:\n:CATEGORY: outlook\n:END:\n"
+              (org-foresight-test--stamp 1) "\n")
+    (let ((org-foresight-task-file (car org-agenda-files))
+          (org-foresight-task-datetree nil))
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (re-search-forward "^\\* all day")
+         (should-error (org-foresight-prepare-meeting) :type 'user-error))))))
+
+(ert-deftest org-foresight-test-borrowing-reads-the-week-ahead ()
+  "Evenings already claimed by work are counted across the week ahead.
+
+The loop used to walk backwards through seven days while the survey it was
+given started today, so six of the seven had nothing to find.  The direction
+that was wrong is the loop\='s: `:borrowed-min\=' is what is left of an evening
+from now onwards, so a day that has gone reports nothing whatever was put in
+it, and no survey could have made the backward reading work.
+
+Which is the useful direction in any case -- an evening still ahead can be
+given back, and one that is over cannot."
+  (org-foresight-test--with-signals
+      (concat "* NEXT tuesday evening\nSCHEDULED: "
+              (org-foresight-test--stamp 2 "19:00" "21:00")
+              "\n* NEXT wednesday evening\nSCHEDULED: "
+              (org-foresight-test--stamp 3 "19:00" "21:00")
+              "\n")
+    (let ((org-foresight-borrow-warn 60)
+          (org-foresight--shape-cache nil))
+      (let ((found (car (org-foresight--borrow-findings))))
+        (should found)
+        (should (string-match-p "4:00 over 2 day(s) ahead"
+                                (plist-get found :note)))))))
+
 (ert-deftest org-foresight-test-the-profile-says-whether-code-is-really-native ()
   "The header reports what is running, not what the machine could run.
 
@@ -8505,25 +8583,92 @@ that order, which is what `org-foresight-report--fit-terms' is for."
       (should (string-match-p "short" line)))))
 
 (ert-deftest org-foresight-test-the-projects-are-surveyed-once-a-redraw ()
-  "One walk of the outline per redraw, whichever blocks are drawn.
+  "The outline is walked once a redraw, on the walk that finds the signals.
 
-This is the fourth full walk of the agenda files, and the guard matters for
-the reason the third one needed it: the last regression of this shape cost
-four seconds a redraw, and nothing about a slow redraw says which of the
-walks was the extra one."
+They were two walks of every heading in every file, asking different
+questions of the same visit -- and on a real journal the second was a
+quarter of the redraw.  Counted on the walk itself rather than on
+`org-foresight-project-scan\=', which no longer walks anything: it
+classifies and prices what the shared walk brought back, and would report
+one call however many times the files had been read."
   (org-foresight-test--with-agenda
-      (concat "* NEXT a project\nDEADLINE: " (org-foresight-test--stamp 2)
-              "\n** NEXT its work\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
+      (concat "* NEXT parent\n** NEXT child\nDEADLINE: "
+              (org-foresight-test--stamp 2)
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
     (dolist (style '(daily review))
+      ;; From cold each time: the walk is memoized for a few seconds, and a
+      ;; second style drawn inside that window would report a walk of zero
+      ;; and pass whatever the first one had done.
       (let ((org-foresight-report-style style)
+            (org-foresight--signals-cache nil)
             (walks 0))
-        (cl-letf* ((real (symbol-function 'org-foresight-project-scan))
-                   ((symbol-function 'org-foresight-project-scan)
+        (cl-letf* ((real (symbol-function 'org-foresight--signals-compute))
+                   ((symbol-function 'org-foresight--signals-compute)
                     (lambda (&rest args)
                       (setq walks (1+ walks))
                       (apply real args))))
           (org-foresight-test--agenda)
           (should (= 1 walks)))))))
+
+(ert-deftest org-foresight-test-a-shared-heading-is-not-read-twice ()
+  "What the walk has already read is passed on, not asked for again.
+
+Sharing the walk saves the traversal; sharing the readings is the other
+half, and it is invisible from the answers -- a second `org-get-heading\='
+at the same point returns what the first did, so nothing is wrong, it is
+only paid for.  Four readings times every heading in every agenda file is
+what that comes to.  Asserted by making the re-read fail."
+  (org-foresight-test--with-org
+      "* NEXT something\n:PROPERTIES:\n:CATEGORY: work\n:END:\n"
+    (with-current-buffer (find-file-noselect (car org-agenda-files))
+      (org-with-wide-buffer
+       (goto-char (point-min))
+       (cl-letf (((symbol-function 'org-get-heading)
+                  (lambda (&rest _) (error "the heading was read again")))
+                 ((symbol-function 'org-get-todo-state)
+                  (lambda (&rest _) (error "the keyword was read again"))))
+         (let ((rec (org-foresight--project-record
+                     (list :todo "NEXT" :done nil
+                           :title "something" :category "work"))))
+           (should (equal "something" (plist-get rec :title)))
+           (should (equal "NEXT" (plist-get rec :todo)))
+           (should (equal "work" (plist-get rec :category)))))
+       ;; And without facts it still reads for itself, or every caller that
+       ;; has not got them would get a record of nils.
+       (should (equal "something"
+                      (plist-get (org-foresight--project-record) :title)))))))
+
+(ert-deftest org-foresight-test-the-outline-and-the-signals-agree ()
+  "What the shared walk records is what a walk of its own recorded.
+
+The stack that links a heading to its nearest TODO ancestor now runs inside
+the signals lambda, beside a dozen other readings of the same heading.  The
+risk of putting it there is that it stops running for every heading -- the
+pop has to happen even where no record is made -- so the classification is
+checked whole, against the shape the fixture actually has."
+  (org-foresight-test--with-org
+      "* NEXT top
+** notes
+*** NEXT buried
+* NEXT sibling
+** NEXT leaf
+DEADLINE: <2030-01-01 Tue>
+* plain
+** NEXT orphaned by a wall
+"
+    (let ((recs (plist-get (org-foresight-project-scan) :headings)))
+      (should (equal '("top" "buried" "sibling" "leaf" "orphaned by a wall")
+                     (mapcar (lambda (r) (plist-get r :title)) recs)))
+      ;; `notes' is transparent: `buried' answers to `top'.
+      (should (equal "top" (plist-get (plist-get (nth 1 recs) :todo-parent) :title)))
+      ;; `plain' is a wall: it closed `sibling', so nothing above adopts the
+      ;; heading under it.
+      (should-not (plist-get (nth 4 recs) :todo-parent))
+      ;; And the deadline on a child makes a deadline project of its parent
+      ;; and of nobody further up.
+      (should (plist-get (nth 2 recs) :deadline-project-p))
+      (should-not (plist-get (nth 0 recs) :deadline-project-p)))))
+
 
 (ert-deftest org-foresight-test-the-board-lists-every-dated-commitment ()
   "The list the day's one-line verdict is a summary of.
