@@ -257,6 +257,33 @@ what asking one costs."
       (org-foresight-signals force))
     (plist-get org-foresight--signals-cache :here)))
 
+(defun org-foresight-outline-records (&optional force)
+  "Return a record per TODO heading in `org-agenda-files\=', in document order.
+
+Structure, not amounts: what each heading is, and which TODO heading it
+answers to.  See `org-foresight--project-record\=' for a record, and
+`org-foresight-project-scan\=' for what is made of them.
+
+Read off the same walk as `org-foresight-signals\=' and cached with it, for
+the reason `org-foresight-here\=' is: they are different questions about one
+pass over the files, and a redraw that asked them separately walked every
+heading in every file twice.  On a real journal that second walk was a
+quarter of the redraw and it learned nothing the first had not seen.
+
+Kept apart from the survey in `org-foresight-scan\=' all the same.  That one
+answers what the days hold and is taken over a window; this one answers what
+shape the work is in and has no window at all."
+  (let ((files (org-agenda-files)))
+    (unless (and (not force)
+                 org-foresight--signals-cache
+                 (equal files (plist-get org-foresight--signals-cache :files))
+                 (< (float-time
+                     (time-subtract (current-time)
+                                    (plist-get org-foresight--signals-cache :time)))
+                    org-foresight-signals-cache-ttl))
+      (org-foresight-signals force))
+    (plist-get org-foresight--signals-cache :headings)))
+
 (defun org-foresight--signals-compute (&optional scan)
   "Walk the agenda files and return the signals.
 
@@ -272,16 +299,25 @@ than asking for one."
          ;; both.  A survey of a week costs what a survey of a day costs --
          ;; the walk is the price, and the days are only how many buckets it
          ;; sorts the answers into.
-         (scan (or scan (org-foresight-scan org-foresight--borrow-days today)))
+         ;; The redraw\='s own survey when the caller brought none.  A redraw
+         ;; hands one in from the report; the board and the outline records
+         ;; arrive here without one, and taking a second survey of the same
+         ;; files for them would give back exactly what sharing this walk was
+         ;; worth.  It reaches further than the week wanted here, which costs
+         ;; nothing: every reading below asks for the day it means.
+         (scan (or scan (org-foresight-redraw-scan)))
          (places (org-foresight-day-places
                   today (org-foresight-day-blocks today scan)))
-         here elsewhere
+         here elsewhere records
          meetings procrastinated unplannable followups outside-work
          orphan-candidates undecided in-flight unreadable)
     (dolist (file (org-agenda-files))
       (when (file-exists-p file)
         (with-current-buffer (find-file-noselect file)
           (org-with-wide-buffer
+           ;; The TODO-keyworded headings still open above the point, deepest
+           ;; first.  Per file: containment never crosses one.
+           (let (stack)
            (org-map-entries
             (lambda ()
               (let* ((todo (org-get-todo-state))
@@ -292,6 +328,36 @@ than asking for one."
                      (dead (org-get-deadline-time (point)))
                      (cat (org-entry-get (point) "CATEGORY" t))
                      (stamps (unless done (org-foresight--entry-timestamps))))
+                ;; The shape of the outline, read off the same visit as the
+                ;; signals below -- two questions about one heading, where
+                ;; the walk is the expensive part.
+                ;;
+                ;; The rule the stack encodes has two halves and one line
+                ;; does both: the stack is popped by level for *every*
+                ;; heading, and only TODO-keyworded headings are ever pushed.
+                ;; Popping unconditionally is what closes the subtree a
+                ;; keyword-less heading ends -- without it the next heading
+                ;; would find a stale ancestor from a sibling tree on top and
+                ;; adopt it, wrongly and silently.  Never pushing it is what
+                ;; makes it transparent, so a TODO grandchild under a
+                ;; keyword-less child still finds its TODO grandparent.  A
+                ;; grouping heading is a hole in the outline for the purpose
+                ;; of asking who owns what, and a wall for the purpose of
+                ;; asking where a subtree ends.
+                (let ((level (org-current-level)))
+                  (while (and stack (>= (car (car stack)) level))
+                    (pop stack))
+                  (when-let ((rec (org-foresight--project-record
+                                   (list :todo todo :done done
+                                         :title title :category cat))))
+                    (when-let ((parent (cdr (car stack))))
+                      (plist-put parent :has-todo-child t)
+                      (when-let ((d (plist-get rec :deadline)))
+                        (plist-put parent :child-deadlines
+                                   (cons d (plist-get parent :child-deadlines))))
+                      (plist-put rec :todo-parent parent))
+                    (push (cons level rec) stack)
+                    (push rec records)))
                 (when-let ((uid (org-entry-get (point) "UID")))
                   (puthash uid t uids))
                 ;; (a) A meeting nobody has budgeted around.
@@ -424,7 +490,7 @@ than asking for one."
                            (org-foresight--undecided-p todo stamps))
                   (push (org-foresight--finding title "captured, not decided")
                         undecided))))
-            nil nil)))))
+            nil nil))))))
     ;; Orphans can only be judged once every UID in the agenda has been seen.
     (let ((orphans (seq-keep (lambda (c)
                                (unless (gethash (car c) uids) (cdr c)))
@@ -432,6 +498,9 @@ than asking for one."
           (fit (org-foresight--fit-findings scan)))
       (list
        :here (org-foresight--here-sort (nreverse here))
+       ;; Document order, which the level stack above depended on and
+       ;; `org-foresight--project-classify\=' depends on in turn.
+       :headings (nreverse records)
        ;; Kept beside the rows it decided, so the section that shows them can
        ;; head itself without a second scan of every file for an answer this
        ;; pass already had.
@@ -579,18 +648,31 @@ in a day with ninety minutes left of it, whatever the morning looked like."
 (defun org-foresight--borrow-findings (&optional scan)
   "Return a finding when this week has taken too much from private time.
 
+The week ahead, not the week behind.  What is counted is
+`:borrowed-min\=', and that figure is what is *left* of an evening already
+claimed by work -- measured from now forwards, so a day that has gone
+reports nothing whatever was in it.  A loop walking backwards through seven
+of those found six zeroes and called the answer today\='s.  The question the
+model can actually answer is the useful one anyway: evenings already spoken
+for can still be given back.
+
 SCAN must cover `org-foresight--borrow-days\=' days from today.  Without one
 each day asked for its own, and a survey is a walk of every entry in every
 agenda file: seven of them, for one line that is usually not printed.  On a
 slow machine that was four seconds every time the signals fell out of their
 few-second cache, and a fifth of a second every other time -- which is what a
 redraw that feels unpredictable turns out to be made of."
-  (let ((total 0.0)
-        (days 0)
-        (scan (or scan (org-foresight-scan org-foresight--borrow-days
-                                           (org-foresight--day-start 0)))))
+  (let* ((today (org-foresight--day-start 0))
+         (last (time-add today (days-to-time (1- org-foresight--borrow-days))))
+         (total 0.0)
+         (days 0)
+         ;; Forward, and the survey has to reach that far.  A caller may hand
+         ;; in one that does not, so it is asked rather than assumed.
+         (scan (if (and scan (org-foresight-scan-covers-p scan last))
+                   scan
+                 (org-foresight-scan org-foresight--borrow-days today))))
     (dotimes (i org-foresight--borrow-days)
-      (let* ((day (org-foresight--day-start i))
+      (let* ((day (time-add today (days-to-time i)))
              (cap (ignore-errors (org-foresight-capacity day scan))))
         (when-let ((borrowed (and cap (plist-get cap :borrowed-min))))
           (when (> borrowed 0)
@@ -598,7 +680,7 @@ redraw that feels unpredictable turns out to be made of."
     (when (> total org-foresight-borrow-warn)
       (list (list :file nil :point nil :marker nil
                   :title "Work in private time"
-                  :note (format "%s over %d day(s) this week"
+                  :note (format "%s over %d day(s) ahead"
                                 (org-duration-from-minutes total) days))))))
 
 (defun org-foresight--leak-findings ()
@@ -1351,30 +1433,68 @@ the orphan signal notice if the meeting is later cancelled."
         (when (yes-or-no-p
                (format "Create prep + follow-up for %d meeting(s)? " (length found)))
           (dolist (f found)
-            (let ((marker (plist-get f :marker)))
-              (with-current-buffer (marker-buffer marker)
-                (org-with-wide-buffer
-                 (goto-char marker)
-                 (let* ((title (org-get-heading t t t t))
-                        (uid (or (org-entry-get (point) "UID")
-                                 (org-id-get-create)))
-                        (stamps (org-foresight--entry-timestamps))
-                        (el (seq-find #'org-foresight--ts-timed-p stamps)))
-                   (when el
-                     (let* ((start (org-foresight--ts-start el))
-                            (end (org-foresight--ts-end el))
-                            (slots (org-foresight--meeting-slots start end))
-                            (props (list (cons "PLAN_MEETING_UID" uid))))
-                       (org-foresight--file-task
-                        (format "Prep: %s" title) (car slots)
-                        org-foresight-meeting-prep props)
-                       (org-foresight--file-task
-                        (format "Follow up: %s" title) (cdr slots)
-                        org-foresight-meeting-follow props)
-                       (org-entry-put (point) "PLAN_PREP" "t")
-                       (save-buffer)
-                       (setq n (1+ n)))))))))
+            (when (org-foresight--prepare-meeting (plist-get f :marker))
+              (setq n (1+ n))))
           (message "Prepared %d meeting(s)" n))))))
+
+(defun org-foresight--prepare-meeting (marker)
+  "File preparation and follow-up for the meeting at MARKER.
+
+Returns non-nil when it filed something.  Nothing is filed for a meeting
+with no hour on it: the two tasks are placed either side of the meeting, and
+there is no side of a date."
+  (with-current-buffer (marker-buffer marker)
+    (org-with-wide-buffer
+     (goto-char marker)
+     (org-back-to-heading t)
+     (let* ((title (org-get-heading t t t t))
+            (stamps (org-foresight--entry-timestamps))
+            (el (seq-find #'org-foresight--ts-timed-p stamps)))
+       (when el
+         (let* ((uid (or (org-entry-get (point) "UID") (org-id-get-create)))
+                (start (org-foresight--ts-start el))
+                (end (org-foresight--ts-end el))
+                (slots (org-foresight--meeting-slots start end))
+                (props (list (cons "PLAN_MEETING_UID" uid))))
+           (org-foresight--file-task
+            (format "Prep: %s" title) (car slots)
+            org-foresight-meeting-prep props)
+           (org-foresight--file-task
+            (format "Follow up: %s" title) (cdr slots)
+            org-foresight-meeting-follow props)
+           (org-entry-put (point) "PLAN_PREP" "t")
+           (save-buffer)
+           t))))))
+
+;;;###autoload
+(defun org-foresight-prepare-meeting ()
+  "Create preparation and follow-up for the one meeting at point.
+
+`org-foresight-prepare-meetings\=' offers every meeting that has none, which
+is the right shape for a Monday morning and the wrong one for the invitation
+that just arrived.  Most meetings need nothing; the few that do are picked
+out by hand, and this is how they are picked.
+
+Works from the agenda and from an Org file alike, on whichever entry the
+cursor is on.  The category is not consulted: a meeting is whatever the
+person choosing says it is, and a command that argued about it would send
+them back to edit a property first."
+  (interactive)
+  (let ((marker (or (org-get-at-bol 'org-hd-marker)
+                    (org-get-at-bol 'org-marker)
+                    (and (derived-mode-p 'org-mode) (point-marker)))))
+    (unless marker (user-error "No entry here"))
+    (let (title already)
+      (org-with-point-at marker
+        (org-back-to-heading t)
+        (setq title (org-get-heading t t t t)
+              already (org-entry-get (point) "PLAN_PREP")))
+      (cond
+       (already (message "\"%s\" already has preparation" title))
+       ((org-foresight--prepare-meeting marker)
+        (org-foresight-report-refresh)
+        (message "Prepared \"%s\"" title))
+       (t (user-error "\"%s\" has no time of day to prepare around" title))))))
 
 ;;;; Placement
 ;; Fitting what still has to be done into what is left of the day.

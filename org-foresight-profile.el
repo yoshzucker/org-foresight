@@ -60,7 +60,14 @@ what the machine could do in principle."
 (defconst org-foresight-profile--phases
   '((scan    org-foresight-scan           "survey of the agenda files")
     (clock   org-foresight-clock-scan      "clock history")
-    (project org-foresight-project-scan    "survey of the project trees")
+    ;; The outline used to be a walk of its own; it is now read off the
+    ;; signals walk, so the walk is timed there and what is left under
+    ;; `project' is the pricing that follows it.  Pointing `project' at
+    ;; `org-foresight-project-scan' would time the shared walk a second time
+    ;; whenever the outline happened to ask for it first, and the exclusive
+    ;; rows would add up to more than the total.
+    (signals org-foresight--signals-compute "signals, and the outline shape")
+    (project org-foresight--project-units   "pricing the leaves a deadline needs")
     (watcher org-foresight-observe--get-json "requests to ActivityWatch")
     (spine   org-foresight-agenda--draw-spine "drawing the brackets"))
   "The parts of a redraw that are timed, and what each is.
