@@ -43,6 +43,10 @@
 ;; guarded by `derived-mode-p', which cannot be true unless org-agenda is
 ;; already loaded.
 (declare-function org-agenda-redo "org-agenda" (&optional all))
+;; The outline records are read off the signals walk, which lives a layer up:
+;; they are one product of the pass that also produces the signals, and the
+;; pass belongs where the signals are.  See `org-foresight-outline-records'.
+(declare-function org-foresight-outline-records "org-foresight-plan" (&optional force))
 
 (defvar org-foresight-now nil
   "The moment the day is being read at, or nil for the present one.
@@ -381,8 +385,15 @@ is whether any exists, not how many."
              (when (org-get-todo-state) (setq found t)))
            found))))
 
-(defun org-foresight--project-record ()
+(defun org-foresight--project-record (&optional facts)
   "Return the record for the TODO heading at point, or nil if it has no keyword.
+
+FACTS, when non-nil, is a plist (:todo :done :title :category) a caller has
+already read at this heading for its own reasons.  Passed in rather than read
+again: the one walk that visits every heading now answers two questions, and
+asking Org four times over for what it just said would give back most of what
+sharing the walk was worth.  A heading with no keyword still supplies a
+FACTS with `:todo\=' nil, which is why the plist itself is the flag.
 
 A heading with no TODO keyword gets no record at all.  That absence is the
 answer to \"is this a project\": it is scaffolding, a place to put things,
@@ -401,14 +412,16 @@ a unit describes an amount.  Keeping the amount out of the record is what
 stops the two being confused, and it happens to be most of the cost as
 well -- on an ordinary corpus about one leaf in six answers to a deadline,
 and the rest were being priced for nobody."
-  (let ((todo (org-get-todo-state)))
+  (let ((todo (if facts (plist-get facts :todo) (org-get-todo-state))))
     (when todo
-      (let ((cat (org-entry-get (point) "CATEGORY" t)))
-        (list :title (org-get-heading t t t t)
+      (let ((cat (if facts (plist-get facts :category)
+                   (org-entry-get (point) "CATEGORY" t))))
+        (list :title (if facts (plist-get facts :title)
+                       (org-get-heading t t t t))
               :marker (point-marker)
               :level (org-current-level)
               :todo todo
-              :done (org-entry-is-done-p)
+              :done (if facts (plist-get facts :done) (org-entry-is-done-p))
               :deadline (org-foresight--entry-deadline)
               :category cat
               :private (and (member cat org-foresight-private-categories) t)
@@ -417,50 +430,6 @@ and the rest were being priced for nobody."
               :todo-parent nil
               :has-todo-child nil
               :child-deadlines nil)))))
-
-(defun org-foresight--project-walk ()
-  "Return a record for every TODO heading in `org-agenda-files', linked to its
-nearest TODO ancestor.
-
-One pass per file, in document order, carrying a stack of the TODO-keyworded
-headings still open above the point.  The stack gives the parent link in one
-step, where comparing subtree bounds across every pair of headings would cost
-a walk of its own for each.
-
-The rule the stack encodes has two halves and one line does both:
-
-  the stack is popped by level, unconditionally, for every heading
-  only TODO-keyworded headings are ever pushed
-
-Popping by level for a heading with no keyword is what closes the subtree it
-ends -- without it the next heading would find a stale ancestor from a
-sibling tree on top and adopt it, which is wrong and silent.  Never pushing
-it is what makes it transparent, so a TODO grandchild under a keyword-less
-child still finds its TODO grandparent.  A grouping heading is a hole in the
-outline for the purpose of asking who owns what, and a wall for the purpose
-of asking where a subtree ends."
-  (let (out)
-    (dolist (file (org-agenda-files) (nreverse out))
-      (when (file-exists-p file)
-        (with-current-buffer (find-file-noselect file)
-          (org-with-wide-buffer
-           ;; Per file: containment never crosses one.
-           (let (stack)
-             (org-map-entries
-              (lambda ()
-                (let ((level (org-current-level)))
-                  (while (and stack (>= (car (car stack)) level))
-                    (pop stack))
-                  (when-let ((rec (org-foresight--project-record)))
-                    (when-let ((parent (cdr (car stack))))
-                      (plist-put parent :has-todo-child t)
-                      (when-let ((d (plist-get rec :deadline)))
-                        (plist-put parent :child-deadlines
-                                   (cons d (plist-get parent :child-deadlines))))
-                      (plist-put rec :todo-parent parent))
-                    (push (cons level rec) stack)
-                    (push rec out))))
-              nil nil))))))))
 
 (defun org-foresight--project-classify (records)
   "Set `:project-p', `:leaf-p' and `:deadline-project-p' on RECORDS.
@@ -667,7 +636,7 @@ Projects nest, and that is ordinary: a heading with TODO children is a
 project however small it looks and whatever its title calls it."
   (let* ((now (or now org-foresight-now (current-time)))
          (records (org-foresight--project-classify
-                   (org-foresight--project-walk))))
+                   (org-foresight-outline-records))))
     (list :headings records
           :units (org-foresight--project-units records now)
           :now now)))
@@ -1756,8 +1725,11 @@ fortnight is taken once and both readers are answered out of it.  On a real
 journal the second walk was a fifth of the redraw, spent to learn what the
 first had already found out.
 
-Anchored at today, never earlier: index 0 stays the day everything else in
-this package means by it."
+Anchored at today.  Nothing here needs the days behind -- what the model can
+say about a day that has gone, it says from the clock rather than from the
+plan -- and readers ask for the date they mean through
+`org-foresight-scan-day\=' regardless, so the anchor is a choice and not a
+thing anybody depends on."
   (let ((files (org-foresight--scan-files)))
     (or (and org-foresight--redraw-scan
              (equal files (car org-foresight--redraw-scan))
@@ -2484,7 +2456,12 @@ both."
         (when m
           (puthash (cons (marker-buffer m) (marker-position m)) u where))))
     (dotimes (i days)
-      (dolist (e (aref (plist-get scan :ledger) i))
+      ;; By date.  The vectors here are indexed from today, and one survey
+      ;; now answers a whole redraw -- so where it starts is its business
+      ;; rather than something to be assumed from here.
+      (dolist (e (org-foresight-scan-day
+                  scan :ledger (time-add (org-foresight--day-start 0)
+                                         (days-to-time i))))
         (when-let* ((m (plist-get e :marker))
                     (u (gethash (cons (marker-buffer m) (marker-position m))
                                 where))
@@ -2555,7 +2532,10 @@ offering the work as its own way out would be circular."
       (dolist (m (plist-get u :leaf-markers))
         (when m (puthash (cons (marker-buffer m) (marker-position m)) t theirs))))
     (dotimes (i (1+ last))
-      (dolist (e (aref (plist-get scan :ledger) i))
+      ;; By date, for the reason `org-foresight--landing-dated' reads by date.
+      (dolist (e (org-foresight-scan-day
+                  scan :ledger (time-add (org-foresight--day-start 0)
+                                         (days-to-time i))))
         (when (eq (plist-get e :kind) 'promised)
           (when-let* ((m (plist-get e :marker))
                       (key (cons (marker-buffer m) (marker-position m)))
