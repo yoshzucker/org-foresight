@@ -354,10 +354,15 @@ Keys:
                  (leak-apps (org-foresight-observe--sum-by win ua 'app)))
             (list :active-sec (org-foresight--intervals-seconds active)
                   :clocked-sec (org-foresight--intervals-seconds clocked)
-                  ;; Exactly what `org-foresight-observe-day-split' measures
-                  ;; for a past day, so the number on screen is the number the
-                  ;; budget is learned from.  The division is by whether you
-                  ;; were at the keyboard, not by what was on it.
+                  ;; Today, clipped to the hull between the first activity
+                  ;; and the last, which is what "how has today gone so far"
+                  ;; asks.  `org-foresight-observe-day-split' asks a different
+                  ;; question of a past day -- what of its *working hours* went
+                  ;; unaccounted for -- and measures over those instead.  The
+                  ;; two figures differ, and should: a budget held back from the
+                  ;; working day can only be learned from the working day.
+                  ;; The division is by whether you were at the keyboard, not by
+                  ;; what was on it.
                   :leak-sec (org-foresight--intervals-seconds ua)
                   :lost-sec (org-foresight--intervals-seconds uf)
                   :ca (org-foresight-observe--binned ca)
@@ -366,10 +371,10 @@ Keys:
                   :uf (org-foresight-observe--binned uf)
                   :leak-apps leak-apps
                   ;; Raw, for the reason in the docstring.  Nothing above is
-                  ;; touched: `org-foresight-learn-leak' calibrates the day's
-                  ;; budget from :leak-sec and :lost-sec, and a budget learned
-                  ;; from one definition and spent against another is worse
-                  ;; than no budget at all.
+                  ;; touched: a caller that cuts these against something
+                  ;; narrower of its own wants the uncut answer, and the hull
+                  ;; has already thrown away the part before the first
+                  ;; keystroke.
                   :active-ivs (org-foresight-observe--status-intervals
                                afk-ev "not-afk")
                   :afk-ivs (org-foresight-observe--status-intervals
@@ -383,37 +388,64 @@ Keys:
     (cons (format-time-string "%Y-%m-%dT%H:%M:%S%:z" start)
           (format-time-string "%Y-%m-%dT%H:%M:%S%:z" end))))
 
-(defun org-foresight-observe-day-split (offset clocked)
+(defun org-foresight-observe-day-split (offset clocked &optional occupied)
   "Return (LEAK . LOST) minutes for the day OFFSET days back, or nil.
 
-The day\'s time at the machine that no clock accounts for, divided by whether
-you were at the keyboard:
+Of that day\'s declared working hours, the part no clock accounts for, divided
+by whether you were at the keyboard:
 
   leak  active and unclocked -- work that happened and went unrecorded, or
         the small unnamed handling a day fills up with
   lost  idle and unclocked -- away from the machine, or reading, or in a
         conversation.  Which of those it was cannot be told from input alone
 
+Measured over the working hours and nothing else.  What these two become is a
+reserve held back from the working day, and an hour that was never part of
+that day cannot be held back from it: a machine left on overnight is not a day
+that leaked sixteen hours, and a lunch break is not an hour that was lost.
+Whichever window this is measured in is the window the reserve is spent
+against, so there is only one honest choice of it.
+
+OCCUPIED is what the day had already spoken for -- meetings, travel, work
+placed at an hour -- and is taken out alongside the clock.  Those hours are
+subtracted from the day\'s span before any of this is asked, so counting them
+again here would hold them back twice: once as an appointment and once as an
+hour that went missing.  A caller with nothing to say passes nil, and the
+answer is then about the clock alone.
+
+Union rather than either alone, and a set difference either way, so a meeting
+that was also clocked is removed once and not twice.
+
 Not divided by application.  What was on screen says nothing about whether
 the time was work, and dividing by it only moves the guess somewhere harder
 to see.
 
-Returns nil when ActivityWatch has nothing for that day, which a caller must
-treat as \"no sample\" rather than as zero -- a day the server was simply not
-running is not evidence of a quiet day."
-  (let* ((rng (org-foresight-observe--day-range offset))
-         (buckets (org-foresight-observe--get-json "/buckets/"))
-         (ab (org-foresight-observe--find-bucket buckets "aw-watcher-afk")))
-    (when ab
-      (let* ((afk-ev (org-foresight-observe--events ab (car rng) (cdr rng)))
-             (active (org-foresight-observe--status-intervals afk-ev "not-afk"))
-             (idle (org-foresight-observe--status-intervals afk-ev "afk")))
-        (when (or active idle)
+Returns nil when ActivityWatch has nothing for that day, or when the day
+declares no working hours at all.  A caller must treat that as \"no sample\"
+rather than as zero -- a day the server was simply not running is not evidence
+of a quiet day."
+  (when-let* ((work (org-foresight-work-intervals
+                     (org-foresight--day-start offset)))
+              (rng (org-foresight-observe--day-range offset))
+              (buckets (org-foresight-observe--get-json "/buckets/"))
+              (ab (org-foresight-observe--find-bucket buckets "aw-watcher-afk")))
+    (let* ((afk-ev (org-foresight-observe--events ab (car rng) (cdr rng)))
+           (active (org-foresight-observe--status-intervals afk-ev "not-afk"))
+           (idle (org-foresight-observe--status-intervals afk-ev "afk")))
+      ;; Whether there is a sample is asked of the whole day, before the
+      ;; working hours cut it down.  A day the watcher slept through and a day
+      ;; spent entirely away from the desk are different answers, and only the
+      ;; uncut intervals can tell them apart.
+      (when (or active idle)
+        (let ((accounted (org-foresight--intervals-normalize
+                          (append clocked occupied))))
           (cons (/ (org-foresight--intervals-seconds
-                    (org-foresight--intervals-subtract active clocked))
+                    (org-foresight--intervals-subtract
+                     (org-foresight--intervals-intersect active work) accounted))
                    60.0)
                 (/ (org-foresight--intervals-seconds
-                    (org-foresight--intervals-subtract idle clocked))
+                    (org-foresight--intervals-subtract
+                     (org-foresight--intervals-intersect idle work) accounted))
                    60.0)))))))
 
 ;;;###autoload
@@ -432,13 +464,21 @@ lets the day be planned at the length it really has."
   (let* ((days (or days org-foresight-surge-window))
          (clock (org-foresight-clock-scan days))
          (ivs (plist-get clock :intervals-byday))
+         ;; What each day had already spoken for.  One walk covers the window:
+         ;; the scan\'s cost is in walking the headings, not in the number of
+         ;; days it then fills, so asking for twenty is not twenty times asking
+         ;; for one.
+         (scan (org-foresight-scan days (org-foresight--day-start (1- days))))
+         (busy (plist-get scan :busy))
          leaks losts)
     (dotimes (i days)
-      ;; index 0 of the clock scan is the oldest day in the window
+      ;; index 0 of the clock scan is the oldest day in the window, and the
+      ;; scan starts at the same day, so one index reads both
       (let* ((offset (- days 1 i))
              (day (org-foresight--day-start offset)))
         (when (memq (nth 6 (decode-time day)) org-foresight-workdays)
-          (when-let ((split (org-foresight-observe-day-split offset (aref ivs i))))
+          (when-let ((split (org-foresight-observe-day-split
+                             offset (aref ivs i) (aref busy i))))
             (push (car split) leaks)
             (push (cdr split) losts)))))
     (if (null leaks)

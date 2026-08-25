@@ -1081,6 +1081,7 @@ does not."
          (finish (plist-get cap :lands))
          (reserve (or (plist-get cap :reserve-min) 0.0))
          (budget (or (plist-get cap :reserve-day-min) 0.0))
+         (span (or (plist-get cap :span-min) 0.0))
          (bias (or (plist-get cap :bias-min) 0.0)))
     (org-foresight-report--fit-terms
      (list
@@ -1089,6 +1090,17 @@ does not."
               (org-duration-from-minutes
                (max 0.0 (or (plist-get cap :ahead-min) 0.0))))
       (cond
+       ;; A reserve larger than the day it is held back from is not a day that
+       ;; is over-committed -- an empty day would say the same -- it is a
+       ;; reserve that has stopped describing the day.  `OVER by\=' would name
+       ;; the wrong thing to fix, so name the right one, and name it here
+       ;; where the line cannot be trimmed: the figure below is the third term
+       ;; to be dropped, which is how the cause used to vanish and leave the
+       ;; effect standing.
+       ((and (> span 0) (>= reserve span))
+        (propertize (format " · reserve %s exceeds the day"
+                            (org-duration-from-minutes reserve))
+                    'face 'org-foresight-report-overcommitted))
        ((< headroom 0)
         (propertize (format " · OVER by %s" (org-duration-from-minutes
                                              (- headroom)))
@@ -2289,6 +2301,23 @@ is what lets a whole feature quietly not run."
             out))
     (unless (org-foresight-leak-samples)
       (push "run `org-foresight-learn-leak' to measure what a day loses" out))
+    ;; Learned, and larger than the thing it is held back from.  Nothing is
+    ;; wrong with the arithmetic -- the reserve is exactly what the hours said
+    ;; -- but hours the clock never accounted for cannot tell work from
+    ;; absence, so what it measured was the record, not the day.
+    (let* ((span (/ (org-foresight--intervals-seconds
+                     (org-foresight-work-intervals day))
+                    60.0))
+           (budget (+ (org-foresight-surge-minutes)
+                      (org-foresight-leak-minutes)
+                      (org-foresight-lost-minutes))))
+      (when (and (> span 0) (>= budget span))
+        (push (format
+               "the reserve (%s) is larger than the working day (%s); fill the unrecorded hours with `org-foresight-clock-fill' and learn again, or delete `%s' to go back to the defaults"
+               (org-duration-from-minutes budget)
+               (org-duration-from-minutes span)
+               org-foresight-leak-cache-file)
+              out)))
     (let ((bias (org-foresight--bias-data)))
       (cond
        ((null bias)
