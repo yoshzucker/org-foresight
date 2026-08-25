@@ -90,13 +90,17 @@ count is a slowing day even when each item looks reasonable."
   :group 'org-foresight)
 
 (defcustom org-foresight-leak-warn 90
-  "Minutes of daily leak above which the leak itself is the problem.
+  "Minutes a day the clock cannot account for before that is the problem.
 
-Leak is time at the keyboard with no clock running: work that happened and
-went unrecorded, or the small unnamed handling a day fills with.  Left alone
-it grows, and every future day is planned with that much less in it -- so
-past a point the answer is not a bigger allowance but a look at where the
-hour goes."
+Both halves together: time at the keyboard with no clock running, and time
+away from the desk that nothing on the calendar explains.  They are recalled
+differently but they cost the same, and the reserve is built from their sum
+-- watching only the first leaves the larger one of the two unwatched on
+exactly the days it matters.
+
+Left alone it grows, and every future day is planned with that much less in
+it, so past a point the answer is not a bigger allowance but a look at where
+the hour goes."
   :type 'integer
   :group 'org-foresight)
 
@@ -688,12 +692,18 @@ redraw that feels unpredictable turns out to be made of."
 
 Reads only the cached figure -- signals are computed while an agenda is being
 drawn, and reaching for the network there would stall the display."
-  (let ((leak (org-foresight-leak-minutes)))
-    (when (and (org-foresight-leak-samples) (> leak org-foresight-leak-warn))
+  (let ((leak (org-foresight-leak-minutes))
+        (lost (org-foresight-lost-minutes)))
+    (when (and (org-foresight-leak-samples)
+               (> (+ leak lost) org-foresight-leak-warn))
       (list (list :file nil :point nil :marker nil
-                  :title "Time worked without a clock"
-                  :note (format "%s/day goes unrecorded"
-                                (org-duration-from-minutes leak)))))))
+                  :title "Time the clock cannot account for"
+                  ;; Both figures, because they are answered differently: one
+                  ;; is remembered by what was on the screen, the other by
+                  ;; where you went.
+                  :note (format "%s unrecorded, %s away"
+                                (org-duration-from-minutes leak)
+                                (org-duration-from-minutes lost)))))))
 
 ;;;; The board
 
@@ -1247,6 +1257,35 @@ list nobody reads to the end is a list that loses its last item."
   :type 'integer
   :group 'org-foresight)
 
+(defcustom org-foresight-clock-fill-kinds nil
+  "Kinds of time that are filed under something rather than standing alone.
+
+Offered first when `org-foresight-clock-fill\=' asks what a stretch was spent
+on, and answering with one asks a second question -- what it was about --
+instead of a name.  The clock then lands on a heading of that kind under the
+work chosen, made the first time and found every time after.
+
+For the hours that are real, recurring, and tedious to name: the chat, the
+mail, the corridor answer.  Left unnamed they are indistinguishable from time
+nobody can account for, and a day of them teaches the reserve that the whole
+day leaks.
+
+Empty by default.  Which kinds a day divides into is a fact about the work
+someone does, not about Org, and a list guessed here would be a list nobody
+recognised."
+  :type '(repeat string)
+  :group 'org-foresight)
+
+(defcustom org-foresight-clock-fill-kind-property "KIND"
+  "Property naming what a heading made by `org-foresight-clock-fill\=' records.
+
+A property rather than a tag, for the reason the surge property is one: it is
+a mark left for this package to read, not a word the writer files things
+under.  It carries a value, so a second kind costs a value rather than
+another mechanism."
+  :type 'string
+  :group 'org-foresight)
+
 (defun org-foresight--clock-gaps (behind)
   "Return BEHIND's unrecorded stretches as (INTERVAL . KIND), earliest first.
 
@@ -1300,6 +1339,67 @@ to accept one would send its answer somewhere else."
         (unless (assoc title out)
           (push (cons title marker) out))))
     (nreverse out)))
+
+(defun org-foresight--clock-fill-parents ()
+  "Return (TITLE . MARKER) for the open work a kind can be filed under.
+
+Every open TODO heading, not only the ones that are projects: what a
+conversation belonged to is a judgement about the work, and a list that had
+already made it would be missing the answer half the time."
+  (let (out)
+    (dolist (rec (org-foresight-outline-records) (nreverse out))
+      (when (and (not (plist-get rec :done))
+                 (markerp (plist-get rec :marker)))
+        (push (cons (plist-get rec :title) (plist-get rec :marker)) out)))))
+
+(defun org-foresight--child-heading (title level end)
+  "Return a marker on the direct child named TITLE of the entry at point.
+
+LEVEL is that entry\='s own level and END where its subtree stops.  Direct
+children only: a `comms\=' heading two levels down belongs to something else,
+and answering with it would file the hour under the wrong work."
+  (save-excursion
+    (let (found)
+      (while (and (not found)
+                  (outline-next-heading)
+                  (< (point) end))
+        (when (and (= (org-current-level) (1+ level))
+                   (equal (org-get-heading t t t t) title))
+          (setq found (point-marker))))
+      found)))
+
+(defun org-foresight--clock-fill-kind-marker (kind)
+  "Return a marker on KIND\='s own heading under work the reader picks.
+
+Found when it is already there and made when it is not, so the second
+conversation about a thing lands where the first one did and the two are one
+figure rather than two entries.
+
+No TODO keyword, for the reason `org-foresight--file-clocked-entry\=' has
+none: what is being recorded already happened, and a keyword would put it
+back among the things still to do.  It is also what leaves the outline\='s
+shape alone -- a heading with no keyword is scaffolding, so a task that grows
+one of these is still a task and not suddenly a project."
+  (let* ((parents (org-foresight--clock-fill-parents))
+         (title (completing-read (format "%s under: " kind)
+                                 (mapcar #'car parents) nil t))
+         (parent (cdr (assoc title parents))))
+    (unless parent (user-error "Nothing chosen, nothing written"))
+    (org-with-point-at parent
+      (org-with-wide-buffer
+       (org-back-to-heading t)
+       (let* ((level (org-current-level))
+              (end (save-excursion (org-end-of-subtree t t))))
+         (or (org-foresight--child-heading kind level end)
+             (progn
+               ;; Last child rather than first: the hours go underneath the
+               ;; work, not in front of what is still to be done in it.
+               (goto-char end)
+               (unless (bolp) (insert "\n"))
+               (insert (make-string (1+ level) ?*) " " kind "\n")
+               (forward-line -1)
+               (org-set-property org-foresight-clock-fill-kind-property kind)
+               (point-marker))))))))
 
 (defun org-foresight--file-clocked (marker from to)
   "Add a CLOCK line running FROM until TO to the entry at MARKER.
@@ -1387,14 +1487,25 @@ today when it is not."
            (from (car (car gap)))
            (to (cdr (car gap)))
            (known (org-foresight--clock-fill-candidates clock))
-           (title (completing-read "What were you doing? " (mapcar #'car known)))
+           ;; Kinds first.  They are the answer on the hours hardest to name,
+           ;; which is exactly why those hours are the ones still unrecorded
+           ;; at six o\'clock.
+           (title (completing-read "What were you doing? "
+                                   (append org-foresight-clock-fill-kinds
+                                           (mapcar #'car known))))
            (marker (cdr (assoc title known))))
       (when (string-empty-p (string-trim title))
         (user-error "Nothing named, nothing written"))
-      (if marker
-          (org-foresight--file-clocked marker from to)
-        (org-foresight--file-clocked-entry
-         title from to (y-or-n-p "Arrived unplanned? ")))
+      (cond
+       ;; Checked before the day\'s own entries, so a kind that happens to
+       ;; share a name with something on today\'s list still asks what it was
+       ;; about rather than silently filing it there.
+       ((member title org-foresight-clock-fill-kinds)
+        (org-foresight--file-clocked
+         (org-foresight--clock-fill-kind-marker title) from to))
+       (marker (org-foresight--file-clocked marker from to))
+       (t (org-foresight--file-clocked-entry
+           title from to (y-or-n-p "Arrived unplanned? "))))
       (org-foresight--invalidate-signals)
       (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
       (message "Clocked %s, %s-%s" title
