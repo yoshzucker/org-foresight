@@ -1945,6 +1945,11 @@ takes is paid for when it is opened and at no other time.
 but never given a place to happen — unscheduled tasks, and tasks scheduled for
 today with no time on them.
 
+Not the same question as the =↳= rows the agenda draws under a gap. Those
+report what would fit in one hole and choose nothing, so the same task appears
+under every hole it is small enough for. This proposes one arrangement of the
+whole remaining day, and each piece of work is in it once.
+
 #+begin_example
 free 5:45 · reserve 1:00 · budget 4:45
 
@@ -1964,6 +1969,14 @@ Two things it will not do: split a task across a meeting, and write anything
 without being asked. Proposals open in a review buffer — =d= drops one,
 =C-c C-c= writes the rest — and whatever did not fit is listed with the reason
 rather than quietly dropped.
+
+#+begin_src emacs-lisp
+(define-key org-agenda-mode-map "M" #'org-foresight-plan-fill)
+#+end_src
+
+Over =org-agenda-phases-of-moon=, the last of the almanac commands in that
+map. A plan for the rest of the day is worth reading while looking at the day
+it is for, which is why it earns a key rather than only an =M-x=.
 
 * Trying it without real data
 
