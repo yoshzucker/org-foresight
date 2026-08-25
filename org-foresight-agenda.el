@@ -681,7 +681,14 @@ marks go is a decision about the page as a whole and is taken once, by
          ;; piece of work would be marked -- and a mark on every row is a
          ;; mark that says nothing.  The fact is about the day, not about any
          ;; one task, and the verdict states it there instead.
-         (fits (and (plist-get cap :work) t))
+         ;;
+         ;; A reserve grown past the span arrives at the same place by a
+         ;; different road: `keep\=' reaches zero, no gap survives it, and every
+         ;; row is marked.  That reads as a day in which nothing can be done,
+         ;; when what is true is that the reserve has stopped describing the
+         ;; day -- and the mark would point at the tasks rather than at the
+         ;; figure that needs looking at.
+         (fits (and (plist-get cap :work) (> keep 0.0)))
          (largest (* keep
                      (apply #'max 0.0
                             (seq-keep

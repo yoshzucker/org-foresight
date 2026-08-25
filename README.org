@@ -890,6 +890,49 @@ Stretches shorter than =org-foresight-clock-fill-minimum= (five minutes) are
 not offered. A day is full of small holes, and listing every one of them
 buries the twenty minutes that actually went somewhere.
 
+*Some hours are always the same kind, and naming them one at a time is the
+reason they go unnamed.* The chat, the mail, the corridor answer: real,
+recurring, and worth more to a week's record than to a sentence.
+=org-foresight-clock-fill-kinds= names them, and each one is offered first:
+
+#+begin_example
+  What were you doing?  comms                            ← offered first
+                        ONGO Unblock the release
+                        NEXT Review the migration plan
+
+  comms under:          NEXT Migrate the payments service
+#+end_example
+
+The second question is the only one left, and it is the one worth asking:
+/what was it about/. The clock then lands on a =comms= heading under that
+work — made the first time and found every time after, so the second
+conversation about a thing goes where the first one did and the two are one
+figure rather than two entries:
+
+#+begin_example
+,* NEXT Migrate the payments service
+,** comms
+   :PROPERTIES:
+   :KIND: comms
+   :END:
+   :LOGBOOK:
+   CLOCK: [2026-08-25 Tue 10:05]--[2026-08-25 Tue 10:35] =>  0:30
+   CLOCK: [2026-08-25 Tue 14:20]--[2026-08-25 Tue 14:50] =>  0:30
+   :END:
+,** NEXT write the runbook
+#+end_example
+
+No TODO keyword, for the reason the entries above have none — and it is what
+leaves the outline alone. A heading without a keyword is scaffolding, so the
+work this hangs under is still a task and has not quietly become a project.
+
+Empty by default. Which kinds a day divides into is a fact about the work
+somebody does, and a list guessed here would be a list nobody recognised.
+
+#+begin_src emacs-lisp
+(setq org-foresight-clock-fill-kinds '("comms"))
+#+end_src
+
 #+begin_src emacs-lisp
 (define-key org-agenda-mode-map "C" #'org-foresight-clock-fill)
 #+end_src
@@ -1426,7 +1469,26 @@ over.
 day turns out shorter than the clock says — time at the keyboard that no clock
 accounted for, and time away from the machine — and holds those back too.
 Without the watcher both are zero, and the day is planned at the length it
-claims to have. A machine that has never had one costs nothing: the request
+claims to have.
+
+Both are measured over the day's own working hours and over nothing else, net
+of what that day had already booked. Whichever window they are measured in is
+the window they are spent against, so there is only one honest choice of it —
+a machine left on overnight is not a day that leaked sixteen hours, a lunch
+break is not an hour that was lost, and a meeting is not an hour missing twice
+over, once as itself and once as time away from the desk. Measured across the
+whole calendar day instead, the reserve grows past the span it is subtracted
+from, every gap becomes too thin for anything, and the day reads as impossible
+when what has gone wrong is the figure.
+
+That is also why the number wants a full clock behind it. Neither of these can
+tell work that went unrecorded from time that was genuinely lost — nothing can,
+from input alone — so a week of thin clocking teaches the reserve that the whole
+day leaks. If it comes back larger than the day, that is what it is saying, and
+=C= in the agenda is the way to answer it. =M-x org-foresight-diagnose= says so
+in as many words.
+
+A machine that has never had ActivityWatch costs nothing: the request
 fails at once, the failure is cached, and the block says so in words rather
 than showing an empty table. A port that silently drops packets — a VPN, a
 corporate firewall — is the slow case, and =org-foresight-observe-timeout=

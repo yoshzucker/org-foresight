@@ -2739,7 +2739,7 @@ SCHEDULED: <2020-01-01 Wed>
                (s (org-foresight-report-signals
                    (list (cons "Leaking (unclocked work)"
                                (org-foresight--leak-findings)))))
-               (pos (string-match "Time worked without a clock" s)))
+               (pos (string-match "Time the clock cannot account for" s)))
           (should pos)
           (should (null (get-text-property pos 'org-marker s))))
       (delete-file cache))))
@@ -3704,11 +3704,87 @@ arrangement of them -- so it can be said without placing anything."
           ;; it would land past the tags and defeat their alignment
           (let ((drawn (car (org-foresight-agenda--place-marks out))))
             (should (string-match-p org-foresight-agenda-wont-fit drawn)))
-          ;; a day with a big enough gap marks nothing
-          (should (equal (list item other)
-                         (org-foresight-agenda--mark-rows
-                          (list item other) roomy cap ledger))))
+          ;; a day with a big enough gap marks nothing.  Read from the
+          ;; property: `equal' compares strings without their properties, so
+          ;; a marked row would still come back looking untouched.
+          (let ((out (org-foresight-agenda--mark-rows
+                      (list item other) roomy cap ledger)))
+            (should-not (get-text-property 0 'org-foresight-mark (car out)))
+            (should-not (get-text-property 0 'org-foresight-mark (cadr out)))))
       (kill-buffer buf))))
+
+(ert-deftest org-foresight-test-a-reserve-past-the-day-marks-nothing ()
+  "A mark on every row is a mark that says nothing.
+
+`keep' reaching zero leaves no gap wide enough for anything, so every piece
+of promised work is marked as impossible -- on a day whose calendar is empty.
+What is wrong is the reserve, and the verdict is where that gets said.  The
+guard for a day with no working hours already knew this much; a reserve grown
+past the span arrives at the same place by another road."
+  (let* ((cap (list :span-min 480.0 :reserve-min 1020.0 :work t))
+         (buf (get-buffer-create "*foresight-swamped*"))
+         (m (with-current-buffer buf
+              (insert "* one\n") (copy-marker (point-min))))
+         (ledger (list (list :kind 'promised :title "one" :effort 30
+                             :marker m)))
+         (item (org-foresight-test--row " reporting Scheduled: one" m))
+         (roomy (list (list :kind 'available
+                            :start (org-foresight-test--ts 9 0 10)
+                            :end (org-foresight-test--ts 17 0 10)))))
+    (unwind-protect
+        (progn
+          ;; the reserve really has swallowed the span
+          (should (= 0.0 (org-foresight-agenda--keep cap)))
+          ;; and half an hour of work is still not marked impossible.
+          ;; Asked of the text property, not of the row: `equal' compares
+          ;; strings without their properties, so a row that had been marked
+          ;; would still look untouched.
+          (should-not (get-text-property
+                       0 'org-foresight-mark
+                       (car (org-foresight-agenda--mark-rows
+                             (list item) roomy cap ledger)))))
+      (kill-buffer buf))))
+
+(ert-deftest org-foresight-test-verdict-blames-the-reserve-not-the-work ()
+  "A reserve larger than the day is not an over-committed day.
+
+`OVER by' names the work as the thing to cut, and says it on a day with
+nothing on it at all.  What wants looking at is the figure that swallowed the
+span -- and it has to be said in one of the three terms the line may never
+trim, because the reserve figure further along is the first thing dropped."
+  (let* ((org-foresight-report-columns 80)
+         (cap (list :span-min 480.0 :ahead-min 480.0
+                    :committed-min 0.0 :headroom-min -540.0
+                    :reserve-min 1020.0 :reserve-day-min 1020.0
+                    :bias-min 0.0 :lands nil :work t))
+         (line (substring-no-properties (org-foresight-report--verdict cap))))
+    (should (string-match-p "reserve 17:00 exceeds the day" line))
+    (should-not (string-match-p "OVER by" line))
+    ;; and a reserve that still fits inside the day is reported as before
+    (let* ((ok (plist-put (copy-sequence cap) :reserve-min 60.0))
+           (line (substring-no-properties (org-foresight-report--verdict ok))))
+      (should (string-match-p "OVER by" line)))))
+
+(ert-deftest org-foresight-test-diagnose-names-a-reserve-past-the-day ()
+  "The command that explains the figures has to explain this one.
+
+Before, it pushed the opposite advice -- run `org-foresight-learn-leak' --
+and then had nothing to say once that had been run and had come back with a
+budget larger than the day it is subtracted from."
+  (let ((cache (make-temp-file "org-foresight-leak" nil ".eld"
+                               (prin1-to-string '(:leak 360.0 :lost 600.0
+                                                  :samples 12)))))
+    (unwind-protect
+        (let ((org-foresight-leak-cache-file cache)
+              (org-foresight-surge-cache-file "/nonexistent/surge.eld")
+              (org-foresight-surge-default "1:00")
+              (org-foresight-work '(("09:00" . "17:00")))
+              (org-foresight-workdays '(0 1 2 3 4 5 6))
+              (org-foresight--shape-cache nil))
+          (should (seq-find
+                   (lambda (l) (string-match-p "larger than the working day" l))
+                   (org-foresight--diagnose-advice (org-foresight--day-start 0)))))
+      (delete-file cache))))
 
 (defun org-foresight-test--timed (text heading)
   "Return TEXT as an agenda row whose heading starts at HEADING, with a time."
@@ -6499,6 +6575,212 @@ to read as \"nothing is watching\" rather than as \"you did nothing\"."
                         :today-intervals nil :today-tasks nil))
            (text (substring-no-properties (org-foresight-report-spent clock))))
       (should (string-match-p "ActivityWatch" text)))))
+
+(ert-deftest org-foresight-test-a-kind-is-made-once-and-found-after ()
+  "The second conversation about a thing lands where the first one did.
+
+Made every time, the hours would scatter across identical headings and the
+figure they add up to would never be anywhere.  The heading carries no TODO
+keyword, which is also what leaves the outline alone: keyword-less headings
+are scaffolding, so the work it hangs under is still a task rather than
+having quietly become a project."
+  (org-foresight-test--with-org
+      "* NEXT migrate the service\n** NEXT write the runbook\n"
+    (let ((org-foresight-clock-fill-kinds '("comms"))
+          (org-foresight-clock-fill-kind-property "KIND")
+          (org-foresight--signals-cache nil))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) "migrate the service")))
+        (let ((first (org-foresight--clock-fill-kind-marker "comms"))
+              (again (org-foresight--clock-fill-kind-marker "comms")))
+          (should (= (marker-position first) (marker-position again)))
+          (with-current-buffer (marker-buffer first)
+            (should (= 1 (how-many "^\\*+ comms$" (point-min) (point-max))))
+            (org-with-point-at first
+              (should (equal "comms" (org-get-heading t t t t)))
+              (should (null (org-get-todo-state)))
+              (should (equal "comms" (org-entry-get (point) "KIND")))
+              ;; one level under the work it belongs to
+              (should (= 2 (org-current-level))))))))))
+
+(ert-deftest org-foresight-test-clock-fill-offers-a-kind-before-the-day ()
+  "A kind is the first answer offered, and it asks what it was about.
+
+The hours hardest to name are the ones still unrecorded at six o'clock, so
+the answer for them has to be the one already under the cursor.  Routed
+before the day's own entries too: a kind that shares a name with something on
+today's list must still ask, or the hour is filed silently under whichever
+happened to match."
+  (org-foresight-test--with-org "* NEXT something\n"
+    (let ((org-foresight-clock-fill-kinds '("comms"))
+          (org-foresight--signals-cache nil)
+          offered filed)
+      (cl-letf (((symbol-function 'org-foresight-behind) (lambda (&rest _) nil))
+                ((symbol-function 'org-foresight-observe-coverage)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'org-foresight--clock-gaps)
+                 (lambda (_) (list (cons (cons (current-time) (current-time))
+                                         'unclocked))))
+                ((symbol-function 'org-foresight--clock-gap-label)
+                 (lambda (_) "a gap"))
+                ((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _)
+                   (if (string-prefix-p "Unrecorded" prompt)
+                       "a gap"
+                     (setq offered collection)
+                     "comms")))
+                ((symbol-function 'org-foresight--clock-fill-kind-marker)
+                 (lambda (kind) (list 'kind-marker kind)))
+                ((symbol-function 'org-foresight--file-clocked)
+                 (lambda (marker _from _to) (setq filed marker)))
+                ((symbol-function 'org-foresight--invalidate-signals) #'ignore))
+        (org-foresight-clock-fill)
+        (should (equal "comms" (car offered)))
+        (should (equal '(kind-marker "comms") filed))))))
+
+(defun org-foresight-test--answer-afk (offset spans)
+  "Return a stand-in for `org-foresight-observe--get-json\='.
+
+SPANS describe the afk watcher\='s day OFFSET days back, each one a list
+(STATUS H1 M1 H2 M2) with STATUS either \"afk\" or \"not-afk\".  Built against
+the real day rather than a fixed date, because `org-foresight--day-start\='
+reads the clock and a fixture pinned to August would line up with nothing."
+  (let* ((day (org-foresight--day-start offset))
+         (at (lambda (h m)
+               (time-add day (seconds-to-time (+ (* 3600 h) (* 60 m))))))
+         (events
+          (mapcar
+           (lambda (span)
+             (let ((from (funcall at (nth 1 span) (nth 2 span)))
+                   (to (funcall at (nth 3 span) (nth 4 span))))
+               `((timestamp . ,(format-time-string "%Y-%m-%dT%H:%M:%S%:z" from))
+                 (duration . ,(float-time (time-subtract to from)))
+                 (data . ((status . ,(nth 0 span)))))))
+           spans)))
+    (lambda (path &rest _)
+      (if (string-match-p "/events" path)
+          events
+        '((aw-watcher-afk_test . t))))))
+
+(defun org-foresight-test--today-ivs (&rest specs)
+  "Build intervals on today from SPECS, each a list (H1 M1 H2 M2)."
+  (let ((day (org-foresight--day-start 0)))
+    (mapcar (lambda (s)
+              (cons (time-add day (seconds-to-time
+                                   (+ (* 3600 (nth 0 s)) (* 60 (nth 1 s)))))
+                    (time-add day (seconds-to-time
+                                   (+ (* 3600 (nth 2 s)) (* 60 (nth 3 s)))))))
+            specs)))
+
+(ert-deftest org-foresight-test-day-split-measures-only-the-working-hours ()
+  "A machine left on overnight is not a day that leaked sixteen hours.
+
+What leak and lost become is a reserve held back from the working day, so an
+hour that was never part of that day cannot be held back from it.  Measured
+over the whole calendar day instead, an idle evening is indistinguishable
+from an afternoon away from the desk, and the reserve grows past the span it
+is subtracted from -- which is how it reached ten hours."
+  (let ((org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:00")))
+        ;; Every weekday, so the test does not depend on which one it runs on.
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (org-foresight-test--answer-afk
+                0 '(("not-afk" 9 0 10 0)     ; working, unclocked
+                     ("afk" 12 0 13 0)       ; lunch, outside the working hours
+                     ("afk" 14 0 15 0)       ; away from the desk, in them
+                     ("not-afk" 20 0 22 0))))) ; the evening, outside them
+      (should (equal (org-foresight-observe-day-split 0 nil)
+                     '(60.0 . 60.0))))))
+
+(ert-deftest org-foresight-test-day-split-has-no-sample-without-a-watcher ()
+  "No events at all is \"no sample\", not a day that leaked nothing.
+
+Asked of the working hours after the cut, a day spent entirely away from the
+desk and a day the server never ran would both come back empty, and the
+median would learn from the second as if it were the first."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (org-foresight-test--answer-afk 0 nil)))
+      (should-not (org-foresight-observe-day-split 0 nil)))
+    ;; Away all through the working hours is a sample, and says so.
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (org-foresight-test--answer-afk 0 '(("afk" 9 0 17 0)))))
+      (should (equal (org-foresight-observe-day-split 0 nil) '(0.0 . 480.0))))))
+
+(ert-deftest org-foresight-test-day-split-does-not-charge-a-meeting-twice ()
+  "An hour the day had already spoken for is not also an hour that went missing.
+
+A meeting is taken out of the span before any of this is asked.  Counted
+again as time away from the desk it is held back twice -- once as the
+appointment it was, once as an hour nobody can account for -- and the reserve
+grows by exactly the calendar the day was planned around."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (org-foresight-test--answer-afk
+                0 '(("afk" 10 0 11 0)      ; in the meeting, away from the desk
+                    ("afk" 14 0 15 0)))))  ; wandering, on nobody's calendar
+      ;; Only the hour nothing was planned in is lost.
+      (should (equal (org-foresight-observe-day-split
+                      0 nil (org-foresight-test--today-ivs '(10 0 11 0)))
+                     '(0.0 . 60.0)))
+      ;; Without it, both hours are.
+      (should (equal (org-foresight-observe-day-split 0 nil nil)
+                     '(0.0 . 120.0))))))
+
+(ert-deftest org-foresight-test-day-split-subtracts-an-overlap-once ()
+  "A meeting that was also clocked is removed once, not twice.
+
+Both are set differences against the same stretch, so the union is what is
+taken out.  Subtracting each in turn would take an hour away twice and hand
+back a negative minute count, which no median can survive."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (org-foresight-test--answer-afk 0 '(("afk" 10 0 11 0)))))
+      (should (equal (org-foresight-observe-day-split
+                      0
+                      (org-foresight-test--today-ivs '(10 0 11 0))
+                      (org-foresight-test--today-ivs '(10 0 11 0)))
+                     '(0.0 . 0.0))))))
+
+(ert-deftest org-foresight-test-learn-leak-hands-over-what-the-day-had-booked ()
+  "The window's own calendar reaches the measurement.
+
+`org-foresight-observe-day-split' cannot know what a past day had booked --
+it can see the clock and the watcher and nothing else.  The command that
+calls it can, and a correction that stops inside the function it was written
+in is a correction nobody ever gets."
+  (org-foresight-test--with-org
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 0 "10:00" "11:00") "\n")
+    (let ((org-foresight-work '(("09:00" . "17:00")))
+          (org-foresight-workdays '(0 1 2 3 4 5 6))
+          (org-foresight--shape-cache nil)
+          (org-foresight-leak-cache-file (make-temp-file "org-foresight-leak" nil ".eld"))
+          (seen 'never-called))
+      (unwind-protect
+          (cl-letf (((symbol-function 'org-foresight-observe-day-split)
+                     (lambda (_offset _clocked &optional occupied)
+                       (setq seen occupied)
+                       (cons 0.0 0.0))))
+            (org-foresight-learn-leak 1)
+            (should (equal (org-foresight-test--hhmm seen) '("10:00-11:00"))))
+        (delete-file org-foresight-leak-cache-file)))))
+
+(ert-deftest org-foresight-test-day-split-is-silent-on-a-day-with-no-work ()
+  "A day declaring no working hours has nothing to hold a reserve against."
+  (let ((org-foresight-work nil)
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (org-foresight-test--answer-afk 0 '(("not-afk" 9 0 17 0)))))
+      (should-not (org-foresight-observe-day-split 0 nil)))))
 
 ;;;; The spine
 
