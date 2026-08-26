@@ -948,6 +948,31 @@ Over =org-agenda-convert-date=, which offers the Julian and Mayan dates.
 Remembering happens while looking at the day the hour went missing from,
 which is why it is a key here rather than only an =M-x=.
 
+** When the agenda outlives what it shows
+
+=org-agenda-sticky= keeps an agenda buffer between visits, and with it the
+markers its rows carry into the Org files. When an entry it shows leaves —
+archived, refiled, cut, deleted by hand — the marker does not die with it. It
+slides to where the text was, which is now the *next* heading, while the line
+on screen still names the entry that has gone.
+
+Every command that acts through that marker then acts on a heading whose name
+is not on the row. Clocking in clocks the wrong task, =t= changes the wrong
+state, and nothing on the page says so. It is the worst kind of fault: silent,
+and about the thing the tool exists to be trusted with.
+
+=org-agenda-redo= rebuilds the markers and cures it, so a change to any Org
+buffer arms one, debounced, after =org-foresight-agenda-refresh-idle= seconds
+of quiet. From the edit rather than from the moment of use: an agenda wanted
+now is an agenda wanted now, and rebuilding it under the cursor is the pause a
+person notices.
+
+Nothing happens where =org-agenda-sticky= is off, which is Org's default — an
+agenda rebuilt every time it is opened has no stale marker to cure. Set the
+idle to =nil= to leave them alone regardless. Longer means fewer rebuilds and
+a wider window in which a stale marker can be acted on; a rebuild redraws
+these blocks too, so it is not free.
+
 * Not everything wants all of you
 
 Occupying an hour and demanding all of it are different things, and treating
