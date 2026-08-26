@@ -1334,10 +1334,17 @@ to accept one would send its answer somewhere else."
       (when-let ((marker (plist-get task :marker)))
         (push (cons (plist-get task :title) marker) out)))
     (dolist (entry ledger)
-      (when-let ((marker (plist-get entry :marker))
-                 (title (plist-get entry :title)))
+      (when-let ((title (plist-get entry :title)))
         (unless (assoc title out)
-          (push (cons title marker) out))))
+          ;; A journey is offered by name and files nowhere.  Half of them have
+          ;; no entry behind them at all, and the half that do carry the marker
+          ;; of the meeting they are *for* -- clocking the drive onto the
+          ;; meeting would put the road inside the room, and the meeting would
+          ;; report an hour and a half of itself.
+          (let ((marker (unless (eq (plist-get entry :kind) 'travel)
+                          (plist-get entry :marker))))
+            (when (or marker (eq (plist-get entry :kind) 'travel))
+              (push (cons title marker) out))))))
     (nreverse out)))
 
 (defun org-foresight--clock-fill-parents ()
@@ -1505,7 +1512,13 @@ today when it is not."
          (org-foresight--clock-fill-kind-marker title) from to))
        (marker (org-foresight--file-clocked marker from to))
        (t (org-foresight--file-clocked-entry
-           title from to (y-or-n-p "Arrived unplanned? "))))
+           title from to
+           ;; Asked only of a name that came from nowhere.  An answer the day
+           ;; already knew about -- a journey it derived from the calendar --
+           ;; arrived on the calendar, and calling it unplanned would teach the
+           ;; reserve that the commute was an interruption.
+           (and (not (assoc title known))
+                (y-or-n-p "Arrived unplanned? ")))))
       (org-foresight--invalidate-signals)
       (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
       (message "Clocked %s, %s-%s" title

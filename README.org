@@ -877,8 +877,15 @@ by hand is a small tax on an act that is already an afterthought, and a small
 tax on an afterthought collects nothing. That is why the holes were still
 there at six o'clock.
 
-The list offers what today already knows about — anything clocked today, and
-the day's own entries — but it does not require an answer from it. A stretch
+The list offers what today already knows about — anything clocked today, the
+day's own entries, and the journeys it derived, so /the drive to the office/ is
+an answer rather than something to type. A journey files nowhere: there is no
+entry behind one, and the marker the row would otherwise carry belongs to the
+meeting it is /for/, which is not where the road happened. It becomes an entry
+of its own under today, and it is never asked whether it arrived unplanned —
+the calendar is where it arrived.
+
+But the list does not require an answer from it. A stretch
 that went on something nobody had written down is the commonest kind there
 is, and that becomes a new entry under today, with no TODO keyword: what is
 being recorded already happened, and a keyword would put it back among the

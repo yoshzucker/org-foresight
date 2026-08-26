@@ -344,7 +344,18 @@ longer than it is."
                                           (plist-get b :start))
                                       (plist-get b :end))
           'org-foresight-agenda-derived
-          (plist-get b :marker)
+          ;; No marker.  A derived journey answers to none of Org\'s commands
+          ;; because there is no entry behind it, and the marker it used to
+          ;; carry belonged to the *meeting it is for*: standing on the drive
+          ;; and clocking in, scheduling, or noting reached the meeting
+          ;; instead, from a row that looked like any other.
+          ;;
+          ;; `org-foresight-book-travel\' never wanted it -- it reads the
+          ;; journey off `org-foresight-journey\' below, and its own docstring
+          ;; says inheriting a neighbour\'s marker would reschedule the wrong
+          ;; thing.  Making one real still needs a key of its own, which is
+          ;; the point of that command.
+          nil
           (plist-get b :stamp)
           (and trimmed org-foresight-agenda-wont-fit)
           nil
