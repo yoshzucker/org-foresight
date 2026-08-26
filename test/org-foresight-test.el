@@ -3642,15 +3642,19 @@ them, and Org is what puts them in order."
       (should (seq-find (lambda (r) (string-match-p "→" r)) plain))
       (should (seq-find (lambda (r) (string-match-p "work starts" r)) plain))
       (should (seq-find (lambda (r) (string-match-p "work ends" r)) plain))
-      ;; a journey answers to the agenda's commands through the meeting it
-      ;; serves; an edge has no entry behind it and stays inert
-      (should (markerp
-               (get-text-property
-                0 'org-marker
-                (seq-find (lambda (r)
-                            (string-match-p "→ office"
-                                            (substring-no-properties r)))
-                          rows))))
+      ;; Neither a journey nor an edge answers to the agenda's commands.
+      ;; A journey used to, through the marker of the meeting it serves --
+      ;; and every command that took it acted on a heading whose name was
+      ;; not on the row: clocking the drive clocked the meeting, and the
+      ;; meeting reported an hour and a half of itself.  There is no entry
+      ;; behind a derived journey, and `org-foresight-book-travel' is the
+      ;; key that makes one, reading the leg off `org-foresight-journey'.
+      (should-not
+       (get-text-property
+        0 'org-marker
+        (seq-find (lambda (r)
+                    (string-match-p "→ office" (substring-no-properties r)))
+                  rows)))
       (should-not (get-text-property
                    0 'org-marker
                    (seq-find (lambda (r)
@@ -6637,6 +6641,112 @@ happened to match."
         (org-foresight-clock-fill)
         (should (equal "comms" (car offered)))
         (should (equal '(kind-marker "comms") filed))))))
+
+(ert-deftest org-foresight-test-a-journey-is-offered-and-files-nowhere ()
+  "The drive is offered by name, and the clock does not land on the meeting.
+
+Half the journeys a day derives have no entry behind them at all; the half
+that do carry the marker of the meeting they are *for*.  Filing the drive
+there would put the road inside the room, and the meeting would report an
+hour and a half of itself."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil)
+        (org-foresight-places '((office . "office")))
+        (org-foresight-travel-matrix '(((home . office) . 30)
+                                       ((office . home) . 30))))
+    (org-foresight-test--with-org
+        (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:LOCATION: office\n:END:\n"
+                (org-foresight-test--stamp 0 "13:00" "14:00") "\n")
+      (let* ((clock (list :today-tasks nil))
+             (known (org-foresight--clock-fill-candidates clock))
+             (journey (assoc "→ office" known)))
+        ;; offered
+        (should journey)
+        ;; and offered as a name, not as somewhere to file
+        (should (null (cdr journey)))
+        ;; while the meeting itself is still somewhere to file
+        (should (markerp (cdr (assoc "Standup" known))))))))
+
+(ert-deftest org-foresight-test-only-a-name-from-nowhere-can-have-arrived ()
+  "A journey the calendar derived is not an interruption.
+
+The question exists for a stretch that went on something nobody had written
+down.  Asked of an answer the day already knew about, a yes teaches the
+reserve that the commute arrived unplanned -- and it will hold time back for
+one tomorrow."
+  (org-foresight-test--with-org "* NEXT something\n"
+    (let ((org-foresight--signals-cache nil)
+          asked filed)
+      (cl-letf (((symbol-function 'org-foresight-behind) (lambda (&rest _) nil))
+                ((symbol-function 'org-foresight-observe-coverage)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'org-foresight--clock-gaps)
+                 (lambda (_) (list (cons (cons (current-time) (current-time))
+                                         'unclocked))))
+                ((symbol-function 'org-foresight--clock-gap-label)
+                 (lambda (_) "a gap"))
+                ((symbol-function 'org-foresight--clock-fill-candidates)
+                 (lambda (&rest _) '(("→ office" . nil))))
+                ((symbol-function 'completing-read)
+                 (lambda (prompt &rest _)
+                   (if (string-prefix-p "Unrecorded" prompt) "a gap" "→ office")))
+                ((symbol-function 'y-or-n-p)
+                 (lambda (&rest _) (setq asked t) t))
+                ((symbol-function 'org-foresight--file-clocked-entry)
+                 (lambda (_title _from _to surge) (setq filed surge) nil))
+                ((symbol-function 'org-foresight--invalidate-signals) #'ignore))
+        (org-foresight-clock-fill)
+        (should-not asked)
+        (should-not filed)))))
+
+(ert-deftest org-foresight-test-every-agenda-row-names-its-own-entry ()
+  "A row's marker is the heading the row is about, injected rows and all.
+
+Everything the agenda can do to an entry goes through that marker, so a row
+whose marker points elsewhere acts on the wrong heading while looking
+right -- and the rows this package inserts between Org's own are exactly the
+kind of change that would shift one.
+
+Injected rows carry no marker at all, which is the other half of the same
+invariant: a journey and a stretch of free time answer to nothing, and a
+command that needs an entry has to refuse rather than reach for a neighbour."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil)
+        (org-foresight-places '((office . "office")))
+        (org-foresight-travel-matrix '(((home . office) . 30)
+                                       ((office . home) . 30))))
+    (org-foresight-test--with-agenda
+        (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:LOCATION: office\n:END:\n"
+                (org-foresight-test--stamp 0 "13:00" "14:00") "\n"
+                "* NEXT alpha task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+                "* NEXT beta task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "15:00" "16:00") "\n")
+      (org-foresight-test--agenda)
+      (with-current-buffer org-agenda-buffer-name
+        (goto-char (point-min))
+        (let ((named 0) (injected 0))
+          (while (not (eobp))
+            (let* ((bol (line-beginning-position))
+                   (line (buffer-substring-no-properties bol (line-end-position)))
+                   (hd (get-text-property bol 'org-hd-marker)))
+              (cond
+               (hd
+                (setq named (1+ named))
+                ;; the heading the marker leads to is named on the row
+                (should (string-match-p
+                         (regexp-quote (org-with-point-at hd
+                                         (org-get-heading t t t t)))
+                         line)))
+               ;; a row this package inserted, and it answers to nothing
+               ((string-match-p "→ \\|free\\|work \\(starts\\|ends\\|pauses\\|resumes\\)" line)
+                (setq injected (1+ injected)))))
+            (forward-line 1))
+          ;; the fixture really did produce both kinds
+          (should (= named 3))
+          (should (> injected 0)))))))
 
 (defun org-foresight-test--answer-afk (offset spans)
   "Return a stand-in for `org-foresight-observe--get-json\='.
