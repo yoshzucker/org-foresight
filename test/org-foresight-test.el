@@ -5370,6 +5370,78 @@ recorded nothing."
         (should (= 30.0 (plist-get task :minutes)))
         (should (plist-get task :surge))))))
 
+(defun org-foresight-test--split-fixture ()
+  "Two clocked spells today: alpha 09:00-11:00 and beta 13:00-13:30."
+  (let ((day (org-foresight--day-start 0)))
+    (cl-flet ((at (h m) (format-time-string
+                         (format "[%%Y-%%m-%%d %%a %02d:%02d]" h m) day)))
+      (concat "* ONGO alpha\n:LOGBOOK:\nCLOCK: "
+              (at 9 0) "--" (at 11 0) " =>  2:00\n:END:\n"
+              "* ONGO beta\n:LOGBOOK:\nCLOCK: "
+              (at 13 0) "--" (at 13 30) " =>  0:30\n:END:\n"))))
+
+(defmacro org-foresight-test--divide (part &rest body)
+  "Divide alpha's spell at 10:00, moving PART to beta, then run BODY.
+PART is 0 for the earlier half and 1 for the later one."
+  (declare (indent 1))
+  `(org-foresight-test--with-task-file (org-foresight-test--split-fixture)
+     (let ((org-foresight-work '(("09:00" . "17:30")))
+           (org-foresight-workdays '(0 1 2 3 4 5 6))
+           (org-foresight-clock-fill-kinds nil)
+           (org-foresight--shape-cache nil)
+           (org-foresight-now (time-add (org-foresight--day-start 0) (* 3600 15))))
+       (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                  (lambda (&rest _) nil))
+                 ((symbol-function 'read-string) (lambda (&rest _) "10:00"))
+                 ((symbol-function 'completing-read)
+                  (lambda (prompt collection &rest _)
+                    (cond
+                     ((string-prefix-p "Divide" prompt)
+                      (car (seq-find (lambda (c) (string-match-p "alpha" (car c)))
+                                     collection)))
+                     ((string-prefix-p "Which part" prompt)
+                      (car (nth ,part collection)))
+                     (t "beta")))))
+         (org-foresight-clock-split))
+       ,@body)))
+
+(ert-deftest org-foresight-test-dividing-a-spell-moves-time-and-makes-none ()
+  "The minutes change hands; the day is exactly as long as it was.
+
+Which is the whole of the arithmetic.  A division that shortened nothing
+would charge the same hour to two tasks and report a day that never happened;
+one that wrote nothing would lose the hour outright.  Both are worse than the
+mistake being corrected, because both are invisible in a total."
+  (let (before after)
+    (org-foresight-test--divide 1
+      (setq after (org-foresight-test--task-file-text))
+      (setq before (plist-get (org-foresight-clock-scan 1) :today-total)))
+    ;; alpha keeps the first half, beta gains the second, and beta's own
+    ;; spell is untouched
+    (should (string-match-p "09:00\\]--\\[[^]]*10:00\\]" after))
+    (should (string-match-p "10:00\\]--\\[[^]]*11:00\\]" after))
+    (should (string-match-p "13:00\\]--\\[[^]]*13:30\\]" after))
+    (should-not (string-match-p "09:00\\]--\\[[^]]*11:00\\]" after))
+    (should (= 3 (org-foresight-test--count "CLOCK: " after)))
+    ;; 2:00 + 0:30 before, and after
+    (should (= 150 before))))
+
+(ert-deftest org-foresight-test-the-half-that-moves-is-the-half-that-was-named ()
+  "Either end can be the one that was really something else.
+
+The interruption that arrives mid-task is the common case and the second half
+is the default, but the meeting that overran into the hour booked after it
+puts the misfiled time at the front.  A command that could only move the tail
+would send half of those to the wrong task by construction."
+  (let (text)
+    (org-foresight-test--divide 0
+      (setq text (org-foresight-test--task-file-text)))
+    ;; alpha keeps the later half this time
+    (should (string-match-p "\\* ONGO alpha\n:LOGBOOK:\nCLOCK: \\[[^]]*10:00\\]--\\[[^]]*11:00\\]"
+                            text))
+    (should (string-match-p "09:00\\]--\\[[^]]*10:00\\]" text))
+    (should (= 3 (org-foresight-test--count "CLOCK: " text)))))
+
 (ert-deftest org-foresight-test-clock-fill-asks-for-nothing-but-the-name ()
   "Choose a stretch, name the work: no hour is ever typed.
 
