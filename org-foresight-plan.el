@@ -1525,6 +1525,194 @@ today when it is not."
                (format-time-string "%H:%M" from)
                (format-time-string "%H:%M" to)))))
 
+
+;;;; Dividing a spell that was two things
+
+(defun org-foresight--clocked-spells (clock)
+  "Return today's clocked segments as plists (:title :marker :from :to).
+
+One per segment rather than one per entry.  An hour clocked in two sittings
+is two things that can be corrected separately, and the sitting that was
+really something else is a sitting, not a total."
+  (let (out)
+    (dolist (task (plist-get clock :today-tasks))
+      (when-let ((marker (plist-get task :marker)))
+        (dolist (iv (plist-get task :intervals))
+          (push (list :title (plist-get task :title) :marker marker
+                      :from (car iv) :to (cdr iv))
+                out))))
+    (sort out (lambda (a b) (time-less-p (plist-get a :from)
+                                         (plist-get b :from))))))
+
+(defun org-foresight--clock-spell-label (spell)
+  "Return SPELL as one line: when it ran, how long it was, and what it was on."
+  (format "%s-%s  %s  %s"
+          (format-time-string "%H:%M" (plist-get spell :from))
+          (format-time-string "%H:%M" (plist-get spell :to))
+          (org-duration-from-minutes
+           (/ (float-time (time-subtract (plist-get spell :to)
+                                         (plist-get spell :from)))
+              60.0))
+          (plist-get spell :title)))
+
+(defun org-foresight--same-minute-p (a b)
+  "Return non-nil when times A and B fall in the same minute.
+A clock line is written to the minute, so a comparison finer than that would
+only be able to differ from what is on the page."
+  (= (floor (float-time a) 60) (floor (float-time b) 60)))
+
+(defun org-foresight--goto-clock-line (from to)
+  "Put point on the CLOCK line of the entry at point running FROM to TO.
+Return its position, or nil when the entry has no such line.
+
+The timestamps are compared as times rather than as text: a timestamp carries
+the day name of whatever locale wrote it, and these files are read on more
+than one machine."
+  (org-back-to-heading t)
+  (let ((end (save-excursion (org-end-of-subtree t t) (point)))
+        found)
+    (save-excursion
+      (while (and (not found)
+                  (re-search-forward
+                   (concat "^[ \t]*" (regexp-quote org-clock-string)) end t))
+        (let ((eol (line-end-position)) stamps)
+          (save-excursion
+            (beginning-of-line)
+            (while (re-search-forward org-ts-regexp-inactive eol t)
+              (push (org-time-string-to-time (match-string 1)) stamps)))
+          (setq stamps (nreverse stamps))
+          (when (and (= 2 (length stamps))
+                     (org-foresight--same-minute-p (nth 0 stamps) from)
+                     (org-foresight--same-minute-p (nth 1 stamps) to))
+            (setq found (line-beginning-position))))))
+    (when found (goto-char found))
+    found))
+
+(defun org-foresight--reclock-line (from to)
+  "Rewrite the CLOCK line at point to run FROM until TO.
+
+The indentation is left alone -- the line sits in a drawer, and Org's own
+`org-clock-update-time-maybe\=' closes it with the `=> H:MM\=' every clock
+report adds up."
+  (beginning-of-line)
+  (skip-chars-forward " \t")
+  (delete-region (point) (line-end-position))
+  (insert-and-inherit org-clock-string " "
+                      (format-time-string (org-time-stamp-format t t) from)
+                      "--"
+                      (format-time-string (org-time-stamp-format t t) to))
+  (org-clock-update-time-maybe))
+
+(defun org-foresight--clock-split-read (from to)
+  "Read a time strictly inside FROM..TO and return it.
+The complaint about a rejected answer goes in front of the next prompt, so
+the spell being divided stays on screen while it is corrected."
+  (let ((default (format-time-string
+                  "%H:%M"
+                  (time-add from (seconds-to-time
+                                  (/ (float-time (time-subtract to from)) 2)))))
+        (complaint "")
+        at)
+    (while (null at)
+      (let* ((answer (read-string
+                      (format "%sDivide %s-%s at (HH:MM): " complaint
+                              (format-time-string "%H:%M" from)
+                              (format-time-string "%H:%M" to))
+                      default))
+             (try (and (string-match-p "\\`[0-9]\\{1,2\\}:[0-5][0-9]\\'"
+                                       (string-trim answer))
+                       (org-foresight--hhmm-on from (string-trim answer)))))
+        (cond
+         ((null try) (setq complaint "A time like 14:30.  "))
+         ((or (not (time-less-p from try)) (not (time-less-p try to)))
+          (setq complaint "Inside the spell.  "))
+         (t (setq at try)))))
+    at))
+
+;;;###autoload
+(defun org-foresight-clock-split ()
+  "Give part of a clocked spell to the work it actually was.
+
+An hour goes down against one task and turns out to have been two: the call
+that came in the middle of it, twenty minutes of somebody else's problem, the
+half of a meeting that was really about the next project.  Left alone the
+whole hour is charged to whichever task happened to be running, and every
+figure built on the clock -- what that task cost, where the day went, what to
+estimate next time -- is wrong by the same amount in both directions at once.
+
+Nothing is invented here.  The time already exists and only changes hands, so
+the day's total after this is the total it had before.
+
+`org-foresight-clock-fill\=' is the other half of keeping the record honest
+and cannot be asked these questions.  It is about the hours no clock covers,
+so it offers the holes and never asks for a time; this is about an hour a
+clock covers wrongly, so it offers the spells and must ask where to cut."
+  (interactive)
+  (let* ((clock (org-foresight-clock-scan 1))
+         (spells (org-foresight--clocked-spells clock)))
+    (unless spells
+      (user-error "Nothing is clocked today, so there is nothing to divide"))
+    (let* ((choices (mapcar (lambda (s)
+                              (cons (org-foresight--clock-spell-label s) s))
+                            spells))
+           (spell (cdr (assoc (completing-read "Divide which spell? " choices
+                                               nil t nil nil (caar choices))
+                              choices)))
+           (from (plist-get spell :from))
+           (to (plist-get spell :to))
+           (at (org-foresight--clock-split-read from to))
+           (parts (list (cons (format "%s-%s  the first part"
+                                      (format-time-string "%H:%M" from)
+                                      (format-time-string "%H:%M" at))
+                              (cons from at))
+                        (cons (format "%s-%s  the second part"
+                                      (format-time-string "%H:%M" at)
+                                      (format-time-string "%H:%M" to))
+                              (cons at to))))
+           ;; The second part is the default.  An interruption arrives during
+           ;; the work and is often still going when the clock is finally
+           ;; stopped, so the tail is the half that usually belongs elsewhere.
+           (moved (cdr (assoc (completing-read "Which part moves? " parts nil t
+                                               nil nil (car (nth 1 parts)))
+                              parts)))
+           (kept (if (org-foresight--same-minute-p (car moved) from)
+                     (cons at to)
+                   (cons from at)))
+           (known (org-foresight--clock-fill-candidates clock))
+           (title (completing-read "And that part was? "
+                                   (append org-foresight-clock-fill-kinds
+                                           (mapcar #'car known))))
+           (marker (cdr (assoc title known))))
+      (when (string-empty-p (string-trim title))
+        (user-error "Nothing named, nothing moved"))
+      ;; The spell is shortened before the other half is written.  A failure
+      ;; between the two then leaves minutes belonging to nobody, which the
+      ;; day reports as a hole and this command can be run again to fill --
+      ;; where the other order would charge the same minutes to two tasks and
+      ;; report a day longer than it was.
+      (org-with-point-at (plist-get spell :marker)
+        (org-with-wide-buffer
+         (unless (org-foresight--goto-clock-line from to)
+           (user-error "That clock line is no longer where the scan found it"))
+         (org-foresight--reclock-line (car kept) (cdr kept))
+         (save-buffer)))
+      (cond
+       ((member title org-foresight-clock-fill-kinds)
+        (org-foresight--file-clocked
+         (org-foresight--clock-fill-kind-marker title) (car moved) (cdr moved)))
+       (marker (org-foresight--file-clocked marker (car moved) (cdr moved)))
+       (t (org-foresight--file-clocked-entry
+           title (car moved) (cdr moved)
+           (and (not (assoc title known)) (y-or-n-p "Arrived unplanned? ")))))
+      (org-foresight--invalidate-signals)
+      (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
+      (message "%s-%s went to %s; %s keeps %s-%s"
+               (format-time-string "%H:%M" (car moved))
+               (format-time-string "%H:%M" (cdr moved))
+               title (plist-get spell :title)
+               (format-time-string "%H:%M" (car kept))
+               (format-time-string "%H:%M" (cdr kept))))))
+
 ;;;; Meeting preparation
 
 (defun org-foresight--meeting-slots (start end)
