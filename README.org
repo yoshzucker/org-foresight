@@ -950,11 +950,17 @@ which is why it is a key here rather than only an =M-x=.
 
 ** When the agenda outlives what it shows
 
-An agenda buffer keeps the markers its rows carry into the Org files — and
-with =org-agenda-sticky= it keeps them between visits. When an entry it shows
-leaves — archived, refiled, cut — the marker does not die with it. It slides
-to where the text was, which is now the *next* heading, while the line on
-screen still names the entry that has gone.
+An agenda buffer keeps the markers its rows carry into the Org files, for as
+long as the buffer is alive. When an entry it shows leaves — archived,
+refiled, cut — the marker does not die with it. It slides to where the text
+was, which is now the *next* heading, while the line on screen still names
+the entry that has gone.
+
+=org-agenda-sticky= has nothing to do with it. Being sticky decides whether a
+page is shown again instead of built again, which decides how *likely* a
+stale one is to be in front of you — an ordinary agenda left in a window
+while an Org file is edited in another holds exactly the same markers. So the
+watch goes on every agenda, and the cure answers to none of that setting.
 
 Every command that acts through that marker then acts on a heading whose name
 is not on the row. Clocking in clocks the wrong task, =t= changes the wrong
