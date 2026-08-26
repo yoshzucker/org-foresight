@@ -948,6 +948,49 @@ Over =org-agenda-convert-date=, which offers the Julian and Mayan dates.
 Remembering happens while looking at the day the hour went missing from,
 which is why it is a key here rather than only an =M-x=.
 
+** When one clocked hour was two things
+
+The other half of keeping the record honest. An hour goes down against one
+task and turns out to have been two: the call that came in the middle of it,
+twenty minutes of somebody else's problem, the half of a meeting that was
+really about the next project.
+
+Left alone the whole hour is charged to whichever task happened to be
+running, and every figure built on the clock is wrong twice over — the task
+that kept the time looks dearer than it was, and the work that actually took
+it looks free. Estimates learned from either are learned from a fiction.
+
+=M-x org-foresight-clock-split= asks which spell, where to cut it, which side
+moves, and what that side was. The last question offers the same names as
+filling a hole does, kinds first, so time can go to =comms= or to an entry
+that already exists or to a name that has never been written down before.
+
+#+begin_example
+Divide which spell?  09:00-11:00  2:00  Draft the summary
+Divide 09:00-11:00 at (HH:MM): 10:00
+Which part moves?    10:00-11:00  the second part
+And that part was?   comms
+#+end_example
+
+The second part is offered first because an interruption arrives during the
+work and is often still going when the clock is finally stopped. Either end
+can be the one that moves: a meeting that overran into the hour booked after
+it puts the misfiled time at the front.
+
+Nothing is invented. The time already exists and only changes hands, so the
+day is exactly as long after this as it was before — which is the one thing
+worth testing about it, since a division that shortened nothing would charge
+the same hour twice and a total is where that becomes invisible.
+
+This is a separate command from filling a hole, and cannot be folded into it.
+The two ask opposite first questions — one offers the stretches no clock
+covers, the other the stretches a clock covers — and only one of them has to
+ask for a time.
+
+#+begin_src emacs-lisp
+(define-key org-agenda-mode-map "H" #'org-foresight-clock-split)
+#+end_src
+
 ** When the agenda outlives what it shows
 
 An agenda buffer keeps the markers its rows carry into the Org files, for as
