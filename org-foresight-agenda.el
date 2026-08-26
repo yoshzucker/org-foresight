@@ -1375,6 +1375,71 @@ broken out of it."
         (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
         (message "Marked as arrived now")))))
 
+(defcustom org-foresight-agenda-refresh-idle 1.5
+  "Idle seconds before a sticky agenda\='s markers are made good again.
+
+Nil to leave them alone, which is right wherever `org-agenda-sticky\=' is off:
+an agenda that is rebuilt every time it is opened cannot go stale.
+
+Longer means fewer rebuilds and a wider window in which a stale marker can be
+acted on.  A rebuild redraws this package\='s blocks as well, so it is not free
+-- see the profiler if the pauses are noticeable."
+  :type '(choice (const :tag "Leave them alone" nil) number)
+  :group 'org-foresight)
+
+(defvar org-foresight-agenda--refresh-timer nil
+  "The single pending idle timer armed by `org-foresight-agenda--arm-refresh\='.")
+
+(defun org-foresight-agenda--refresh ()
+  "Redo every live agenda buffer, so its markers point where its rows say.
+
+A sticky agenda keeps `org-marker\=' properties pointing into the org files.
+When an entry it shows leaves -- archived, refiled, cut, deleted by hand --
+the marker floats onto whatever ends up at that position, while the line on
+screen still names the entry that has gone.  Every command that acts through
+that marker then acts on a heading whose name is not on the row: clocking in
+clocks the wrong task, `t\=' changes the wrong state, and nothing on screen
+says so.
+
+`org-agenda-redo\=' rebuilds the markers and cures it.  It does not modify the
+org buffers, so this cannot re-arm itself, and `org-agenda-persistent-filter\='
+keeps any active filter across the rebuild."
+  (setq org-foresight-agenda--refresh-timer nil)
+  (dolist (buf (buffer-list))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when (derived-mode-p 'org-agenda-mode)
+          (ignore-errors (org-agenda-redo t)))))))
+
+(defun org-foresight-agenda--arm-refresh (&rest _)
+  "Re-arm the idle rebuild after an edit to an org buffer.
+
+Debounced, and armed from the edit rather than from the moment of use: an
+agenda wanted now is an agenda wanted now, and rebuilding it under the cursor
+is the pause a person notices.  Armed from \"some org buffer changed\" rather
+than from watching files, because `org-agenda-files\=' is computed and moves
+under any snapshot taken of it."
+  (when org-agenda-sticky
+    (when (timerp org-foresight-agenda--refresh-timer)
+      (cancel-timer org-foresight-agenda--refresh-timer))
+    (when org-foresight-agenda-refresh-idle
+      (setq org-foresight-agenda--refresh-timer
+            (run-with-idle-timer org-foresight-agenda-refresh-idle nil
+                                 #'org-foresight-agenda--refresh)))))
+
+(defun org-foresight-agenda--watch-buffer ()
+  "Arm this org buffer to keep sticky agendas honest."
+  (add-hook 'after-change-functions #'org-foresight-agenda--arm-refresh nil t))
+
+(add-hook 'org-mode-hook #'org-foresight-agenda--watch-buffer)
+
+;; Buffers already open when this file loads never ran the hook above, and on
+;; a session that has been going a while those are most of them.
+(dolist (buf (buffer-list))
+  (with-current-buffer buf
+    (when (derived-mode-p 'org-mode)
+      (org-foresight-agenda--watch-buffer))))
+
 (provide 'org-foresight-agenda)
 
 ;;; org-foresight-agenda.el ends here
