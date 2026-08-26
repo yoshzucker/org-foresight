@@ -6760,13 +6760,12 @@ command that needs an entry has to refuse rather than reach for a neighbour."
 (ert-deftest org-foresight-test-a-drifted-marker-is-what-a-rebuild-cures ()
   "A row keeps naming an entry that has gone, and its marker names another.
 
-`org-agenda-sticky' keeps the buffer, and with it `org-marker' properties
-pointing into the org files.  When an entry it shows leaves -- archived,
-refiled, cut -- the marker does not die: it slides to where the text was,
-which is now the *next* heading.  The line on screen is unchanged, so every
-command that acts through the marker acts on a heading whose name is not on
-the row, and nothing says so.  Clocking in from that line clocks the wrong
-task.
+An agenda buffer keeps `org-marker' properties pointing into the org files.
+When an entry it shows leaves -- archived, refiled, cut -- the marker does
+not die: it slides to where the text was, which is now the *next* heading.
+The line on screen is unchanged, so every command that acts through the
+marker acts on a heading whose name is not on the row, and nothing says so.
+Clocking in from that line clocks the wrong task.
 
 This is the failure the rebuild exists for, so the test makes it happen."
   (let ((org-foresight-work '(("09:00" . "17:00")))
@@ -6777,80 +6776,98 @@ This is the failure the rebuild exists for, so the test makes it happen."
                 (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
                 "* NEXT beta task\nSCHEDULED: "
                 (org-foresight-test--stamp 0 "13:00" "14:00") "\n")
-      ;; A sticky agenda buffer is meant to survive, so this one has to be
-      ;; killed by hand: left alive it outlives the fixture it was built
-      ;; from, and the next test inherits an agenda pointing at a file that
-      ;; no longer exists.
       (unwind-protect
-      ;; Answered as if there were no watcher, for the whole test and not just
-      ;; for the draw: the rebuild below redoes every live agenda, and a
-      ;; rebuild outside the stub reaches a real ActivityWatch and caches what
-      ;; it finds -- which the next test then inherits as its own day.
-      (cl-letf (((symbol-function 'org-foresight-observe--get-json)
-                 (lambda (&rest _) nil)))
-      (let ((org-agenda-sticky t))
-        (org-foresight-test--agenda)
-        (let ((marker (with-current-buffer org-agenda-buffer-name
-                        (goto-char (point-min))
-                        (re-search-forward "alpha task")
-                        (get-text-property (line-beginning-position)
-                                           'org-hd-marker))))
-          ;; to begin with, the row and its marker agree
-          (should (equal "alpha task"
-                         (org-with-point-at marker (org-get-heading t t t t))))
-          (org-foresight-test--cut-heading marker "alpha task")
-          ;; and now they do not: the row still says alpha, the marker says beta
-          (should (equal "beta task"
-                         (org-with-point-at marker (org-get-heading t t t t))))
-          (should (with-current-buffer org-agenda-buffer-name
-                    (save-excursion (goto-char (point-min))
-                                    (re-search-forward "alpha task" nil t))))
-          ;; the rebuild is what cures it -- the row goes with the entry
-          (org-foresight-agenda--refresh)
-          (should-not (with-current-buffer org-agenda-buffer-name
-                        (save-excursion
-                          (goto-char (point-min))
-                          (re-search-forward "alpha task" nil t))))
-          (should (with-current-buffer org-agenda-buffer-name
-                    (save-excursion (goto-char (point-min))
-                                    (re-search-forward "beta task" nil t)))))))
+          ;; Answered as if there were no watcher for the whole test, not just
+          ;; for the draw: the rebuild below redoes the agenda, and a rebuild
+          ;; outside the stub reaches a real ActivityWatch and caches the day
+          ;; it finds -- which the next test then inherits as its own.
+          (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                     (lambda (&rest _) nil)))
+            (let ((org-agenda-sticky t)
+                  (org-foresight-agenda--stale nil))
+              (org-foresight-test--agenda)
+              (let ((marker (with-current-buffer org-agenda-buffer-name
+                              (goto-char (point-min))
+                              (re-search-forward "alpha task")
+                              (get-text-property (line-beginning-position)
+                                                 'org-hd-marker))))
+                ;; to begin with, the row and its marker agree
+                (should (equal "alpha task"
+                               (org-with-point-at marker
+                                 (org-get-heading t t t t))))
+                (org-foresight-test--cut-heading marker "alpha task")
+                ;; and now they do not: the row says alpha, the marker beta
+                (should (equal "beta task"
+                               (org-with-point-at marker
+                                 (org-get-heading t t t t))))
+                (should (with-current-buffer org-agenda-buffer-name
+                          (save-excursion (goto-char (point-min))
+                                          (re-search-forward "alpha task" nil t))))
+                ;; the deletion said so on its way past
+                (should org-foresight-agenda--stale)
+                ;; and the next command in the agenda is what cures it: the
+                ;; row goes with the entry, and the keystroke is dropped
+                ;; rather than run on whatever took its place
+                (with-current-buffer org-agenda-buffer-name
+                  (let ((this-command 'org-agenda-clock-in))
+                    (org-foresight-agenda--freshen)
+                    (should (eq this-command #'ignore)))
+                  (should-not org-foresight-agenda--stale)
+                  (save-excursion
+                    (goto-char (point-min))
+                    (should-not (re-search-forward "alpha task" nil t))
+                    (goto-char (point-min))
+                    (should (re-search-forward "beta task" nil t)))))))
+        ;; A sticky agenda is meant to survive, so this one has to be killed
+        ;; by hand: left alive it outlives the fixture it was built from.
         (dolist (buf (buffer-list))
           (when (and (buffer-live-p buf)
                      (with-current-buffer buf (derived-mode-p 'org-agenda-mode)))
             (kill-buffer buf)))))))
 
-(ert-deftest org-foresight-test-an-edit-arms-the-rebuild-only-when-it-can-help ()
-  "Editing an Org buffer arms the rebuild, and only where markers can drift.
+(ert-deftest org-foresight-test-only-a-lost-heading-makes-an-agenda-stale ()
+  "Only a deletion that takes a heading with it can strand a marker.
 
-An agenda rebuilt every time it is opened has no stale markers to cure, so
-arming there would be a timer and a redraw bought for nothing."
-  (org-foresight-test--with-org "* NEXT something\n"
-    (with-current-buffer (find-file-noselect (car org-agenda-files))
-      (let ((org-foresight-agenda--refresh-timer nil)
-            (org-foresight-agenda-refresh-idle 1.5))
-        (let ((org-agenda-sticky nil))
-          (org-foresight-agenda--arm-refresh)
-          (should-not org-foresight-agenda--refresh-timer))
-        (let ((org-agenda-sticky t))
-          (org-foresight-agenda--arm-refresh)
-          (should (timerp org-foresight-agenda--refresh-timer))
-          ;; a second edit re-arms rather than stacking a second timer.
-          ;; Asked of this timer rather than of `timer-idle-list' as a whole:
-          ;; the suite shares one Emacs, and other tests edit org buffers
-          ;; through the same hook.
-          (let ((first org-foresight-agenda--refresh-timer))
-            (org-foresight-agenda--arm-refresh)
-            (should-not (eq first org-foresight-agenda--refresh-timer))
-            (should-not (memq first timer-idle-list))
-            (should (memq org-foresight-agenda--refresh-timer timer-idle-list))))
-        (when (timerp org-foresight-agenda--refresh-timer)
-          (cancel-timer org-foresight-agenda--refresh-timer))
-        ;; nil means leave them alone
-        (let ((org-agenda-sticky t)
-              (org-foresight-agenda-refresh-idle nil)
-              (org-foresight-agenda--refresh-timer nil))
-          (org-foresight-agenda--arm-refresh)
-          (should-not org-foresight-agenda--refresh-timer))))))
+Typing in a heading, cycling its keyword, moving its date, editing the body
+underneath -- none of these move a marker off the heading it is on, and a
+rebuild for any of them would be a rebuild bought for nothing.  Asked before
+the change rather than after, because afterwards the text is gone and the
+marker that was in it is already somewhere else."
+  (with-temp-buffer
+    (insert "* NEXT alpha\nSCHEDULED: <2026-08-26 Wed>\n* NEXT beta\nbody text\n")
+    (org-mode)
+    (org-foresight-agenda--watch-buffer)
+    (let ((org-foresight-agenda--stale nil))
+      ;; typing at the end of a heading
+      (goto-char (point-min)) (end-of-line) (insert "!")
+      (should-not org-foresight-agenda--stale)
+      ;; cycling a keyword, which deletes and inserts inside the heading line
+      (goto-char (point-min)) (search-forward "NEXT") (replace-match "ONGO")
+      (should-not org-foresight-agenda--stale)
+      ;; editing the body underneath
+      (goto-char (point-min)) (search-forward "body text") (replace-match "other")
+      (should-not org-foresight-agenda--stale)
+      ;; and now the one that does strand a marker
+      (goto-char (point-min))
+      (re-search-forward "^\\* ONGO alpha")
+      (beginning-of-line)
+      (delete-region (point) (progn (org-end-of-subtree t t) (point)))
+      (should org-foresight-agenda--stale))))
+
+(ert-deftest org-foresight-test-a-fresh-agenda-is-left-alone ()
+  "With nothing deleted, a command in the agenda runs as it was typed."
+  (with-temp-buffer
+    (org-agenda-mode)
+    (let ((org-foresight-agenda--stale nil)
+          (this-command 'org-agenda-clock-in))
+      (org-foresight-agenda--freshen)
+      (should (eq this-command 'org-agenda-clock-in)))
+    ;; and the redo key is never dropped, or the cure could not be reached
+    (let ((org-foresight-agenda--stale t)
+          (this-command 'org-agenda-redo))
+      (org-foresight-agenda--freshen)
+      (should (eq this-command 'org-agenda-redo))
+      (should org-foresight-agenda--stale))))
 
 (defun org-foresight-test--answer-afk (offset spans)
   "Return a stand-in for `org-foresight-observe--get-json\='.

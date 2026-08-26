@@ -1375,70 +1375,92 @@ broken out of it."
         (when (derived-mode-p 'org-agenda-mode) (org-agenda-redo))
         (message "Marked as arrived now")))))
 
-(defcustom org-foresight-agenda-refresh-idle 1.5
-  "Idle seconds before a sticky agenda\='s markers are made good again.
+(defcustom org-foresight-agenda-refresh-stale t
+  "Rebuild an agenda before acting on a row whose entry may have gone.
 
-Nil to leave them alone, which is right wherever `org-agenda-sticky\=' is off:
-an agenda that is rebuilt every time it is opened cannot go stale.
+An agenda buffer keeps markers pointing into the Org files.  When an entry it
+shows is deleted -- archived, refiled, cut -- the marker does not die with it:
+it slides to where the text was, which is now the *next* heading, while the
+line on screen still names the entry that has gone.  Every command that acts
+through that marker then acts on a heading whose name is not on the row, and
+nothing says so.
 
-Longer means fewer rebuilds and a wider window in which a stale marker can be
-acted on.  A rebuild redraws this package\='s blocks as well, so it is not free
--- see the profiler if the pauses are noticeable."
-  :type '(choice (const :tag "Leave them alone" nil) number)
+Set to nil to leave a stale agenda alone, and press the redo key by hand."
+  :type 'boolean
   :group 'org-foresight)
 
-(defvar org-foresight-agenda--refresh-timer nil
-  "The single pending idle timer armed by `org-foresight-agenda--arm-refresh\='.")
+(defvar org-foresight-agenda--stale nil
+  "Non-nil when a heading has gone since the agendas were drawn.
 
-(defun org-foresight-agenda--refresh ()
-  "Redo every live agenda buffer, so its markers point where its rows say.
+Set by `org-foresight-agenda--note-deletion\=' and cleared by the rebuild.
+One flag for every agenda: a heading that leaves one file can appear in any
+of them, and finding out which would cost more than the rebuild.")
 
-A sticky agenda keeps `org-marker\=' properties pointing into the org files.
-When an entry it shows leaves -- archived, refiled, cut, deleted by hand --
-the marker floats onto whatever ends up at that position, while the line on
-screen still names the entry that has gone.  Every command that acts through
-that marker then acts on a heading whose name is not on the row: clocking in
-clocks the wrong task, `t\=' changes the wrong state, and nothing on screen
-says so.
+(defun org-foresight-agenda--note-deletion (beg end)
+  "Note that the text about to go between BEG and END may strand a marker.
 
-`org-agenda-redo\=' rebuilds the markers and cures it.  It does not modify the
-org buffers, so this cannot re-arm itself, and `org-agenda-persistent-filter\='
-keeps any active filter across the rebuild."
-  (setq org-foresight-agenda--refresh-timer nil)
-  (dolist (buf (buffer-list))
-    (when (buffer-live-p buf)
-      (with-current-buffer buf
-        (when (derived-mode-p 'org-agenda-mode)
-          (ignore-errors (org-agenda-redo t)))))))
+On `before-change-functions\=', which is the only place the question can be
+answered: after the deletion the text is gone, and the marker that was in it
+is already somewhere else.
 
-(defun org-foresight-agenda--arm-refresh (&rest _)
-  "Re-arm the idle rebuild after an edit to an org buffer.
+Only a deletion that takes a heading with it can strand anything.  Typing in
+a heading, cycling its keyword, moving its date, editing the body underneath
+-- none of these move a marker off the heading it is on, and none of them
+sets this.  So the ordinary cost of the whole mechanism is one bounded
+regexp search per change, and the extraordinary cost is one rebuild."
+  (when (and (/= beg end)
+             (save-excursion
+               (goto-char beg)
+               (re-search-forward "^\\*+ " end t)))
+    (setq org-foresight-agenda--stale t)))
 
-Debounced, and armed from the edit rather than from the moment of use: an
-agenda wanted now is an agenda wanted now, and rebuilding it under the cursor
-is the pause a person notices.  Armed from \"some org buffer changed\" rather
-than from watching files, because `org-agenda-files\=' is computed and moves
-under any snapshot taken of it."
-  (when org-agenda-sticky
-    (when (timerp org-foresight-agenda--refresh-timer)
-      (cancel-timer org-foresight-agenda--refresh-timer))
-    (when org-foresight-agenda-refresh-idle
-      (setq org-foresight-agenda--refresh-timer
-            (run-with-idle-timer org-foresight-agenda-refresh-idle nil
-                                 #'org-foresight-agenda--refresh)))))
+(defun org-foresight-agenda--freshen ()
+  "Rebuild this agenda, before a command acts on a row that may have gone.
+
+On `pre-command-hook\=' in agenda buffers, which is the moment that matters:
+a row is only dangerous when something is about to be done to it, and by
+waiting until then the rebuild costs nothing on a day when nothing is
+deleted.  There is no window either -- the check is in front of the command,
+not on a clock that might not have run yet.
+
+The command is dropped rather than run.  What was under the cursor may be
+what has just gone, and continuing would act on whatever took its place --
+which is the fault being cured.  One keystroke, once, after a heading is
+deleted, and the page in front of you is the file as it now is."
+  (when (and org-foresight-agenda-refresh-stale
+             org-foresight-agenda--stale
+             (derived-mode-p 'org-agenda-mode)
+             ;; A redo is the cure; asking for one that is already happening
+             ;; would be a loop.  Leaving is always allowed.
+             (not (memq this-command '(org-agenda-redo org-agenda-redo-all
+                                       org-agenda-quit org-agenda-exit
+                                       org-agenda-kill-all-agenda-buffers))))
+    (setq org-foresight-agenda--stale nil)
+    (condition-case err
+        (progn
+          (org-agenda-redo t)
+          (setq this-command #'ignore)
+          (message "The agenda named work that has gone, and has been rebuilt"))
+      (error
+       (message "Could not rebuild the agenda: %s" (error-message-string err))))))
 
 (defun org-foresight-agenda--watch-buffer ()
-  "Arm this org buffer to keep sticky agendas honest."
-  (add-hook 'after-change-functions #'org-foresight-agenda--arm-refresh nil t))
+  "Watch this Org buffer for deletions that would strand an agenda marker."
+  (add-hook 'before-change-functions #'org-foresight-agenda--note-deletion nil t))
+
+(defun org-foresight-agenda--watch-agenda ()
+  "Have this agenda make itself good again before it is acted on."
+  (add-hook 'pre-command-hook #'org-foresight-agenda--freshen nil t))
 
 (add-hook 'org-mode-hook #'org-foresight-agenda--watch-buffer)
+(add-hook 'org-agenda-mode-hook #'org-foresight-agenda--watch-agenda)
 
-;; Buffers already open when this file loads never ran the hook above, and on
+;; Buffers already open when this file loads never ran the hooks above, and on
 ;; a session that has been going a while those are most of them.
 (dolist (buf (buffer-list))
   (with-current-buffer buf
-    (when (derived-mode-p 'org-mode)
-      (org-foresight-agenda--watch-buffer))))
+    (cond ((derived-mode-p 'org-mode) (org-foresight-agenda--watch-buffer))
+          ((derived-mode-p 'org-agenda-mode) (org-foresight-agenda--watch-agenda)))))
 
 (provide 'org-foresight-agenda)
 
