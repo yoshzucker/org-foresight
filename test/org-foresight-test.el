@@ -6825,6 +6825,43 @@ This is the failure the rebuild exists for, so the test makes it happen."
                      (with-current-buffer buf (derived-mode-p 'org-agenda-mode)))
             (kill-buffer buf)))))))
 
+(ert-deftest org-foresight-test-the-cure-does-not-wait-for-a-sticky-agenda ()
+  "A marker is stranded by the deletion, not by the agenda outliving a visit.
+
+`org-agenda-sticky\=' decides whether a page is shown again instead of built
+again, which decides how likely a stale one is to be in front of you -- not
+whether it can happen.  An ordinary agenda buffer left in a window while an
+Org file is edited holds exactly the same markers, so the watch goes on every
+agenda and the cure answers to none of that setting."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (org-foresight-test--with-agenda
+        (concat "* NEXT alpha task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+                "* NEXT beta task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "13:00" "14:00") "\n")
+      (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                 (lambda (&rest _) nil)))
+        (let ((org-agenda-sticky nil)
+              (org-foresight-agenda--stale nil))
+          (org-foresight-test--agenda)
+          (with-current-buffer org-agenda-buffer-name
+            (should (memq #'org-foresight-agenda--freshen pre-command-hook))
+            (goto-char (point-min))
+            (re-search-forward "alpha task")
+            (org-foresight-test--cut-heading
+             (get-text-property (line-beginning-position) 'org-hd-marker)
+             "alpha task")
+            (should org-foresight-agenda--stale)
+            (let ((this-command 'org-agenda-clock-in))
+              (org-foresight-agenda--freshen)
+              (should (eq this-command #'ignore)))
+            (goto-char (point-min))
+            (should-not (re-search-forward "alpha task" nil t))
+            (goto-char (point-min))
+            (should (re-search-forward "beta task" nil t))))))))
+
 (ert-deftest org-foresight-test-only-a-lost-heading-makes-an-agenda-stale ()
   "Only a deletion that takes a heading with it can strand a marker.
 
