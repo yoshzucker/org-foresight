@@ -950,28 +950,38 @@ which is why it is a key here rather than only an =M-x=.
 
 ** When the agenda outlives what it shows
 
-=org-agenda-sticky= keeps an agenda buffer between visits, and with it the
-markers its rows carry into the Org files. When an entry it shows leaves —
-archived, refiled, cut, deleted by hand — the marker does not die with it. It
-slides to where the text was, which is now the *next* heading, while the line
-on screen still names the entry that has gone.
+An agenda buffer keeps the markers its rows carry into the Org files — and
+with =org-agenda-sticky= it keeps them between visits. When an entry it shows
+leaves — archived, refiled, cut — the marker does not die with it. It slides
+to where the text was, which is now the *next* heading, while the line on
+screen still names the entry that has gone.
 
 Every command that acts through that marker then acts on a heading whose name
 is not on the row. Clocking in clocks the wrong task, =t= changes the wrong
 state, and nothing on the page says so. It is the worst kind of fault: silent,
 and about the thing the tool exists to be trusted with.
 
-=org-agenda-redo= rebuilds the markers and cures it, so a change to any Org
-buffer arms one, debounced, after =org-foresight-agenda-refresh-idle= seconds
-of quiet. From the edit rather than from the moment of use: an agenda wanted
-now is an agenda wanted now, and rebuilding it under the cursor is the pause a
-person notices.
+Only one thing can cause it, and it is asked about at the only moment it can
+be answered. A marker is stranded when the text around it is deleted, so
+=before-change-functions= looks at what is about to go: if a heading is in it,
+the agendas are stale. Typing in a heading, cycling its keyword, moving its
+date, editing the body underneath — none of these move a marker off the
+heading it is on, and none of them counts. The ordinary cost is one bounded
+regexp search per change.
 
-Nothing happens where =org-agenda-sticky= is off, which is Org's default — an
-agenda rebuilt every time it is opened has no stale marker to cure. Set the
-idle to =nil= to leave them alone regardless. Longer means fewer rebuilds and
-a wider window in which a stale marker can be acted on; a rebuild redraws
-these blocks too, so it is not free.
+The rebuild then happens in front of the next command in an agenda, from
+=pre-command-hook=, and nowhere else. Not on a timer: a clock that has not
+fired yet leaves a window in which the wrong entry can be acted on, and a
+clock that fires on a quiet day is work bought for nothing. Waiting for the
+command costs nothing on a day when nothing is deleted, and leaves no window
+at all.
+
+That keystroke is dropped rather than run. What was under the cursor may be
+exactly what has gone, and continuing would act on whatever took its place —
+which is the fault. One keystroke, once, after a heading is deleted, and what
+is in front of you is the file as it now is. Set
+=org-foresight-agenda-refresh-stale= to nil to leave a stale agenda alone and
+press the redo key by hand.
 
 * Not everything wants all of you
 
