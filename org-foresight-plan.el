@@ -1347,6 +1347,27 @@ to accept one would send its answer somewhere else."
               (push (cons title marker) out))))))
     (nreverse out)))
 
+(defun org-foresight--clock-fill-journeys (&optional scan)
+  "Return (TITLE . PLACE) for the journeys today derives but nobody wrote down.
+
+A journey named at the prompt has to be written down *as* a journey.  Filed as
+an ordinary entry it records the hour that was spent and leaves the derivation
+untouched, so the day goes on reserving a second leg to the same door -- the
+hour is counted twice, the free time is short by it, and what would fit is
+answered against a trip already made.  Booked to its place, the derivation
+defers to it, which is the mechanism `org-foresight-book-travel\=' already
+uses."
+  (let* ((scan (or scan (org-foresight-scan 1 (org-foresight--day-start 0))))
+         (ledger (org-foresight-scan-day scan :ledger
+                                         (org-foresight--day-start 0)))
+         out)
+    (dolist (entry ledger (nreverse out))
+      (when (and (eq (plist-get entry :kind) 'travel)
+                 (plist-get entry :place)
+                 (plist-get entry :title)
+                 (not (plist-get entry :written)))
+        (push (cons (plist-get entry :title) (plist-get entry :place)) out)))))
+
 (defun org-foresight--clock-fill-parents ()
   "Return (TITLE . MARKER) for the open work a kind can be filed under.
 
@@ -1493,7 +1514,9 @@ today when it is not."
                             choices)))
            (from (car (car gap)))
            (to (cdr (car gap)))
-           (known (org-foresight--clock-fill-candidates clock))
+           (scan (org-foresight-scan 1 (org-foresight--day-start 0)))
+           (known (org-foresight--clock-fill-candidates clock scan))
+           (journeys (org-foresight--clock-fill-journeys scan))
            ;; Kinds first.  They are the answer on the hours hardest to name,
            ;; which is exactly why those hours are the ones still unrecorded
            ;; at six o\'clock.
@@ -1510,6 +1533,15 @@ today when it is not."
        ((member title org-foresight-clock-fill-kinds)
         (org-foresight--file-clocked
          (org-foresight--clock-fill-kind-marker title) from to))
+       ;; Before the fallback, and it has to be: a derived journey is offered
+       ;; with no marker, so without this it would fall through and be written
+       ;; as a plain entry -- leaving the day to reserve the trip all over
+       ;; again.
+       ((assoc title journeys)
+        (org-foresight--file-clocked
+         (org-foresight--file-journey title (cdr (assoc title journeys)) from to)
+         from to)
+        (setq org-foresight--shape-cache nil))
        (marker (org-foresight--file-clocked marker from to))
        (t (org-foresight--file-clocked-entry
            title from to
@@ -1678,7 +1710,9 @@ clock covers wrongly, so it offers the spells and must ask where to cut."
            (kept (if (org-foresight--same-minute-p (car moved) from)
                      (cons at to)
                    (cons from at)))
-           (known (org-foresight--clock-fill-candidates clock))
+           (scan (org-foresight-scan 1 (org-foresight--day-start 0)))
+           (known (org-foresight--clock-fill-candidates clock scan))
+           (journeys (org-foresight--clock-fill-journeys scan))
            (title (completing-read "And that part was? "
                                    (append org-foresight-clock-fill-kinds
                                            (mapcar #'car known))))
@@ -1700,6 +1734,12 @@ clock covers wrongly, so it offers the spells and must ask where to cut."
        ((member title org-foresight-clock-fill-kinds)
         (org-foresight--file-clocked
          (org-foresight--clock-fill-kind-marker title) (car moved) (cdr moved)))
+       ((assoc title journeys)
+        (org-foresight--file-clocked
+         (org-foresight--file-journey title (cdr (assoc title journeys))
+                                      (car moved) (cdr moved))
+         (car moved) (cdr moved))
+        (setq org-foresight--shape-cache nil))
        (marker (org-foresight--file-clocked marker (car moved) (cdr moved)))
        (t (org-foresight--file-clocked-entry
            title (car moved) (cdr moved)
