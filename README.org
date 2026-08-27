@@ -1018,13 +1018,24 @@ is not on the row. Clocking in clocks the wrong task, =t= changes the wrong
 state, and nothing on the page says so. It is the worst kind of fault: silent,
 and about the thing the tool exists to be trusted with.
 
-Only one thing can cause it, and it is asked about at the only moment it can
-be answered. A marker is stranded when the text around it is deleted, so
-=before-change-functions= looks at what is about to go: if a heading is in it,
-the agendas are stale. Typing in a heading, cycling its keyword, moving its
-date, editing the body underneath — none of these move a marker off the
-heading it is on, and none of them counts. The ordinary cost is one bounded
-regexp search per change.
+Two questions answer it, and each is asked where it can be.
+
+A marker is stranded when the text around it is deleted, so
+=before-change-functions= looks at what is about to go: a heading in it counts
+one loss. That is a count and not a flag, because =org-agenda-redo= rebuilds
+the views in one buffer and no other — a flag cleared by the first page cured
+would declare every other page fresh. Each page remembers the count it was
+drawn at. Typing in a heading, moving its date, editing the body underneath:
+none of these take a heading, and none of them counts.
+
+But a count cannot tell a heading leaving from a heading being rewritten, and
+=org-todo= rewrites one by deleting it and putting it back. So the row under
+the cursor is asked too, and only rebuilt for when it is one of the ones that
+went wrong: does it still name the entry its marker points at? Nothing is
+given up by waiting — the page stays counted as stale until a rebuild stamps
+it, so a row that has gone is caught the moment anything is aimed at it. The
+ordinary cost is one bounded regexp search per change and one heading read
+per command.
 
 The rebuild then happens in front of the next command in an agenda, from
 =pre-command-hook=, and nowhere else. Not on a timer: a clock that has not

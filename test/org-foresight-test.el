@@ -4832,9 +4832,12 @@ assertion about \"tomorrow\" survive being run tomorrow."
            (org-agenda-log-mode-items '(closed state))
            (org-agenda-start-with-clockreport-mode nil)
            (org-agenda-start-with-entry-text-mode nil)
-           ;; Both, in the order a real session ends up with: the package
-           ;; adds its own when it loads, and a config appends the report.
-           (org-agenda-finalize-hook '(org-foresight-agenda--draw-spine
+           ;; In the order a real session ends up with: the package adds its
+           ;; own when it loads, and a config appends the report.  The stamp
+           ;; is among them, and has to be -- it is what tells a page which
+           ;; state of the files it was drawn against.
+           (org-agenda-finalize-hook '(org-foresight-agenda--stamp
+                                       org-foresight-agenda--draw-spine
                                        org-foresight-report-render))
            (org-foresight-report-style 'daily)
            (org-foresight-awake '("07:00" . "22:00"))
@@ -6904,7 +6907,7 @@ This is the failure the rebuild exists for, so the test makes it happen."
           (cl-letf (((symbol-function 'org-foresight-observe--get-json)
                      (lambda (&rest _) nil)))
             (let ((org-agenda-sticky t)
-                  (org-foresight-agenda--stale nil))
+                  (org-foresight-agenda--losses 0))
               (org-foresight-test--agenda)
               (let ((marker (with-current-buffer org-agenda-buffer-name
                               (goto-char (point-min))
@@ -6924,7 +6927,7 @@ This is the failure the rebuild exists for, so the test makes it happen."
                           (save-excursion (goto-char (point-min))
                                           (re-search-forward "alpha task" nil t))))
                 ;; the deletion said so on its way past
-                (should org-foresight-agenda--stale)
+                (should (= 1 org-foresight-agenda--losses))
                 ;; and the next command in the agenda is what cures it: the
                 ;; row goes with the entry, and the keystroke is dropped
                 ;; rather than run on whatever took its place
@@ -6932,7 +6935,9 @@ This is the failure the rebuild exists for, so the test makes it happen."
                   (let ((this-command 'org-agenda-clock-in))
                     (org-foresight-agenda--freshen)
                     (should (eq this-command #'ignore)))
-                  (should-not org-foresight-agenda--stale)
+                  ;; and the page now answers for the files as they are
+                  (should (= org-foresight-agenda--drawn-at
+                             org-foresight-agenda--losses))
                   (save-excursion
                     (goto-char (point-min))
                     (should-not (re-search-forward "alpha task" nil t))
@@ -6964,7 +6969,7 @@ agenda and the cure answers to none of that setting."
       (cl-letf (((symbol-function 'org-foresight-observe--get-json)
                  (lambda (&rest _) nil)))
         (let ((org-agenda-sticky nil)
-              (org-foresight-agenda--stale nil))
+              (org-foresight-agenda--losses 0))
           (org-foresight-test--agenda)
           (with-current-buffer org-agenda-buffer-name
             (should (memq #'org-foresight-agenda--freshen pre-command-hook))
@@ -6973,7 +6978,7 @@ agenda and the cure answers to none of that setting."
             (org-foresight-test--cut-heading
              (get-text-property (line-beginning-position) 'org-hd-marker)
              "alpha task")
-            (should org-foresight-agenda--stale)
+            (should (= 1 org-foresight-agenda--losses))
             (let ((this-command 'org-agenda-clock-in))
               (org-foresight-agenda--freshen)
               (should (eq this-command #'ignore)))
@@ -6998,7 +7003,7 @@ agenda and the cure answers to none of that setting."
        (unwind-protect
            (cl-letf (((symbol-function 'org-foresight-observe--get-json)
                       (lambda (&rest _) nil)))
-             (let ((org-agenda-sticky nil) (org-foresight-agenda--stale nil))
+             (let ((org-agenda-sticky nil) (org-foresight-agenda--losses 0))
                (org-foresight-test--agenda)
                (with-current-buffer org-agenda-buffer-name
                  (goto-char (point-min))
@@ -7066,37 +7071,323 @@ marker that was in it is already somewhere else."
     (insert "* NEXT alpha\nSCHEDULED: <2026-08-26 Wed>\n* NEXT beta\nbody text\n")
     (org-mode)
     (org-foresight-agenda--watch-buffer)
-    (let ((org-foresight-agenda--stale nil))
+    (let ((org-foresight-agenda--losses 0))
       ;; typing at the end of a heading
       (goto-char (point-min)) (end-of-line) (insert "!")
-      (should-not org-foresight-agenda--stale)
+      (should (= 0 org-foresight-agenda--losses))
       ;; cycling a keyword, which deletes and inserts inside the heading line
       (goto-char (point-min)) (search-forward "NEXT") (replace-match "ONGO")
-      (should-not org-foresight-agenda--stale)
+      (should (= 0 org-foresight-agenda--losses))
       ;; editing the body underneath
       (goto-char (point-min)) (search-forward "body text") (replace-match "other")
-      (should-not org-foresight-agenda--stale)
+      (should (= 0 org-foresight-agenda--losses))
       ;; and now the one that does strand a marker
       (goto-char (point-min))
       (re-search-forward "^\\* ONGO alpha")
       (beginning-of-line)
       (delete-region (point) (progn (org-end-of-subtree t t) (point)))
-      (should org-foresight-agenda--stale))))
+      (should (= 1 org-foresight-agenda--losses)))))
+
+(defun org-foresight-test--stranded-marker ()
+  "Cut the first heading of the agenda file and return a marker left behind.
+The marker names the entry that took its place, which is the whole fault: a
+row built from it would say one thing and act on another."
+  (with-current-buffer (find-file-noselect (car org-agenda-files))
+    (goto-char (point-min))
+    (re-search-forward "^\\* NEXT alpha")
+    (beginning-of-line)
+    (let ((marker (point-marker)))
+      (delete-region (point) (progn (org-end-of-subtree t t) (point)))
+      (set-buffer-modified-p nil)
+      marker)))
+
+(defun org-foresight-test--lying-row (marker)
+  "Make this buffer an agenda whose one row says alpha and points at MARKER."
+  (org-agenda-mode)
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (propertize "  10:00 alpha\n" 'org-hd-marker marker)))
+  (goto-char (point-min)))
+
+(ert-deftest org-foresight-test-curing-one-agenda-leaves-the-others-owed ()
+  "Rebuilding one page says nothing about the others.
+
+`org-agenda-redo\\=' rebuilds the views in the buffer it is called in and no
+other, so a single flag cleared by the first cure would declare every other
+page fresh while its rows still pointed at work that has gone.  Each page
+carries the count it was drawn at instead."
+  (org-foresight-test--with-org "* NEXT alpha\n* NEXT beta\n"
+    (let ((one (generate-new-buffer " *one*"))
+          (two (generate-new-buffer " *two*"))
+          (org-foresight-agenda--losses 0)
+          marker)
+      (unwind-protect
+          (progn
+            (setq marker (org-foresight-test--stranded-marker))
+            ;; Drawn first and stamped after: entering the major mode kills
+            ;; the buffer's local variables, the stamp among them.
+            (dolist (buf (list one two))
+              (with-current-buffer buf
+                (org-foresight-test--lying-row marker)
+                (org-foresight-agenda--stamp)))
+            ;; One more than the pages were drawn at.  Making the marker
+            ;; was itself a deletion, and it counted.
+            (setq org-foresight-agenda--losses
+                  (1+ org-foresight-agenda--losses))
+            ;; the first is cured -- standing in for the rebuild, which in a
+            ;; real session is what runs the stamp
+            (with-current-buffer one
+              (cl-letf (((symbol-function 'org-agenda-redo)
+                         (lambda (&rest _) (org-foresight-agenda--stamp))))
+                (let ((this-command 'org-agenda-clock-in))
+                  (org-foresight-agenda--freshen)
+                  (should (eq this-command #'ignore))))
+              (should (= org-foresight-agenda--drawn-at
+                         org-foresight-agenda--losses)))
+            ;; and the second is still owed one
+            (with-current-buffer two
+              (should (/= org-foresight-agenda--drawn-at
+                          org-foresight-agenda--losses))
+              (cl-letf (((symbol-function 'org-agenda-redo)
+                         (lambda (&rest _) (org-foresight-agenda--stamp))))
+                (let ((this-command 'org-agenda-clock-in))
+                  (org-foresight-agenda--freshen)
+                  (should (eq this-command #'ignore))))))
+        (kill-buffer one)
+        (kill-buffer two)))))
+
+(ert-deftest org-foresight-test-clocking-in-lands-on-the-task-the-row-names ()
+  "The whole point, said end to end: the clock goes on what the line says.
+
+Every other test here checks a marker or a row.  This one presses the key and
+asks what is running afterwards, because that is the fault as it is met --
+`C-c C-x C-i\\=' on a line reading one task, and the wrong task clocked in.
+
+Nothing is taken from the keyboard on the way.  The entry above was deleted,
+so the page is out of date, but this row is not one of the ones that went
+wrong and there is nothing here to protect anybody from."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (org-foresight-test--with-agenda
+        (concat "* NEXT alpha task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+                "* NEXT beta task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "13:00" "14:00") "\n"
+                "* NEXT gamma task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "15:00" "16:00") "\n")
+      (unwind-protect
+          (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                     (lambda (&rest _) nil)))
+            (let ((org-agenda-sticky nil) (org-foresight-agenda--losses 0))
+              (org-foresight-test--agenda)
+              (with-current-buffer org-agenda-buffer-name
+                (goto-char (point-min))
+                (re-search-forward "gamma task")
+                (beginning-of-line)
+                (let ((keep (point))
+                      (alpha (save-excursion
+                               (goto-char (point-min))
+                               (re-search-forward "alpha task")
+                               (get-text-property (line-beginning-position)
+                                                  'org-hd-marker))))
+                  (org-foresight-test--cut-heading alpha "alpha task")
+                  (goto-char keep))
+                (let ((this-command 'org-agenda-clock-in))
+                  (org-foresight-agenda--freshen)
+                  (should (eq this-command 'org-agenda-clock-in)))
+                (org-agenda-clock-in)
+                (should (org-clocking-p))
+                (should (equal "gamma task"
+                               (org-with-point-at org-clock-marker
+                                 (org-get-heading t t t t)))))))
+        (when (org-clocking-p) (org-clock-out nil t))
+        (dolist (buf (buffer-list))
+          (when (and (buffer-live-p buf)
+                     (with-current-buffer buf (derived-mode-p 'org-agenda-mode)))
+            (kill-buffer buf)))))))
+
+(ert-deftest org-foresight-test-a-row-that-has-gone-takes-the-keystroke ()
+  "On the row that went wrong, the key buys the rebuild instead.
+
+The row under the cursor is the only one a command can reach, so it is the
+only one worth asking about -- and when it is the one that has gone, running
+what was typed would act on whatever took its place."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight--shape-cache nil))
+    (org-foresight-test--with-agenda
+        (concat "* NEXT alpha task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+                "* NEXT beta task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "13:00" "14:00") "\n")
+      (unwind-protect
+          (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                     (lambda (&rest _) nil)))
+            (let ((org-agenda-sticky nil) (org-foresight-agenda--losses 0))
+              (org-foresight-test--agenda)
+              (with-current-buffer org-agenda-buffer-name
+                (goto-char (point-min))
+                (re-search-forward "alpha task")
+                (beginning-of-line)
+                (let ((keep (point)))
+                  (org-foresight-test--cut-heading
+                   (get-text-property (point) 'org-hd-marker) "alpha task")
+                  (goto-char keep))
+                ;; the row now lies, and says so
+                (should-not (org-foresight-agenda--row-names-its-entry-p))
+                (let ((this-command 'org-agenda-clock-in))
+                  (org-foresight-agenda--freshen)
+                  (should (eq this-command #'ignore)))
+                ;; the ghost is gone and the cursor holds nothing
+                (should (= (point) (point-min)))
+                (goto-char (point-min))
+                (should-not (re-search-forward "alpha task" nil t)))))
+        (dolist (buf (buffer-list))
+          (when (and (buffer-live-p buf)
+                     (with-current-buffer buf (derived-mode-p 'org-agenda-mode)))
+            (kill-buffer buf)))))))
+
+(ert-deftest org-foresight-test-the-ways-an-entry-actually-leaves-are-noticed ()
+  "Archiving and refiling are how entries leave, and both take a heading.
+
+The count is tested elsewhere against a bare `delete-region\\=', which is not
+what anybody types.  These are the two commands that do it in practice, and
+either could stop passing through `before-change-functions\\=' without a test
+that names them."
+  (let ((archive (make-temp-file "org-foresight-archive" nil ".org")))
+    (unwind-protect
+        (progn
+          (let ((org-foresight-agenda--losses 0)
+                (org-archive-location (concat archive "::")))
+            (org-foresight-test--with-org "* NEXT alpha\n* NEXT beta\n"
+              (with-current-buffer (find-file-noselect (car org-agenda-files))
+                (org-foresight-agenda--watch-buffer)
+                (goto-char (point-min))
+                (org-archive-subtree)
+                (should (= 1 org-foresight-agenda--losses))
+                (set-buffer-modified-p nil))))
+          (let ((org-foresight-agenda--losses 0))
+            (org-foresight-test--with-org "* NEXT alpha\n* somewhere else\n"
+              (with-current-buffer (find-file-noselect (car org-agenda-files))
+                (org-foresight-agenda--watch-buffer)
+                (goto-char (point-min))
+                (org-refile nil nil
+                            (list "somewhere else" (buffer-file-name) nil
+                                  (save-excursion
+                                    (goto-char (point-min))
+                                    (re-search-forward "^\\* somewhere else")
+                                    (line-beginning-position))))
+                (should (= 1 org-foresight-agenda--losses))
+                (set-buffer-modified-p nil)))))
+      (when (get-file-buffer archive) (kill-buffer (get-file-buffer archive)))
+      (delete-file archive))))
+
+(ert-deftest org-foresight-test-finishing-a-task-costs-no-keystroke ()
+  "Marking something done leaves the next key alone.
+
+`org-todo\\=' rewrites a heading by deleting it and putting it back, which is
+a deletion taking a heading with it and cannot be told from one at the moment
+it happens.  Left there, every state change would eat the keystroke after it
+and blame a page that is perfectly good.  The row is asked as well as the
+count, and this row still names its own entry."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-log-done 'time)
+        (org-foresight--shape-cache nil))
+    (org-foresight-test--with-agenda
+        (concat "* NEXT alpha task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+                "* NEXT beta task\nSCHEDULED: "
+                (org-foresight-test--stamp 0 "13:00" "14:00") "\n")
+      (unwind-protect
+          (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                     (lambda (&rest _) nil)))
+            (let ((org-agenda-sticky nil) (org-foresight-agenda--losses 0))
+              (org-foresight-test--agenda)
+              ;; beta is finished in the file
+              (with-current-buffer (find-file-noselect (car org-agenda-files))
+                (goto-char (point-min))
+                (re-search-forward "^\\* NEXT beta")
+                (org-todo "DONE")
+                (set-buffer-modified-p nil))
+              ;; the deletion was counted -- there is no telling it apart
+              (should (= 1 org-foresight-agenda--losses))
+              ;; but the keystroke on alpha is the person's
+              (with-current-buffer org-agenda-buffer-name
+                (goto-char (point-min))
+                (re-search-forward "alpha task")
+                (beginning-of-line)
+                (let ((this-command 'org-agenda-clock-in))
+                  (org-foresight-agenda--freshen)
+                  (should (eq this-command 'org-agenda-clock-in))))))
+        (dolist (buf (buffer-list))
+          (when (and (buffer-live-p buf)
+                     (with-current-buffer buf (derived-mode-p 'org-agenda-mode)))
+            (kill-buffer buf)))))))
+
+(ert-deftest org-foresight-test-a-rebuild-that-fails-is-said-once ()
+  "A page that cannot be rebuilt says so, and then lets the keyboard work.
+
+Asking again at every keystroke would put the same error in front of every
+one of them, which is worse than the staleness: nothing could be done at all,
+including pressing the redo key by hand."
+  (org-foresight-test--with-org "* NEXT alpha\n* NEXT beta\n"
+   (with-temp-buffer
+    (let ((org-foresight-agenda--losses 0)
+          (tried 0))
+      (org-foresight-test--lying-row (org-foresight-test--stranded-marker))
+      (org-foresight-agenda--stamp)
+      (setq org-foresight-agenda--losses (1+ org-foresight-agenda--losses))
+      (cl-letf (((symbol-function 'org-agenda-redo)
+                 (lambda (&rest _) (setq tried (1+ tried)) (error "no"))))
+        (let ((this-command 'org-agenda-clock-in))
+          (org-foresight-agenda--freshen))
+        (should (= 1 tried))
+        ;; the next keystroke is the person's again
+        (let ((this-command 'org-agenda-clock-in))
+          (org-foresight-agenda--freshen)
+          (should (eq this-command 'org-agenda-clock-in)))
+        (should (= 1 tried)))))))
+
+(ert-deftest org-foresight-test-the-cure-can-be-switched-off ()
+  "With `org-foresight-agenda-refresh-stale\\=' nil, nothing is taken over.
+The keystroke runs as typed and the page is left as it is, which is the
+setting for somebody who would rather press the redo key themselves."
+  (org-foresight-test--with-org "* NEXT alpha\n* NEXT beta\n"
+   (with-temp-buffer
+    (let ((org-foresight-agenda--losses 0)
+          (org-foresight-agenda-refresh-stale nil)
+          (tried 0))
+      (org-foresight-test--lying-row (org-foresight-test--stranded-marker))
+      (org-foresight-agenda--stamp)
+      (setq org-foresight-agenda--losses (1+ org-foresight-agenda--losses))
+      (cl-letf (((symbol-function 'org-agenda-redo)
+                 (lambda (&rest _) (setq tried (1+ tried)))))
+        (let ((this-command 'org-agenda-clock-in))
+          (org-foresight-agenda--freshen)
+          (should (eq this-command 'org-agenda-clock-in))))
+      (should (= 0 tried))))))
 
 (ert-deftest org-foresight-test-a-fresh-agenda-is-left-alone ()
   "With nothing deleted, a command in the agenda runs as it was typed."
   (with-temp-buffer
     (org-agenda-mode)
-    (let ((org-foresight-agenda--stale nil)
+    (let ((org-foresight-agenda--losses 0)
           (this-command 'org-agenda-clock-in))
+      (org-foresight-agenda--stamp)
       (org-foresight-agenda--freshen)
       (should (eq this-command 'org-agenda-clock-in)))
     ;; and the redo key is never dropped, or the cure could not be reached
-    (let ((org-foresight-agenda--stale t)
+    (let ((org-foresight-agenda--losses 0)
           (this-command 'org-agenda-redo))
-      (org-foresight-agenda--freshen)
-      (should (eq this-command 'org-agenda-redo))
-      (should org-foresight-agenda--stale))))
+      (org-foresight-agenda--stamp)
+      (let ((org-foresight-agenda--losses 1))
+        (org-foresight-agenda--freshen)
+        (should (eq this-command 'org-agenda-redo))
+        ;; and the page is still owed a rebuild afterwards
+        (should (/= org-foresight-agenda--drawn-at
+                    org-foresight-agenda--losses))))))
 
 (defun org-foresight-test--answer-afk (offset spans)
   "Return a stand-in for `org-foresight-observe--get-json\='.
