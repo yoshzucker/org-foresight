@@ -6934,6 +6934,78 @@ agenda and the cure answers to none of that setting."
             (goto-char (point-min))
             (should (re-search-forward "beta task" nil t))))))))
 
+(defmacro org-foresight-test--after-cutting (on cut &rest body)
+  "Put point on the row matching ON, cut the entry matching CUT, cure, run BODY."
+  (declare (indent 2))
+  `(let ((org-foresight-work '(("09:00" . "17:00")))
+         (org-foresight-workdays '(0 1 2 3 4 5 6))
+         (org-foresight--shape-cache nil))
+     (org-foresight-test--with-agenda
+         (concat "* NEXT alpha task\nSCHEDULED: "
+                 (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
+                 "* NEXT beta task\nSCHEDULED: "
+                 (org-foresight-test--stamp 0 "13:00" "14:00") "\n"
+                 "* NEXT gamma task\nSCHEDULED: "
+                 (org-foresight-test--stamp 0 "15:00" "16:00") "\n")
+       (unwind-protect
+           (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                      (lambda (&rest _) nil)))
+             (let ((org-agenda-sticky nil) (org-foresight-agenda--stale nil))
+               (org-foresight-test--agenda)
+               (with-current-buffer org-agenda-buffer-name
+                 (goto-char (point-min))
+                 (re-search-forward ,on)
+                 (beginning-of-line)
+                 (let ((keep (point))
+                       (doomed (save-excursion
+                                 (goto-char (point-min))
+                                 (re-search-forward ,cut)
+                                 (get-text-property (line-beginning-position)
+                                                    'org-hd-marker))))
+                   (org-foresight-test--cut-heading doomed ,cut)
+                   (goto-char keep))
+                 (let ((this-command 'org-agenda-clock-in))
+                   (org-foresight-agenda--freshen))
+                 ,@body)))
+         (dolist (buf (buffer-list))
+           (when (and (buffer-live-p buf)
+                      (with-current-buffer buf (derived-mode-p 'org-agenda-mode)))
+             (kill-buffer buf)))))))
+
+(ert-deftest org-foresight-test-the-cursor-comes-back-to-the-entry-it-was-on ()
+  "A rebuilt page puts the cursor back on the work it was on, not the line.
+
+Org restores the character position, and a page rebuilt after a deletion is
+shorter above the cursor, so the row underneath afterwards is not the row that
+was underneath before.  The next keystroke is aimed at whatever the cursor
+found -- which is the fault this whole mechanism exists to cure, arriving by
+the cure's own route.  A marker cannot be carried across the rebuild to say
+where to return: `org-agenda-redo\\=' frees every one the page was holding, so
+the entry is remembered as a place in a file."
+  (org-foresight-test--after-cutting "gamma task" "alpha task"
+    (should (equal "gamma task"
+                   (org-with-point-at (org-get-at-bol 'org-hd-marker)
+                     (org-get-heading t t t t))))
+    (should (string-match-p
+             "gamma task"
+             (buffer-substring-no-properties (line-beginning-position)
+                                             (line-end-position))))))
+
+(ert-deftest org-foresight-test-a-cursor-on-what-has-gone-lands-on-nothing ()
+  "When the entry under the cursor is the one that went, the cursor holds none.
+
+There is no honest row to return to.  Leaving the cursor where the position
+happens to fall would hand the next keystroke an entry the person never chose
+-- so it goes to the top of the page, which carries no entry at all and where
+a stray keystroke can do nothing."
+  (org-foresight-test--after-cutting "beta task" "beta task"
+    ;; The top, stated as the top: where the character position happens to
+    ;; fall is a matter of how many characters the deletion took with it, and
+    ;; a test that only asked whether that spot carried an entry would pass on
+    ;; a page where it happened not to.
+    (should (= (point) (point-min)))
+    (should-not (org-get-at-bol 'org-hd-marker))))
+
 (ert-deftest org-foresight-test-only-a-lost-heading-makes-an-agenda-stale ()
   "Only a deletion that takes a heading with it can strand a marker.
 

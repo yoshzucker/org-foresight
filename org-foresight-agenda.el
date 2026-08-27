@@ -1437,12 +1437,67 @@ deleted, and the page in front of you is the file as it now is."
                                        org-agenda-kill-all-agenda-buffers))))
     (setq org-foresight-agenda--stale nil)
     (condition-case err
-        (progn
+        (let ((was (org-foresight-agenda--entry-here)))
           (org-agenda-redo t)
           (setq this-command #'ignore)
-          (message "The agenda named work that has gone, and has been rebuilt"))
+          (if (and was (org-foresight-agenda--goto-entry was))
+              (message "The agenda named work that has gone, and has been rebuilt")
+            ;; Nowhere to return to, so the top, which carries no entry: a
+            ;; keystroke aimed at whatever the cursor found would be the fault
+            ;; over again by another route.
+            (goto-char (point-min))
+            (message
+             "The agenda named work that has gone; rebuilt, and this is the top")))
       (error
        (message "Could not rebuild the agenda: %s" (error-message-string err))))))
+
+(defun org-foresight-agenda--entry-here ()
+  "Return (FILE . POSITION) for the entry under point, or nil.
+
+A place rather than a marker.  A rebuild frees every marker the page was
+holding -- `org-agenda-reset-markers\=' empties them where they stand -- so a
+marker captured here would be dead by the time there was a page to look for
+it in.  The file is not being edited in between, so where the entry is does
+not move.
+
+A rebuild moves the ground: Org restores the character position, and rows
+above the cursor may have gone with the entry that was deleted, so the line
+under the cursor afterwards is not the line that was under it before.  A
+keystroke aimed at the row a person is looking at would then land on a row
+they have never seen -- which is the fault being cured, arriving by another
+route.
+
+Disagreement is the answer here rather than a problem: a row whose marker
+names something else is a row whose own entry is the one that has gone, and
+that marker points at whatever took its place.  Returning to it would be
+returning to the wrong work."
+  (when-let* ((marker (org-get-at-bol 'org-hd-marker))
+              (buffer (marker-buffer marker))
+              (file (buffer-file-name buffer))
+              (title (ignore-errors
+                       (org-with-point-at marker (org-get-heading t t t t)))))
+    (and (not (string-empty-p title))
+         (string-search title (buffer-substring-no-properties
+                               (line-beginning-position) (line-end-position)))
+         (cons file (marker-position marker)))))
+
+(defun org-foresight-agenda--goto-entry (place)
+  "Put point on the row for PLACE, a (FILE . POSITION), and say whether it is.
+Nothing is assumed about where the row went: an entry can move up or down the
+page between one drawing and the next, and can be off it altogether."
+  (let (found)
+    (save-excursion
+      (goto-char (point-min))
+      (while (and (not found) (not (eobp)))
+        (when-let* ((marker (get-text-property (line-beginning-position)
+                                               'org-hd-marker))
+                    (buffer (marker-buffer marker)))
+          (when (and (equal (buffer-file-name buffer) (car place))
+                     (eql (marker-position marker) (cdr place)))
+            (setq found (line-beginning-position))))
+        (forward-line 1)))
+    (when found (goto-char found))
+    found))
 
 (defun org-foresight-agenda--watch-buffer ()
   "Watch this Org buffer for deletions that would strand an agenda marker."
