@@ -879,11 +879,19 @@ there at six o'clock.
 
 The list offers what today already knows about — anything clocked today, the
 day's own entries, and the journeys it derived, so /the drive to the office/ is
-an answer rather than something to type. A journey files nowhere: there is no
-entry behind one, and the marker the row would otherwise carry belongs to the
-meeting it is /for/, which is not where the road happened. It becomes an entry
-of its own under today, and it is never asked whether it arrived unplanned —
-the calendar is where it arrived.
+an answer rather than something to type. A journey has nowhere to file /onto/:
+there is no entry behind one, and the marker the row would otherwise carry
+belongs to the meeting it is /for/, which is not where the road happened. It
+is never asked whether it arrived unplanned, either — the calendar is where it
+arrived.
+
+Naming one writes it down /as a journey/, booked to its place, which is the
+same thing =org-foresight-book-travel= does from the row. That matters more
+than where the text lands: the derivation defers to a journey somebody wrote
+down, so the day stops holding time for a second leg to the same door. Filed
+as an ordinary entry the hour would be recorded and the reservation left
+standing — the hour counted twice, the free time short by it, and what would
+fit answered against a road already travelled.
 
 But the list does not require an answer from it. A stretch
 that went on something nobody had written down is the commonest kind there

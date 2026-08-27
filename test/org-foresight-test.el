@@ -6740,6 +6740,54 @@ hour and a half of itself."
         ;; while the meeting itself is still somewhere to file
         (should (markerp (cdr (assoc "Standup" known))))))))
 
+(ert-deftest org-foresight-test-a-journey-named-at-the-prompt-is-booked ()
+  "Naming the drive writes a journey, so the day stops reserving another one.
+
+Filed as an ordinary entry the hour would be recorded and the derivation left
+alone, and the day would go on holding time for a trip already made: the hour
+counted twice, the free time short by it, and what would fit answered against
+a road already travelled.  The travel property is what the derivation defers
+to, so it is the thing to check."
+  (let ((org-foresight-work '(("09:00" . "17:00")))
+        (org-foresight-workdays '(0 1 2 3 4 5 6))
+        (org-foresight-clock-fill-kinds nil)
+        (org-foresight-clock-fill-minimum 20)
+        (org-foresight--shape-cache nil)
+        (org-foresight-places '((office . "office")))
+        (org-foresight-travel-matrix '(((home . office) . 30)
+                                       ((office . home) . 30))))
+    (org-foresight-test--with-task-file
+        (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:LOCATION: office\n:END:\n"
+                (org-foresight-test--stamp 0 "13:00" "14:00") "\n"
+                "* ONGO the work\n:LOGBOOK:\nCLOCK: "
+                (format-time-string "[%Y-%m-%d %a 09:00]" (org-foresight--day-start 0))
+                "--"
+                (format-time-string "[%Y-%m-%d %a 10:00]" (org-foresight--day-start 0))
+                " =>  1:00\n:END:\n")
+      (let ((org-foresight-now (time-add (org-foresight--day-start 0) (* 3600 12))))
+        ;; the journey is derived to begin with, and offered by name
+        (should (assoc "→ office" (org-foresight--clock-fill-journeys)))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (if (string-prefix-p "Unrecorded" prompt)
+                         (car (car collection))
+                       "→ office")))
+                  ((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+          (org-foresight-clock-fill))
+        (let ((text (org-foresight-test--task-file-text)))
+          ;; written as a journey to somewhere, and clocked
+          (should (string-match-p "→ office" text))
+          (should (string-match-p
+                   (concat ":" (regexp-quote org-foresight-travel-property)
+                           ": *office")
+                   text))
+          (should (string-match-p "CLOCK: .*→\\|→[^*]*CLOCK: " text)))
+        ;; and the day no longer derives one: what is on the page is written
+        (setq org-foresight--shape-cache nil)
+        (should-not (assoc "→ office" (org-foresight--clock-fill-journeys)))))))
+
 (ert-deftest org-foresight-test-only-a-name-from-nowhere-can-have-arrived ()
   "A journey the calendar derived is not an interruption.
 
