@@ -1389,187 +1389,114 @@ Set to nil to leave a stale agenda alone, and press the redo key by hand."
   :type 'boolean
   :group 'org-foresight)
 
-(defvar org-foresight-agenda--losses 0
-  "How many headings have been deleted since this session began.
+(defconst org-foresight-agenda--cures-allowed 3
+  "How many rebuilds in a row a page may buy before it is left alone.
 
-A count, not a flag.  A flag has to be cleared, and the only thing that can
-clear it is a rebuild -- but `org-agenda-redo\=' rebuilds the views in one
-buffer and no other, so the first page cured would quietly declare every
-other page fresh.  A count is never cleared: each page remembers the number
-it was drawn at and can answer for itself.
+The test below is exact about the fault and could still be wrong about a
+row -- a heading Org draws differently from how it stores it would read as
+one that has gone.  Were that to happen to every row, every keystroke would
+buy a rebuild and the page could never be used.  Three, and then the page is
+handed back with a word about it: a page that cannot be trusted is better
+than one that cannot be used, and the message says which this is.")
 
-Global on purpose.  A heading that leaves one file can appear in any agenda,
-and working out which ones would cost more than the rebuild does.")
+(defvar-local org-foresight-agenda--cures 0
+  "Rebuilds this page has bought without a row that answered for itself.
+Reset by any row that carries an entry and names it.")
 
-(defvar-local org-foresight-agenda--drawn-at nil
-  "What `org-foresight-agenda--losses\=' was when this agenda was drawn.
-Nil in a buffer no drawing has stamped, which is the only state in which
-nothing is known and so nothing is claimed.")
+;; Permanent, because a rebuild re-enters `org-agenda-mode\=' and a major mode
+;; kills the buffer's local variables.  Without this the count would be wiped
+;; by the very thing it counts, and a page whose rows never mend would buy a
+;; rebuild for every keystroke forever.
+(put 'org-foresight-agenda--cures 'permanent-local t)
 
-(defun org-foresight-agenda--stamp ()
-  "Record which state of the files this agenda was drawn against.
-On `org-agenda-finalize-hook\=', which runs in the agenda buffer at the end
-of every drawing there is -- including the rebuild below, so nothing has to
-clear anything by hand."
-  (when (derived-mode-p 'org-agenda-mode)
-    (setq org-foresight-agenda--drawn-at org-foresight-agenda--losses)))
+(defun org-foresight-agenda--row-state ()
+  "Return what the row under point claims: `lies\=', `agrees\=' or `no-entry\='.
 
-(add-hook 'org-agenda-finalize-hook #'org-foresight-agenda--stamp)
-
-(defun org-foresight-agenda--note-deletion (beg end)
-  "Note that the text about to go between BEG and END may strand a marker.
-
-On `before-change-functions\=', which is the only place the question can be
-answered: after the deletion the text is gone, and the marker that was in it
-is already somewhere else.
-
-Only a deletion that takes a heading with it can strand anything.  Typing in
-a heading, cycling its keyword, moving its date, editing the body underneath
--- none of these move a marker off the heading it is on, and none of them
-sets this.  So the ordinary cost of the whole mechanism is one bounded
-regexp search per change, and the extraordinary cost is one rebuild."
-  (when (and (/= beg end)
-             (save-excursion
-               (goto-char beg)
-               (re-search-forward "^\\*+ " end t)))
-    (setq org-foresight-agenda--losses (1+ org-foresight-agenda--losses))))
-
-(defun org-foresight-agenda--freshen ()
-  "Rebuild this agenda, before a command acts on a row that may have gone.
-
-On `pre-command-hook\=' in agenda buffers, which is the moment that matters:
-a row is only dangerous when something is about to be done to it, and by
-waiting until then the rebuild costs nothing on a day when nothing is
-deleted.  There is no window either -- the check is in front of the command,
-not on a clock that might not have run yet.
-
-The command is dropped rather than run.  What was under the cursor may be
-what has just gone, and continuing would act on whatever took its place --
-which is the fault being cured.  One keystroke, once, after a heading is
-deleted, and the page in front of you is the file as it now is."
-  (when (and org-foresight-agenda-refresh-stale
-             org-foresight-agenda--drawn-at
-             (/= org-foresight-agenda--drawn-at org-foresight-agenda--losses)
-             (derived-mode-p 'org-agenda-mode)
-             ;; And this row is one of the ones that went wrong.  A deletion
-             ;; says the page may be stale; it does not say this line is.
-             ;; `org-todo\=' rewrites a heading by deleting it and putting it
-             ;; back, which the count cannot tell from a heading leaving, so
-             ;; without this every state change would eat the keystroke after
-             ;; it.  Nothing is given up by waiting: the page stays counted as
-             ;; stale until a rebuild stamps it, so a row that has gone wrong
-             ;; is still caught the moment anything is aimed at it.
-             (not (org-foresight-agenda--row-names-its-entry-p))
-             ;; A redo is the cure; asking for one that is already happening
-             ;; would be a loop.  Leaving is always allowed.
-             (not (memq this-command '(org-agenda-redo org-agenda-redo-all
-                                       org-agenda-quit org-agenda-exit
-                                       org-agenda-kill-all-agenda-buffers))))
-    (condition-case err
-        (let ((was (org-foresight-agenda--entry-here)))
-          (org-agenda-redo t)
-          (setq this-command #'ignore)
-          (if (and was (org-foresight-agenda--goto-entry was))
-              (message "The agenda named work that has gone, and has been rebuilt")
-            ;; Nowhere to return to, so the top, which carries no entry: a
-            ;; keystroke aimed at whatever the cursor found would be the fault
-            ;; over again by another route.
-            (goto-char (point-min))
-            (message
-             "The agenda named work that has gone; rebuilt, and this is the top")))
-      (error
-       ;; Stamped even so.  A page that cannot be rebuilt is still a page that
-       ;; should not be trusted, but asking again at every keystroke would put
-       ;; the error in front of every one of them and leave nothing usable.
-       ;; Said once, and the redo key is there.
-       (org-foresight-agenda--stamp)
-       (message "Could not rebuild the agenda: %s" (error-message-string err))))))
-
-(defun org-foresight-agenda--row-names-its-entry-p ()
-  "Return non-nil when the row under point names the entry it points at.
-
-The exact question, asked of the one row a command can act on.  A row
-carrying no marker answers yes -- an injected journey, a boundary, a line of
-the report: none of them claims an entry, so none of them can be claiming the
-wrong one.
+The fault, asked about exactly, of the one row a command can act on.  A row
+carrying no marker claims nothing -- an injected journey, a boundary, a line
+of the report -- so it cannot be claiming the wrong thing, and it says
+nothing either way about whether the page is good.
 
 Links are resolved before comparing.  Org draws `[[url][a name]]\=' as /a
 name/ and stores it whole, and a row read literally against the heading it
 came from would say every such entry had gone."
   (let ((marker (org-get-at-bol 'org-hd-marker)))
-    (or (null marker)
-        (let ((title (ignore-errors
-                       (org-with-point-at marker
-                         (org-link-display-format
-                          (org-get-heading t t t t))))))
-          (and title
-               (not (string-empty-p title))
-               (string-search title
-                              (buffer-substring-no-properties
-                               (line-beginning-position) (line-end-position)))
-               t)))))
+    (if (null marker)
+        'no-entry
+      (let ((title (ignore-errors
+                     (org-with-point-at marker
+                       (org-link-display-format (org-get-heading t t t t))))))
+        (if (and title
+                 (not (string-empty-p title))
+                 (string-search title
+                                (buffer-substring-no-properties
+                                 (line-beginning-position)
+                                 (line-end-position))))
+            'agrees
+          'lies)))))
 
-(defun org-foresight-agenda--entry-here ()
-  "Return (FILE . POSITION) for the entry under point, or nil.
+(defun org-foresight-agenda--freshen ()
+  "Rebuild this agenda before a command acts on a row that has gone.
 
-A place rather than a marker.  A rebuild frees every marker the page was
-holding -- `org-agenda-reset-markers\=' empties them where they stand -- so a
-marker captured here would be dead by the time there was a page to look for
-it in.  The file is not being edited in between, so where the entry is does
-not move.
+On `org-agenda-finalize-hook\=' -- no: on `pre-command-hook\=' in agenda
+buffers, which is the moment that matters.  A row is only dangerous when
+something is about to be done to it, and asking then costs nothing on a page
+where nothing has gone.  There is no window either: the check is in front of
+the command, not on a clock that might not have fired yet.
 
-A rebuild moves the ground: Org restores the character position, and rows
-above the cursor may have gone with the entry that was deleted, so the line
-under the cursor afterwards is not the line that was under it before.  A
-keystroke aimed at the row a person is looking at would then land on a row
-they have never seen -- which is the fault being cured, arriving by another
-route.
+The question asked is the fault itself rather than anything that might cause
+it -- does this row still name the entry its marker points at -- so a marker
+stranded by something nobody has thought of is caught the same as one
+stranded by a deletion.
 
-Disagreement is the answer here rather than a problem: a row whose marker
-names something else is a row whose own entry is the one that has gone, and
-that marker points at whatever took its place.  Returning to it would be
-returning to the wrong work."
-  (when-let* ((marker (org-get-at-bol 'org-hd-marker))
-              (buffer (marker-buffer marker))
-              (file (buffer-file-name buffer)))
-    (and (org-foresight-agenda--row-names-its-entry-p)
-         (cons file (marker-position marker)))))
-
-(defun org-foresight-agenda--goto-entry (place)
-  "Put point on the row for PLACE, a (FILE . POSITION), and say whether it is.
-Nothing is assumed about where the row went: an entry can move up or down the
-page between one drawing and the next, and can be off it altogether."
-  (let (found)
-    (save-excursion
-      (goto-char (point-min))
-      (while (and (not found) (not (eobp)))
-        (when-let* ((marker (get-text-property (line-beginning-position)
-                                               'org-hd-marker))
-                    (buffer (marker-buffer marker)))
-          (when (and (equal (buffer-file-name buffer) (car place))
-                     (eql (marker-position marker) (cdr place)))
-            (setq found (line-beginning-position))))
-        (forward-line 1)))
-    (when found (goto-char found))
-    found))
-
-(defun org-foresight-agenda--watch-buffer ()
-  "Watch this Org buffer for deletions that would strand an agenda marker."
-  (add-hook 'before-change-functions #'org-foresight-agenda--note-deletion nil t))
+The command is dropped rather than run.  What was under the cursor is what
+has gone, and continuing would act on whatever took its place.  The cursor
+goes to the top of the rebuilt page, which carries no entry: there is no
+honest row to return to, and leaving it where the position happens to fall
+would hand the next keystroke an entry nobody chose."
+  (when (and org-foresight-agenda-refresh-stale
+             (derived-mode-p 'org-agenda-mode)
+             ;; A redo is the cure; asking for one that is already happening
+             ;; would be a loop.  Leaving is always allowed.
+             (not (memq this-command '(org-agenda-redo org-agenda-redo-all
+                                       org-agenda-quit org-agenda-exit
+                                       org-agenda-kill-all-agenda-buffers))))
+    (pcase (org-foresight-agenda--row-state)
+      ('agrees (setq org-foresight-agenda--cures 0))
+      ('no-entry nil)
+      ('lies
+       (when (< org-foresight-agenda--cures org-foresight-agenda--cures-allowed)
+         (setq org-foresight-agenda--cures (1+ org-foresight-agenda--cures))
+         (condition-case err
+             (progn
+               (org-agenda-redo t)
+               (goto-char (point-min))
+               (setq this-command #'ignore)
+               (message
+                (if (>= org-foresight-agenda--cures
+                        org-foresight-agenda--cures-allowed)
+                    "Rebuilt again, and its rows still disagree; left alone now"
+                  "The agenda named work that has gone, and has been rebuilt")))
+           (error
+            ;; Asking again at every keystroke would put the same error in
+            ;; front of every one of them and leave nothing usable.
+            (setq org-foresight-agenda--cures
+                  org-foresight-agenda--cures-allowed)
+            (message "Could not rebuild the agenda: %s"
+                     (error-message-string err)))))))))
 
 (defun org-foresight-agenda--watch-agenda ()
   "Have this agenda make itself good again before it is acted on."
   (add-hook 'pre-command-hook #'org-foresight-agenda--freshen nil t))
 
-(add-hook 'org-mode-hook #'org-foresight-agenda--watch-buffer)
 (add-hook 'org-agenda-mode-hook #'org-foresight-agenda--watch-agenda)
 
-;; Buffers already open when this file loads never ran the hooks above, and on
+;; Agendas already open when this file loads never ran the hook above, and on
 ;; a session that has been going a while those are most of them.
 (dolist (buf (buffer-list))
   (with-current-buffer buf
-    (cond ((derived-mode-p 'org-mode) (org-foresight-agenda--watch-buffer))
-          ((derived-mode-p 'org-agenda-mode) (org-foresight-agenda--watch-agenda)))))
+    (when (derived-mode-p 'org-agenda-mode)
+      (org-foresight-agenda--watch-agenda))))
 
 (provide 'org-foresight-agenda)
 
