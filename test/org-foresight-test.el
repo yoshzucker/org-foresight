@@ -5110,10 +5110,13 @@ assertion about \"tomorrow\" survive being run tomorrow."
            (org-agenda-log-mode-items '(closed state))
            (org-agenda-start-with-clockreport-mode nil)
            (org-agenda-start-with-entry-text-mode nil)
-           ;; Both, in the order a real session ends up with: the package
-           ;; adds its own when it loads, and a config appends the report.
+           ;; In the order a real session ends up with: the package adds its
+           ;; own when it loads, a config appends the report, and the naming of
+           ;; rows comes last -- rows the report has not drawn yet cannot be
+           ;; named, which is how they came to be the unwatched ones.
            (org-agenda-finalize-hook '(org-foresight-agenda--draw-spine
-                                       org-foresight-report-render))
+                                       org-foresight-report-render
+                                       org-foresight-agenda--name-rows))
            (org-foresight-report-style 'daily)
            (org-foresight-awake '("07:00" . "22:00"))
            (org-foresight-work '(("09:00" . "12:00") ("13:00" . "17:30")))
@@ -7560,28 +7563,36 @@ row built from it would say one thing and act on another."
       marker)))
 
 (defun org-foresight-test--lying-row (marker)
-  "Make this buffer an agenda whose one row says alpha and points at MARKER."
-  (org-agenda-mode)
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (insert (propertize "  10:00 alpha\n" 'org-hd-marker marker)))
-  (goto-char (point-min)))
-
-(defun org-foresight-test--row-saying (text marker)
-  "Make this buffer an agenda whose one row is TEXT and points at MARKER."
+  "Make this buffer an agenda whose one row was drawn from alpha, now gone.
+Named `alpha\=' the way a real drawing names its rows -- at the moment the
+page was made, when the row and the entry still agreed."
   (unless (derived-mode-p 'org-agenda-mode) (org-agenda-mode))
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (insert (propertize (concat text "\n") 'org-hd-marker marker)))
+    (insert (propertize "  10:00 alpha\n"
+                        'org-hd-marker marker
+                        'org-foresight-name "alpha")))
   (goto-char (point-min)))
 
-(ert-deftest org-foresight-test-a-shortened-row-still-owns-its-entry ()
-  "A row shows as much of a heading as its columns allow, and no more.
+(defun org-foresight-test--row-saying (text marker name)
+  "Make this buffer an agenda showing TEXT, drawn from NAME, pointing at MARKER."
+  (unless (derived-mode-p 'org-agenda-mode) (org-agenda-mode))
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (propertize (concat text "\n")
+                        'org-hd-marker marker
+                        'org-foresight-name name)))
+  (goto-char (point-min)))
 
-Required to carry the whole name, every long heading would read as one that
-had gone: the page would rebuild under the cursor and put it at the top, on
-the way down a list.  Which is what happened -- three times, and then the
-bound stopped it, which is the only reason it was survivable."
+(ert-deftest org-foresight-test-what-a-row-shows-does-not-decide-it ()
+  "The answer comes from the heading twice, never from the screen once.
+
+A row shows what will fit: a title cut to a column, a link drawn as its
+description, a keyword and a priority that are not part of the name.  Read
+against what is stored, every one of those needs an allowance, each of them a
+guess -- and the guesses were wrong often enough to rebuild a healthy page
+under the cursor and put it at the top.  What the row displays is not
+consulted at all now."
   (org-foresight-test--with-org
       "* NEXT Prepare the quarterly board pack\n* NEXT Something else\n"
     (let ((marker (with-current-buffer
@@ -7589,25 +7600,33 @@ bound stopped it, which is the only reason it was survivable."
                     (goto-char (point-min))
                     (re-search-forward "^\\* NEXT Prepare")
                     (beginning-of-line)
-                    (point-marker))))
+                    (point-marker)))
+          (name "Prepare the quarterly board pack"))
       (with-temp-buffer
-        ;; cut to a column, the way every section here cuts a long title
-        (org-foresight-test--row-saying
-         "  reporting   Prepare the quarterly board   → Draft the summary" marker)
+        ;; cut to a column
+        (org-foresight-test--row-saying "  reporting  Prepare the quarterly bo"
+                                        marker name)
         (should (eq 'agrees (org-foresight-agenda--row-state)))
-        ;; cut with the ellipsis Org and the report both use
-        (org-foresight-test--row-saying "↳ Prepare the quarterly… +2 by Mon" marker)
+        ;; cut with an ellipsis
+        (org-foresight-test--row-saying "↳ Prepare the quarterly… +2 by Mon"
+                                        marker name)
         (should (eq 'agrees (org-foresight-agenda--row-state)))
-        ;; and a row about something else is still a row about something else
-        (org-foresight-test--row-saying "  reporting   Something else" marker)
+        ;; showing nothing of the name at all
+        (org-foresight-test--row-saying "  reporting  ⨯" marker name)
+        (should (eq 'agrees (org-foresight-agenda--row-state)))
+        ;; and drawn from something else, however much the row looks right
+        (org-foresight-test--row-saying "  reporting  Prepare the quarterly bo"
+                                        marker "Something else")
         (should (eq 'lies (org-foresight-agenda--row-state)))))))
 
-(ert-deftest org-foresight-test-no-row-of-a-drawn-page-reads-as-lost ()
-  "Nothing the package itself draws may look like work that has gone.
+(ert-deftest org-foresight-test-every-row-of-a-drawn-page-answers-for-itself ()
+  "Every row carrying an entry, on both pages, agrees with it.
 
-Every section here cuts titles to keep its columns, and a cut that the row
-test cannot see past turns a healthy page into one that rebuilds under the
-cursor.  This walks a real page of both kinds and asks every row."
+Not merely \"does not lie\": a row nothing named cannot lie either, and that
+is how a section comes to be unwatched without anybody noticing.  Both ways
+of failing have happened here -- the naming ran before the report had drawn
+its blocks, and the board did not name its rows at all -- and both left a page
+that looked perfectly well."
   (org-foresight-test--with-demo
     (cl-letf (((symbol-function 'org-foresight-observe--get-json)
                (lambda (&rest _) nil)))
@@ -7616,18 +7635,21 @@ cursor.  This walks a real page of both kinds and asks every row."
         (unwind-protect
             (progn
               (org-agenda-list nil nil 'day)
-              (with-current-buffer org-agenda-buffer-name
-                (goto-char (point-min))
-                (while (not (eobp))
-                  (should-not (eq 'lies (org-foresight-agenda--row-state)))
-                  (forward-line 1)))
               (setq org-foresight--signals-cache nil)
               (org-foresight-board)
-              (with-current-buffer "*Org Foresight Board*"
-                (goto-char (point-min))
-                (while (not (eobp))
-                  (should-not (eq 'lies (org-foresight-agenda--row-state)))
-                  (forward-line 1))))
+              (dolist (name (list org-agenda-buffer-name
+                                  "*Org Foresight Board*"))
+                (with-current-buffer name
+                  (goto-char (point-min))
+                  (let ((rows 0))
+                    (while (not (eobp))
+                      (when (org-get-at-bol 'org-hd-marker)
+                        (setq rows (1+ rows))
+                        (should (eq 'agrees
+                                    (org-foresight-agenda--row-state))))
+                      (forward-line 1))
+                    ;; and there were rows to ask about
+                    (should (> rows 10))))))
           (dolist (name (list org-agenda-buffer-name "*Org Foresight Board*"))
             (when (get-buffer name) (kill-buffer name))))))))
 
