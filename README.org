@@ -1099,13 +1099,23 @@ stranding a marker that nobody had thought of counted as nothing at all. The
 question above is exact, costs one heading read per command in an agenda, and
 needs no list of causes.
 
-Links are resolved before comparing, and only the first several characters are
-looked for. Org draws =[[url][a name]]= as /a name/ and stores it whole, and a
-row shows as much of a heading as its columns allow — so a row read literally,
-in full, against its own heading would say every long or linked entry had gone,
-rebuild the page, and put the cursor at the top of it. What that misses is two
-headings alike for their first several characters and different after; what the
-stricter test missed was every page it was asked about.
+Nothing about how the row is /displayed/ comes into it. When a page is drawn,
+every row that carries an entry is marked with the heading it was drawn from —
+the page and the file say the same thing at that moment and can only part
+afterwards — so the question later is one heading against another heading, read
+the same way at two times.
+
+That is worth saying because the other way was tried. Comparing what a row
+/shows/ against what the file /stores/ needs an allowance for every way a row
+is shortened or rewritten to fit: a title cut to a column, a link drawn as its
+description, a keyword and a priority that are not part of the name. Each
+allowance is a guess, the guesses were wrong on ordinary pages, and being wrong
+here means rebuilding a healthy page under the cursor and putting it at the top
+of itself. Marking the row costs a third of a millisecond a draw and needs no
+guesses at all.
+
+Renaming a heading while a page is open therefore counts. It should: the row is
+showing a name the entry no longer has.
 
 Not on a timer, either: a clock that has not fired yet leaves a window in which
 the wrong entry can be acted on, and a clock that fires on a quiet day is work
