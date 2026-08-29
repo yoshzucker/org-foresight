@@ -233,6 +233,10 @@ the three separate hand-rolled scans this replaces.  Return a plist:
                 to the agenda's commands; INTERVALS are the segments
                 themselves, so the entry can be cut against the working hours;
                 SURGE says the work arrived rather than was planned
+:rows-byday     DAYS-length vector of (CATEGORY . MINUTES) alists, index 0 =
+                oldest.  The same minutes as :byday, kept apart by category, so
+                a week can be asked whether an area was every day or one of
+                them -- which a week's total cannot answer
 :intervals-byday  DAYS-length vector of (START . END) lists, index 0 = oldest,
                   normalized; a segment is filed under the day it starts in,
                   matching how :byday attributes minutes.
@@ -247,6 +251,7 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
          (table (make-hash-table :test 'equal))
          (today-table (make-hash-table :test 'equal))
          (byday (make-vector days 0))
+         (rows-byday (make-vector days nil))
          (intervals-byday (make-vector days nil))
          (total 0) (today-total 0) (today-segments 0)
          ;; Per-entry totals for today, keyed on the heading itself so several
@@ -280,6 +285,17 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                  (setq total (+ total dur))
                  (puthash cat (+ dur (gethash cat table 0)) table)
                  (aset byday idx (+ dur (aref byday idx)))
+                 ;; The same minutes as `byday', kept apart by category.  A
+                 ;; week's total for an area says how much; a week's days say
+                 ;; whether it was every day or one of them, and those are
+                 ;; different facts about the same hours.  Charged from the
+                 ;; same `idx' as `byday', so the two can never disagree
+                 ;; about which day a segment belongs to.
+                 (let ((cell (assoc cat (aref rows-byday idx))))
+                   (if cell
+                       (setcdr cell (+ dur (cdr cell)))
+                     (aset rows-byday idx
+                           (cons (cons cat dur) (aref rows-byday idx)))))
                  (push (cons cs ce) (aref intervals-byday idx))
                  ;; The portion of this segment (if any) inside today.
                  (when (time-less-p today0 ce)
@@ -317,6 +333,7 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
             (org-foresight--intervals-normalize
              (nreverse today-private-intervals))
             :today-tasks (seq-sort-by (lambda (e) (plist-get e :minutes)) #'> tasks)
+            :rows-byday rows-byday
             :intervals-byday intervals-byday))))
 
 ;;;; Project scan
@@ -2772,6 +2789,20 @@ read."
 
 (defcustom org-foresight-bias-window 90
   "How many days back `org-foresight-learn-bias' looks for finished work."
+  :type 'integer
+  :group 'org-foresight)
+
+(defcustom org-foresight-review-window 35
+  "How many days the weekly review compares the last seven against.
+
+This week and the four before it, by default.  The week itself is the seven
+days at the end; what is left is the baseline an area is measured against, so
+`vs 4w\=' answers \"more than I usually spend\" rather than \"more than
+nothing\".
+
+Long enough that one unusual week does not become the standard, short enough
+that a change of role or of season is not still being averaged in months
+later."
   :type 'integer
   :group 'org-foresight)
 
