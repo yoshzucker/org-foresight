@@ -36,6 +36,11 @@
 
 (require 'org-foresight-core)
 (require 'org-foresight-report)
+;; The board is a page of rows carrying entries, which is what
+;; org-foresight-agenda.el is about; it names its own rows the way a drawn
+;; agenda names its own.  Not circular: that file knows about core and the
+;; report, and nothing about this one.
+(require 'org-foresight-agenda)
 (require 'org-agenda)
 (require 'org-datetree)
 (require 'org-id)
@@ -1209,6 +1214,10 @@ nothing but drop it."
                 "\n\n"
                 (org-foresight-report-signals signals)))
         (put-text-property (point-min) (point-max) 'org-agenda-type 'agenda)
+        ;; The board is not drawn through `org-agenda-finalize-hook\=', so it
+        ;; names its own rows.  Without this its fifty-odd rows would be the
+        ;; ones nothing was watching.
+        (org-foresight-agenda--name-rows)
         (goto-char (point-min))
         (setq buffer-read-only t)))
     (pop-to-buffer buffer)))

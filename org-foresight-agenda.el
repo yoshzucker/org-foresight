@@ -1409,53 +1409,60 @@ Reset by any row that carries an entry and names it.")
 ;; rebuild for every keystroke forever.
 (put 'org-foresight-agenda--cures 'permanent-local t)
 
-(defconst org-foresight-agenda--row-name-chars 16
-  "How much of a heading a row must show for the row to be owning it.
+(defun org-foresight-agenda--heading-at (marker)
+  "Return the heading MARKER points at, or nil."
+  (and (markerp marker) (marker-buffer marker)
+       (ignore-errors
+         (org-with-point-at marker (org-get-heading t t t t)))))
 
-Not the whole of it.  A row is a line of a page with columns to keep, and a
-long heading is cut to fit -- by this package in its own sections, by Org in
-the day's -- so a row required to carry its entry's name in full would call
-every long heading a heading that had gone, rebuild the page, and put the
-cursor at the top.  The narrowest column that carries a marker holds about
-twenty characters, which is what this is measured against.
+(defun org-foresight-agenda--name-rows ()
+  "Write on every row of this page which heading it was drawn from.
 
-Short enough to survive that, long enough that two headings do not share it
-by accident.  Two that do -- the same words for sixteen characters, differing
-after -- would hide a marker that slid from one to the other.  That is the
-case this misses, and it is the right one to miss: the alternative was a page
-that could not be walked down.")
+The page and the file say the same thing at the moment of drawing and can
+only part afterwards, so the moment of drawing is when to write it down.
+Asked later, the row and its entry can be compared without either of them
+being read off the screen.
+
+That is the whole reason this exists.  A row shows what will fit -- a title
+cut to a column, a link drawn as its description, a keyword and a priority
+that are not part of the name -- and comparing what is *shown* against what
+is *stored* meant a new allowance for every one of those, each of them a
+guess.  Two headings read the same way at two times compare exactly."
+  (when (derived-mode-p 'org-agenda-mode)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char (point-min))
+        (while (not (eobp))
+          (when-let* ((marker (org-get-at-bol 'org-hd-marker))
+                      (name (org-foresight-agenda--heading-at marker)))
+            (put-text-property (line-beginning-position)
+                               (min (point-max) (1+ (line-end-position)))
+                               'org-foresight-name name))
+          (forward-line 1))))))
+
+;; Last, and it has to be.  The report appends its own blocks on this hook,
+;; and rows that do not exist yet cannot be named -- which is how the sections
+;; this package draws came to be the only ones without the protection.  Depth
+;; 95 sits after an ordinary append, which is depth 90.
+(add-hook 'org-agenda-finalize-hook #'org-foresight-agenda--name-rows 95)
 
 (defun org-foresight-agenda--row-state ()
   "Return what the row under point claims: `lies\=', `agrees\=' or `no-entry\='.
 
-The fault, asked about exactly, of the one row a command can act on.  A row
-carrying no marker claims nothing -- an injected journey, a boundary, a line
-of the report -- so it cannot be claiming the wrong thing, and it says
-nothing either way about whether the page is good.
+The fault, asked of the one row a command can act on: is the entry this row
+was drawn from still the entry its marker points at?  Both sides are read the
+same way at two different times, so nothing about how the row is *displayed*
+comes into it.
 
-Links are resolved before comparing.  Org draws `[[url][a name]]\=' as /a
-name/ and stores it whole, and a row read literally against the heading it
-came from would say every such entry had gone.
-
-Compared by its first `org-foresight-agenda--row-name-chars\=' characters,
-for the reason written there: a row shows as much of a heading as its columns
-allow, and that is often not all of it."
-  (let ((marker (org-get-at-bol 'org-hd-marker)))
-    (if (null marker)
-        'no-entry
-      (let ((title (ignore-errors
-                     (org-with-point-at marker
-                       (org-link-display-format (org-get-heading t t t t))))))
-        (if (and title
-                 (not (string-empty-p title))
-                 (string-search
-                  (substring title 0 (min (length title)
-                                          org-foresight-agenda--row-name-chars))
-                  (buffer-substring-no-properties
-                   (line-beginning-position)
-                   (line-end-position))))
-            'agrees
-          'lies)))))
+A row carrying no marker claims nothing -- an injected journey, a boundary, a
+line of the report -- and neither does one nothing has named, which is any
+row drawn before this was asked.  Neither can be claiming the wrong thing."
+  (let ((marker (org-get-at-bol 'org-hd-marker))
+        (name (org-get-at-bol 'org-foresight-name)))
+    (cond
+     ((or (null marker) (null name)) 'no-entry)
+     ((equal name (org-foresight-agenda--heading-at marker)) 'agrees)
+     (t 'lies))))
 
 (defun org-foresight-agenda--freshen ()
   "Rebuild this agenda before a command acts on a row that has gone.
