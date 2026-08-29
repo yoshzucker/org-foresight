@@ -7567,6 +7567,70 @@ row built from it would say one thing and act on another."
     (insert (propertize "  10:00 alpha\n" 'org-hd-marker marker)))
   (goto-char (point-min)))
 
+(defun org-foresight-test--row-saying (text marker)
+  "Make this buffer an agenda whose one row is TEXT and points at MARKER."
+  (unless (derived-mode-p 'org-agenda-mode) (org-agenda-mode))
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (propertize (concat text "\n") 'org-hd-marker marker)))
+  (goto-char (point-min)))
+
+(ert-deftest org-foresight-test-a-shortened-row-still-owns-its-entry ()
+  "A row shows as much of a heading as its columns allow, and no more.
+
+Required to carry the whole name, every long heading would read as one that
+had gone: the page would rebuild under the cursor and put it at the top, on
+the way down a list.  Which is what happened -- three times, and then the
+bound stopped it, which is the only reason it was survivable."
+  (org-foresight-test--with-org
+      "* NEXT Prepare the quarterly board pack\n* NEXT Something else\n"
+    (let ((marker (with-current-buffer
+                      (find-file-noselect (car org-agenda-files))
+                    (goto-char (point-min))
+                    (re-search-forward "^\\* NEXT Prepare")
+                    (beginning-of-line)
+                    (point-marker))))
+      (with-temp-buffer
+        ;; cut to a column, the way every section here cuts a long title
+        (org-foresight-test--row-saying
+         "  reporting   Prepare the quarterly board   → Draft the summary" marker)
+        (should (eq 'agrees (org-foresight-agenda--row-state)))
+        ;; cut with the ellipsis Org and the report both use
+        (org-foresight-test--row-saying "↳ Prepare the quarterly… +2 by Mon" marker)
+        (should (eq 'agrees (org-foresight-agenda--row-state)))
+        ;; and a row about something else is still a row about something else
+        (org-foresight-test--row-saying "  reporting   Something else" marker)
+        (should (eq 'lies (org-foresight-agenda--row-state)))))))
+
+(ert-deftest org-foresight-test-no-row-of-a-drawn-page-reads-as-lost ()
+  "Nothing the package itself draws may look like work that has gone.
+
+Every section here cuts titles to keep its columns, and a cut that the row
+test cannot see past turns a healthy page into one that rebuilds under the
+cursor.  This walks a real page of both kinds and asks every row."
+  (org-foresight-test--with-demo
+    (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+               (lambda (&rest _) nil)))
+      (let ((org-agenda-sticky nil)
+            (org-agenda-buffer-name "*org-foresight-test-rows*"))
+        (unwind-protect
+            (progn
+              (org-agenda-list nil nil 'day)
+              (with-current-buffer org-agenda-buffer-name
+                (goto-char (point-min))
+                (while (not (eobp))
+                  (should-not (eq 'lies (org-foresight-agenda--row-state)))
+                  (forward-line 1)))
+              (setq org-foresight--signals-cache nil)
+              (org-foresight-board)
+              (with-current-buffer "*Org Foresight Board*"
+                (goto-char (point-min))
+                (while (not (eobp))
+                  (should-not (eq 'lies (org-foresight-agenda--row-state)))
+                  (forward-line 1))))
+          (dolist (name (list org-agenda-buffer-name "*Org Foresight Board*"))
+            (when (get-buffer name) (kill-buffer name))))))))
+
 (ert-deftest org-foresight-test-a-rebuild-that-fails-is-said-once ()
   "A page that cannot be rebuilt says so, and then lets the keyboard work.
 

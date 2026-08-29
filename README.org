@@ -1099,9 +1099,13 @@ stranding a marker that nobody had thought of counted as nothing at all. The
 question above is exact, costs one heading read per command in an agenda, and
 needs no list of causes.
 
-Links are resolved before comparing. Org draws =[[url][a name]]= as /a name/
-and stores it whole, and a row read literally against its own heading would say
-every such entry had gone.
+Links are resolved before comparing, and only the first several characters are
+looked for. Org draws =[[url][a name]]= as /a name/ and stores it whole, and a
+row shows as much of a heading as its columns allow — so a row read literally,
+in full, against its own heading would say every long or linked entry had gone,
+rebuild the page, and put the cursor at the top of it. What that misses is two
+headings alike for their first several characters and different after; what the
+stricter test missed was every page it was asked about.
 
 Not on a timer, either: a clock that has not fired yet leaves a window in which
 the wrong entry can be acted on, and a clock that fires on a quiet day is work
