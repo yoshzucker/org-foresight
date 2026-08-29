@@ -1435,7 +1435,7 @@ the row stays one line and the name is still recoverable without leaving it."
     (propertize (truncate-string-to-width title width nil nil "…")
                 'help-echo title)))
 
-(defun org-foresight-report-landing (&optional landing)
+(defun org-foresight-report-landing (&optional landing scan)
   "Return the dated commitments, earliest first, as rows for the board.
 
 The list the one-line verdict in `Load\=' is a summary of.  That line names
@@ -1453,8 +1453,14 @@ A rule is drawn under the last commitment of any window that does not fit,
 carrying what is owed by then, what is free before then, and the difference.
 Under the ones that do fit there is nothing: a rule saying a date is
 comfortable is explaining a problem the reader does not have, and a board
-that says so on every line stops being read."
-  (let* ((landing (or landing (org-foresight-landing)))
+that says so on every line stops being read.
+
+SCAN is offered to the fallback below, and matters more than it looks.  A day
+with nothing dated has no landing at all, so a caller that has one to hand
+still arrives here with nil -- and without the survey the fallback walks
+every file again to be told the same nothing.  The cheapest page paid the
+most for it."
+  (let* ((landing (or landing (org-foresight-landing nil scan)))
          (entries (plist-get landing :deadlines))
          (sitting (org-foresight--longest-sitting)))
     (if (null entries)
