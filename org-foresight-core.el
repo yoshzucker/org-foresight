@@ -149,6 +149,26 @@ Returns a fresh, sorted, disjoint list; never mutates IVS."
 
 ;;;; Clock scan
 
+(defcustom org-foresight-parked-keywords nil
+  "TODO keywords meaning the work has been put down on purpose.
+
+Deciding not to do something now is a decision, and until there is a way to
+record it the only way to get a heading out of the undecided pile is to make
+it look like work -- after which it takes hours out of every day it is not
+being done on.  Deciding then costs more than not deciding, which is the
+wrong way round.
+
+Parked work occupies nothing: it is not committed, not promised, not counted
+against a deadline, and not owed by any project.  It is not gone either --
+whether it is still rightly parked is a question for the review, which is
+where it is asked.
+
+Read by the surveys the way `org-foresight-private-categories\=' is, and for
+the same reason: what counts as work has to mean the same thing to all of
+them."
+  :type '(repeat string)
+  :group 'org-foresight)
+
 (defcustom org-foresight-private-categories nil
   "CATEGORY values whose entries are private commitments, not work.
 
@@ -402,6 +422,11 @@ is whether any exists, not how many."
              (when (org-get-todo-state) (setq found t)))
            found))))
 
+(defun org-foresight--parked-p (todo)
+  "Non-nil when TODO says the work has been put down on purpose.
+See `org-foresight-parked-keywords\='."
+  (and todo (member todo org-foresight-parked-keywords) t))
+
 (defun org-foresight--project-record (&optional facts)
   "Return the record for the TODO heading at point, or nil if it has no keyword.
 
@@ -442,6 +467,7 @@ and the rest were being priced for nobody."
               :deadline (org-foresight--entry-deadline)
               :category cat
               :private (and (member cat org-foresight-private-categories) t)
+              :parked (org-foresight--parked-p todo)
               ;; Filled in as the walk goes past: a heading learns it is a
               ;; project from its children, never from itself.
               :todo-parent nil
@@ -568,11 +594,13 @@ what still has to."
     (dolist (rec records)
       (when (and (plist-get rec :deadline-project-p)
                  (not (plist-get rec :done))
+                 (not (plist-get rec :parked))
                  (not (plist-get rec :private)))
         (puthash rec (list :kind 'project :record rec) units)))
     (dolist (leaf records)
       (when (and (plist-get leaf :leaf-p)
                  (not (plist-get leaf :done))
+                 (not (plist-get leaf :parked))
                  (not (plist-get leaf :private)))
         (let* ((owner (org-foresight--project-unit-of leaf))
                (unit (cond (owner (gethash owner units))
@@ -615,6 +643,62 @@ what still has to."
                  out))))
      units)
     (seq-sort-by (lambda (u) (float-time (plist-get u :due-day))) #'< out)))
+
+(defun org-foresight--nearest-project (leaf)
+  "Return LEAF's nearest open project ancestor, or nil.
+
+The nearest, not the outermost.  A task belongs to the smallest thing that is
+waiting for it; hung on the department instead, every department would be one
+project and nothing would ever look stalled.
+
+A done ancestor stops the walk, as it does everywhere else here: work filed
+under something already closed is not work anybody is waiting for."
+  (let ((p (plist-get leaf :todo-parent))
+        found)
+    (while (and p (not found))
+      (cond ((plist-get p :done) (setq p nil))
+            ((plist-get p :project-p) (setq found p))
+            (t (setq p (plist-get p :todo-parent)))))
+    found))
+
+(defun org-foresight--live-leaf-p (rec)
+  "Non-nil when REC is a leaf somebody could pick up.
+Done, parked and private are all reasons it is not, and they are the same
+three reasons everywhere else in this file."
+  (and (plist-get rec :leaf-p)
+       (not (plist-get rec :done))
+       (not (plist-get rec :parked))
+       (not (plist-get rec :private))))
+
+(defun org-foresight-projects (records)
+  "Return the open projects in RECORDS, and what is next in each.
+
+  :record  the project's own record
+  :next    its first live leaf in document order, or nil
+  :live    how many live leaves it has
+
+A project with no live leaf is the one worth seeing.  It is not the same as a
+project with no children: `:project-p\\=' says a heading has a TODO child, and
+stays true after every one of them is finished -- so the outline still calls
+it a project while there is nothing left in it to do.  That is exactly the
+state a plan falls into without anybody deciding to let it, which is why a
+review asks after it rather than waiting to be told.
+
+Document order throughout, so the answer reads in the order the file does."
+  (let ((by-project (make-hash-table :test #'eq))
+        out)
+    (dolist (rec records)
+      (when (org-foresight--live-leaf-p rec)
+        (when-let ((owner (org-foresight--nearest-project rec)))
+          (push rec (gethash owner by-project)))))
+    (dolist (rec records (nreverse out))
+      (when (and (plist-get rec :project-p)
+                 (not (plist-get rec :done))
+                 (not (plist-get rec :parked))
+                 (not (plist-get rec :private)))
+        (let ((leaves (nreverse (gethash rec by-project))))
+          (push (list :record rec :next (car leaves) :live (length leaves))
+                out))))))
 
 (defun org-foresight-project-scan (&optional now)
   "Return the shape of the work in `org-agenda-files'.
@@ -1520,7 +1604,10 @@ a done-type keyword such as DELEG drops out too."
                                    (org-foresight--entry-clocked-minutes now)
                                  (org-foresight--entry-remaining-minutes now))))
                       i))
-              (unless (org-entry-is-done-p)
+              ;; Parked beside done: neither is work the day has to hold, and
+              ;; the difference between them is only whether it may come back.
+              (unless (or (org-entry-is-done-p)
+                          (org-foresight--parked-p (org-get-todo-state)))
                 (let* ((todo (org-get-todo-state))
                        (effort (org-foresight--entry-effort-minutes))
                        (clocked (org-foresight--entry-clocked-minutes now))

@@ -232,6 +232,53 @@ SCHEDULED: <2026-08-10 Mon>
       (should (equal (org-foresight-test--busy-on scan 0) nil))
       (should (= (aref (plist-get scan :committed) 0) 45.0)))))
 
+(ert-deftest org-foresight-test-parked-work-takes-no-time-out-of-the-day ()
+  "Deciding not to do something now must cost less than not deciding.
+
+Before there was a way to say it, the only way out of the undecided pile was
+to make a heading look like work -- after which it took its estimate out of
+every day it was not being done on.  Parked, it occupies nothing."
+  (let ((text "* %s think about it
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   0:45
+:END:
+"))
+    (org-foresight-test--with-org (format text "NEXT")
+      (let ((scan (org-foresight-scan 1 (org-foresight-test--ts 0 0))))
+        (should (= 45.0 (aref (plist-get scan :committed) 0)))))
+    (org-foresight-test--with-org (format text "SDAY")
+      (let ((org-foresight-parked-keywords '("SDAY"))
+            (org-todo-keywords '((sequence "NEXT" "SDAY" "|" "DONE"))))
+        (let ((scan (org-foresight-scan 1 (org-foresight-test--ts 0 0))))
+          (should (= 0.0 (aref (plist-get scan :committed) 0))))))))
+
+(ert-deftest org-foresight-test-a-parked-leaf-is-owed-by-nobody ()
+  "A project is not short of hours because of work nobody is doing.
+
+Gated in the survey of the outline as well as in the survey of the day: a
+deadline counts what its leaves still need, and a leaf that has been put down
+needs nothing until it is picked up again."
+  (let ((text "* NEXT the project
+DEADLINE: <2026-09-30 Wed>
+** %s the part nobody is doing
+:PROPERTIES:
+:EFFORT:   2:00
+:END:
+"))
+    (org-foresight-test--with-org (format text "NEXT")
+      (let* ((scan (org-foresight-project-scan))
+             (unit (car (plist-get scan :units))))
+        (should unit)
+        (should (= 120.0 (plist-get unit :remaining-min)))))
+    (org-foresight-test--with-org (format text "SDAY")
+      (let ((org-foresight-parked-keywords '("SDAY"))
+            (org-todo-keywords '((sequence "NEXT" "SDAY" "|" "DONE"))))
+        (let* ((scan (org-foresight-project-scan))
+               (unit (car (plist-get scan :units))))
+          ;; the deadline is still there; nothing is owed against it
+          (should (or (null unit) (= 0.0 (plist-get unit :remaining-min)))))))))
+
 (ert-deftest org-foresight-test-scan-never-counts-an-entry-twice ()
   "The rule the whole package rests on: timed wins, and effort is not re-added.
 This entry carries an untimed SCHEDULED *and* a timed range on the same day,
@@ -2279,6 +2326,90 @@ the new answer, not the one cached moments earlier."
            (org-log-note-headings org-log-note-headings))
        ,@body)))
 
+(ert-deftest org-foresight-test-a-signal-can-come-from-somewhere-else ()
+  "A question this package has no business answering can still be asked here.
+
+What is unsettled about a week is not only whether it fits, and a file loaded
+later should not have to edit this one to say so.  The contributed signal is
+read exactly as a built-in one is -- same shape, same kinds table, same
+grouping -- so nothing about the page knows which is which."
+  (org-foresight-test--with-signals "* NEXT something\n"
+    (let ((org-foresight-signal-functions
+           (list (lambda (_scan)
+                   (list (cons "Pointed nowhere"
+                               (list (org-foresight--finding
+                                      "a goal" "nothing is moving toward it")))))))
+          (org-foresight-signal-kinds
+           (cons '("Pointed nowhere" . owed) org-foresight-signal-kinds)))
+      (let ((found (org-foresight-test--signal "Pointed nowhere")))
+        (should (= 1 (length found)))
+        (should (equal "a goal" (plist-get (car found) :title))))
+      ;; and it is grouped by what it says it is, not by who found it
+      (should (eq 'owed (org-foresight-signal-kind "Pointed nowhere"))))))
+
+(ert-deftest org-foresight-test-a-broken-signal-source-does-not-take-the-board ()
+  "One contributor that signals must not cost the page everything else knows."
+  (org-foresight-test--with-signals "* NEXT something\n"
+    (let ((org-foresight-signal-functions
+           (list (lambda (_scan) (error "no"))
+                 (lambda (_scan)
+                   (list (cons "Still counted"
+                               (list (org-foresight--finding "x" "y"))))))))
+      (should (= 1 (length (org-foresight-test--signal "Still counted")))))))
+
+(ert-deftest org-foresight-test-a-plan-that-has-run-out-says-so ()
+  "A project keeps its name after its last step is finished.
+
+`:project-p' means a heading has a TODO child, and a finished child is still
+one -- so a plan that has run out does not announce it.  It simply stops
+having anything in it and goes on looking like work in hand, which is the
+state a review exists to catch."
+  (org-foresight-test--with-signals
+      "* NEXT the plan that ran out
+** DONE step one
+** DONE step two
+* NEXT the plan still moving
+** DONE step one
+** NEXT step two
+"
+    (let ((found (org-foresight-test--signal "Nothing to do next")))
+      (should (= 1 (length found)))
+      (should (equal "the plan that ran out" (plist-get (car found) :title)))
+      ;; and it can be acted on from where it is reported
+      (should (markerp (plist-get (car found) :marker))))))
+
+(ert-deftest org-foresight-test-a-project-names-what-is-next-in-it ()
+  "The next step is the first live leaf, in the order the file is written.
+
+Not the nearest deadline or the largest: a review reads down a list, and the
+first thing under a heading is what somebody would pick up if they opened it."
+  (org-foresight-test--with-signals
+      "* NEXT the plan
+** DONE already done
+** NEXT the one to pick up
+** NEXT the one after that
+"
+    (let* ((projects (org-foresight-projects (org-foresight-outline-records)))
+           (p (car projects)))
+      (should (= 1 (length projects)))
+      (should (equal "the plan" (plist-get (plist-get p :record) :title)))
+      (should (equal "the one to pick up" (plist-get (plist-get p :next) :title)))
+      (should (= 2 (plist-get p :live))))))
+
+(ert-deftest org-foresight-test-a-parked-step-does-not-keep-a-plan-alive ()
+  "Putting the only step down leaves the plan with nothing to do next.
+Otherwise parking work would hide the plan that has stopped, which is the
+opposite of what a review is for."
+  (org-foresight-test--with-signals
+      "* NEXT the plan
+** SDAY the only step
+"
+    (let ((org-foresight-parked-keywords '("SDAY"))
+          (org-todo-keywords '((sequence "NEXT" "SDAY" "|" "DONE"))))
+      (let ((projects (org-foresight-projects (org-foresight-outline-records t))))
+        (should (= 1 (length projects)))
+        (should-not (plist-get (car projects) :next))))))
+
 (ert-deftest org-foresight-test-signal-procrastination ()
   "Three reschedules is a decision not being made; two is just planning."
   (org-foresight-test--with-signals
@@ -3517,8 +3648,12 @@ is precisely what does not settle it, because moving the task again is the
 count going up.  It clears when the work is done, dropped or handed on,
 which makes it owed rather than fixable.  `Gone quiet\=' sits beside it for
 the same reason: the check-in date can be edited, but only chasing the
-person makes the new date true."
-  (should (equal '((fix . 9) (owed . 3) (fact . 3))
+person makes the new date true.
+
+`Nothing to do next\=' is `fix\=' by the same test read the other way: it is
+settled by writing the next step under the project, which is editing the plan
+and not doing any of the work."
+  (should (equal '((fix . 10) (owed . 3) (fact . 3))
                  (mapcar (lambda (kind)
                            (cons kind
                                  (seq-count (lambda (c) (eq (cdr c) kind))
@@ -8544,6 +8679,65 @@ the dispatcher's own contract."
         (should (get-buffer "*Org Foresight Board*")))
     (when (get-buffer "*Org Foresight Board*")
       (kill-buffer "*Org Foresight Board*"))))
+
+(ert-deftest org-foresight-test-the-board-keeps-its-sections-in-order ()
+  "The board's sections, and the order the questions are asked in.
+
+Written before anything is added to it.  The order is the argument -- can I
+leave, is everything moving, will the dates be met, what is unsettled -- and
+a section that drifted up or down the page would be a different argument
+made by accident."
+  (org-foresight-test--with-places
+      "* NEXT stamp the form\n:PROPERTIES:\n:PLACE: office\n:END:\n"
+    (unwind-protect
+        (progn
+          (org-foresight-board)
+          (with-current-buffer "*Org Foresight Board*"
+            (let* ((text (substring-no-properties (buffer-string)))
+                   (at (lambda (name) (string-search name text))))
+              (dolist (name '("Board" "Here" "Projects" "Landing"
+                              "Load" "Parked" "Signals"))
+                (should (funcall at name)))
+              ;; can I leave · is everything moving · will the dates be met ·
+              ;; what are the coming days like · is this still rightly down ·
+              ;; what is unsettled
+              (should (< (funcall at "Board") (funcall at "Here")))
+              (should (< (funcall at "Here") (funcall at "Projects")))
+              (should (< (funcall at "Projects") (funcall at "Landing")))
+              (should (< (funcall at "Landing") (funcall at "Load")))
+              (should (< (funcall at "Load") (funcall at "Parked")))
+              (should (< (funcall at "Parked") (funcall at "Signals"))))))
+      (when (get-buffer "*Org Foresight Board*")
+        (kill-buffer "*Org Foresight Board*")))))
+
+(ert-deftest org-foresight-test-the-board-walks-the-files-once ()
+  "Seven sections, one walk.
+
+Every section wants the same three answers -- the survey, the records, the
+signals -- and a page that asked for them section by section would walk every
+heading in every file once per section.  They are read at the top and handed
+down."
+  (org-foresight-test--with-places
+      "* NEXT stamp the form\n:PROPERTIES:\n:PLACE: office\n:END:\n"
+    (unwind-protect
+        (let ((walks 0) (surveys 0))
+          (cl-letf* ((compute (symbol-function 'org-foresight--signals-compute))
+                     ((symbol-function 'org-foresight--signals-compute)
+                      (lambda (&rest args)
+                        (setq walks (1+ walks))
+                        (apply compute args)))
+                     (survey (symbol-function 'org-foresight-scan))
+                     ((symbol-function 'org-foresight-scan)
+                      (lambda (&rest args)
+                        (setq surveys (1+ surveys))
+                        (apply survey args))))
+            ;; nothing carried over from another test's page
+            (setq org-foresight--signals-cache nil)
+            (org-foresight-board)
+            (should (= 1 walks))
+            (should (= 1 surveys))))
+      (when (get-buffer "*Org Foresight Board*")
+        (kill-buffer "*Org Foresight Board*")))))
 
 (ert-deftest org-foresight-test-board-holds-both-questions ()
   "One buffer: what only here can do, and what is not planned at all."

@@ -211,6 +211,32 @@ written a date on it."
         :title title
         :note note))
 
+(defun org-foresight--finding-at (marker title note)
+  "Build a finding for the entry at MARKER, described by TITLE and NOTE.
+`org-foresight--finding\=' reads the entry the walk is standing on; this one
+is for findings decided after the walk, from a record it left behind."
+  (list :file (buffer-file-name (marker-buffer marker))
+        :point (marker-position marker)
+        :marker marker
+        :title title
+        :note note))
+
+(defun org-foresight--stalled-findings (headings)
+  "Return findings for open projects in HEADINGS with no live step under them.
+
+The one thing a review of a project list is for.  A project keeps its name
+after its last step is finished -- `:project-p\=' says it has a TODO child,
+and a finished child is still one -- so a plan does not announce that it has
+run out; it simply stops having anything in it, and goes on looking like work
+in hand."
+  (mapcar (lambda (p)
+            (let ((rec (plist-get p :record)))
+              (org-foresight--finding-at
+               (plist-get rec :marker) (plist-get rec :title)
+               "nothing live under it")))
+          (seq-filter (lambda (p) (null (plist-get p :next)))
+                      (org-foresight-projects headings))))
+
 (defvar org-foresight-signals-cache-ttl 3
   "Seconds a computed signal set is reused before the files are walked again.
 Short enough that an edit shows on the next refresh, long enough that one
@@ -287,6 +313,35 @@ shape the work is in and has no window at all."
                     org-foresight-signals-cache-ttl))
       (org-foresight-signals force))
     (plist-get org-foresight--signals-cache :headings)))
+
+(defvar org-foresight-signal-functions nil
+  "Functions contributing signals beyond the ones this file finds.
+
+Each is called with the survey of the horizon -- which may be nil, and which
+it is free to ignore -- and returns a list of (LABEL . FINDINGS), the same
+shape the built-in signals have.  A finding is what
+`org-foresight--finding\=' makes.
+
+Their kinds come from `org-foresight-signal-kinds\=', which a contributor
+adds to as well; a label registered nowhere is treated as `fix\='.
+
+This is here so that a question this package has no business answering can
+still be answered in the same place.  What is unsettled about a week is not
+only a matter of whether it fits, and a file loaded later should not have to
+edit this one to say so.  One that signals is dropped with a complaint rather
+than taking the board down with it.")
+
+(defun org-foresight--contributed-signals (scan)
+  "Return the signals `org-foresight-signal-functions\=' finds in SCAN."
+  (mapcan
+   (lambda (fn)
+     (copy-sequence
+      (condition-case err (funcall fn scan)
+        (error
+         (message "org-foresight: signal source %s failed: %s"
+                  fn (error-message-string err))
+         nil))))
+   org-foresight-signal-functions))
 
 (defun org-foresight--signals-compute (&optional scan)
   "Walk the agenda files and return the signals.
@@ -500,11 +555,16 @@ than asking for one."
                                (unless (gethash (car c) uids) (cdr c)))
                              orphan-candidates))
           (fit (org-foresight--fit-findings scan)))
-      (list
+      (let ((headings (org-foresight--project-classify
+                       ;; Document order, which the level stack above depended
+                       ;; on and `org-foresight--project-classify\=' depends on
+                       ;; in turn.  Classified here because a project is known
+                       ;; from its children, so nothing before the end of the
+                       ;; walk could have said which headings are projects.
+                       (nreverse records))))
+       (list
        :here (org-foresight--here-sort (nreverse here))
-       ;; Document order, which the level stack above depended on and
-       ;; `org-foresight--project-classify\=' depends on in turn.
-       :headings (nreverse records)
+       :headings headings
        ;; Kept beside the rows it decided, so the section that shows them can
        ;; head itself without a second scan of every file for an answer this
        ;; pass already had.
@@ -512,7 +572,8 @@ than asking for one."
        :signals
        (seq-filter
        #'cdr
-       (list (cons "Impossible (travel clashes with a meeting)"
+       (append
+        (list (cons "Impossible (travel clashes with a meeting)"
                    (org-foresight--clash-findings scan))
              (cons "Meetings without prep" (nreverse meetings))
              (cons "Unreadable estimate (breaks the agenda itself)"
@@ -533,7 +594,13 @@ than asking for one."
              (cons "Leaking (unclocked work)" (org-foresight--leak-findings))
              (cons "Cannot be done from here" (nreverse elsewhere))
              (cons "Undecided (captured, not decided)" (nreverse undecided))
-             (cons "Orphaned prep" orphans)))))))
+             (cons "Nothing to do next"
+                   (org-foresight--stalled-findings headings))
+             (cons "Orphaned prep" orphans))
+        ;; And whatever else has been contributed.  After the ones found
+        ;; here, and it makes no difference where: the groups are drawn in
+        ;; the order of their kinds, not of who found what.
+        (org-foresight--contributed-signals scan))))))))
 
 (defun org-foresight--undecided-p (todo stamps)
   "Non-nil when the entry at point was captured but never decided about.
@@ -717,7 +784,7 @@ decision nobody else can make.  The few that are not have to be said out
 loud -- a board that names a problem and not the thing that answers it sends
 its reader off to find one, and a reader who has to go looking stops reading.")
 
-(defconst org-foresight-signal-kinds
+(defvar org-foresight-signal-kinds
   '(("Impossible (travel clashes with a meeting)"     . fix)
     ("Meetings without prep"                          . fix)
     ("Unreadable estimate (breaks the agenda itself)" . fix)
@@ -726,6 +793,7 @@ its reader off to find one, and a reader who has to go looking stops reading.")
     ("Unplannable (deadline, no estimate)"            . fix)
     ("Cannot be done from here"                       . fix)
     ("Undecided (captured, not decided)"              . fix)
+    ("Nothing to do next"                             . fix)
     ("Orphaned prep"                                  . fix)
     ("Gone quiet (follow-up overdue)"                 . owed)
     ("Kept moving (not really NEXT)"                  . owed)
@@ -734,6 +802,10 @@ its reader off to find one, and a reader who has to go looking stops reading.")
     ("Borrowed from private time"                     . fact)
     ("Leaking (unclocked work)"                       . fact))
   "What kind of thing each signal is, and so whether emptying it is the point.
+
+A variable rather than a constant: a signal contributed through
+`org-foresight-signal-functions\=' says what kind it is by adding to this,
+and the frame stays here.
 
 One question separates them: can it be settled by editing the plan, without
 doing any of the work, and without writing anything untrue?
@@ -845,6 +917,65 @@ Stable within a kind, so the order each group was written in survives."
                        (propertize (plist-get f :note) 'face 'shadow) 36))
               (plist-get f :marker)))
            (cdr group) "\n")))
+
+(defun org-foresight-report-projects (&optional projects)
+  "Return a row per open project: what it is, and what is next in it.
+
+The list a weekly review is mostly made of.  A project with nothing live
+under it is marked rather than dropped, because that is the row worth the
+visit: everything else here is a reminder, and this one is a decision waiting
+to be made."
+  (let ((projects (or projects (org-foresight-projects
+                                (org-foresight-outline-records)))))
+    (if (null projects)
+        (org-foresight-report--indent
+         (propertize "(no projects open)" 'face 'shadow))
+      (mapconcat
+       (lambda (p)
+         (let* ((rec (plist-get p :record))
+                (next (plist-get p :next)))
+           (org-foresight-report--actionable
+            (format "  %s  %s  %s"
+                    (truncate-string-to-width
+                     (or (plist-get rec :category) "") 12 0 ?\s)
+                    (truncate-string-to-width
+                     (replace-regexp-in-string
+                      "[\n\r]" " " (or (plist-get rec :title) "?"))
+                     28 0 ?\s)
+                    (if next
+                        (truncate-string-to-width
+                         (propertize
+                          (concat "→ " (or (plist-get next :title) "?"))
+                          'face 'shadow)
+                         32)
+                      (propertize "⚠ nothing live under it"
+                                  'face 'org-foresight-report-overcommitted)))
+            (plist-get rec :marker))))
+       projects "\n"))))
+
+(defun org-foresight-report-parked (&optional records)
+  "Return a row per heading that has been put down on purpose.
+
+Not a signal: there is nothing here to fix.  It is the question a review asks
+once a week and no other day -- is this still rightly parked -- and a list
+nobody looks at is how work quietly stops being decided about."
+  (let ((parked (seq-filter (lambda (r) (plist-get r :parked))
+                            (or records (org-foresight-outline-records)))))
+    (if (null parked)
+        (org-foresight-report--indent
+         (propertize "(nothing parked)" 'face 'shadow))
+      (mapconcat
+       (lambda (rec)
+         (org-foresight-report--actionable
+          (format "  %s  %s"
+                  (truncate-string-to-width
+                   (or (plist-get rec :category) "") 10 0 ?\s)
+                  (truncate-string-to-width
+                   (replace-regexp-in-string
+                    "[\n\r]" " " (or (plist-get rec :title) "?"))
+                   50 0 ?\s))
+          (plist-get rec :marker)))
+       parked "\n"))))
 
 (defun org-foresight-report-signals (&optional signals)
   "Return the signal blocks, or a note when nothing is outstanding.
@@ -1033,8 +1164,14 @@ nothing but drop it."
         ;; Read once and handed to both the line that summarises them and the
         ;; sections that show them, or the board answers its own question
         ;; twice from two walks of every file.
-        (let ((landing (org-foresight-landing))
-              (signals (org-foresight-signals)))
+        ;; Read once and handed to every section that wants them.  The
+        ;; survey, the records and the signals are three questions about one
+        ;; walk of the files, and a page that asked them section by section
+        ;; would walk the journal five times to draw itself.
+        (let* ((scan (org-foresight-redraw-scan))
+               (landing (org-foresight-landing nil scan))
+               (signals (org-foresight-signals nil scan))
+               (records (org-foresight-outline-records)))
         (insert (org-foresight-report--badge
                  "Board" "what settled would look like, and how far off it is")
                 "\n\n"
@@ -1047,9 +1184,25 @@ nothing but drop it."
                 (org-foresight-report-here)
                 "\n\n"
                 (org-foresight-report--badge
+                 "Projects" "what is moving, and what is not")
+                "\n\n"
+                (org-foresight-report-projects
+                 (org-foresight-projects records))
+                "\n\n"
+                (org-foresight-report--badge
                  "Landing" "what has a date, and whether it will be met")
                 "\n\n"
-                (org-foresight-report-landing landing)
+                (org-foresight-report-landing landing scan)
+                "\n\n"
+                (org-foresight-report--badge
+                 "Load" "what the coming days are shaped like")
+                "\n\n"
+                (org-foresight-report-load nil scan nil landing)
+                "\n\n"
+                (org-foresight-report--badge
+                 "Parked" "put down on purpose, and still down")
+                "\n\n"
+                (org-foresight-report-parked records)
                 "\n\n"
                 (org-foresight-report--badge
                  "Signals" "everything unsettled, the fixable part first")

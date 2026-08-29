@@ -1738,9 +1738,74 @@ on the very next one.
 
 * The board
 
-Two questions the day cannot answer from inside itself, in one buffer
+What the day cannot answer from inside itself, in one buffer
 (=M-x org-foresight-board=). Every row carries its entry's marker, so the
 agenda's own commands work on them.
+
+It is a week's worth of questions, asked in the order they come up:
+
+| Board    | how far off settled is                | one line |
+| Here     | can I leave                           |          |
+| Projects | is everything moving                  |          |
+| Landing  | will the dates be met                 |          |
+| Load     | what are the coming days shaped like  |          |
+| Parked   | is this still rightly put down        |          |
+| Signals  | what is unsettled, fixable part first |          |
+
+Longer than the day's page, and meant to be: this is a list to work down, not
+a thing to glance at. One walk of the files answers all seven — the survey,
+the records and the signals are read at the top and handed to each section,
+because a page that asked them section by section would walk every heading in
+every file once per section.
+
+** Projects — what is moving, and what is not
+
+#+begin_example
+[Projects] what is moving, and what is not
+
+  procurement   Choose a printer vendor       → Compare the three quotes
+  engineering   Launch the field kit          → Order tooling
+  reporting     Prepare the quarterly board   ⚠ nothing live under it
+#+end_example
+
+The list a weekly review is mostly made of, and the arrow is the whole of it:
+/is there something somebody could pick up under this/.
+
+The last row is the one worth the visit. A project keeps its name after its
+last step is finished — a heading is a project because it has a TODO child,
+and a finished child is still one — so a plan that has run out does not
+announce it. It stops having anything in it and goes on looking like work in
+hand. That row is also a signal, /Nothing to do next/, and it sits in =fix=
+because it is settled by writing the next step: editing the plan, and none of
+the work.
+
+The next step is the first live leaf in the order the file is written. Not
+the nearest deadline or the largest — a review reads down a list, and the
+first thing under a heading is what somebody would pick up on opening it.
+
+** Parked — put down on purpose, and still down
+
+Deciding not to do something now is a decision, and there was no way to
+record it. The only way out of the undecided pile was to make a heading look
+like work, after which it took its estimate out of every day it was not being
+done on — so deciding cost more than not deciding, which is the wrong way
+round.
+
+#+begin_src emacs-lisp
+(setq org-foresight-parked-keywords '("SDAY"))
+#+end_src
+
+Parked work occupies nothing: not committed, not promised, not counted
+against a deadline, not owed by any project. Parking the only step under a
+plan leaves that plan with nothing to do next, and it says so — otherwise
+parking would be a way of hiding the plan that has stopped, which is the
+opposite of what a review is for.
+
+It is a section rather than a signal, because there is nothing here to fix.
+The question is asked once a week and no other day: /is this still rightly
+down?/ A list nobody looks at is how work quietly stops being decided about.
+
+
 
 ** Here — what only this place can do
 
@@ -1860,6 +1925,30 @@ Only the groups a single command can settle carry one —
 =org-foresight-signal-commands= is the whole list. The rest are fixed a row at
 a time, on the entry the row points at, and a hint on every heading would
 teach the reader to stop believing the ones that mean something.
+
+*** A signal from somewhere else
+
+What is unsettled about a week is not only whether it fits, and a file loaded
+later should not have to edit this one to say so.
+
+#+begin_src emacs-lisp
+(add-to-list 'org-foresight-signal-kinds '("Pointed nowhere" . owed))
+(add-to-list 'org-foresight-signal-functions
+             (lambda (_scan)
+               (list (cons "Pointed nowhere" my-findings))))
+#+end_src
+
+Each function is handed the survey of the horizon — which may be nil, and
+which it is free to ignore — and returns the same =(LABEL . FINDINGS)= shape
+the built-in signals have. Kinds come from the same table, so a contributed
+signal is grouped by what it /is/ rather than by who found it, and a label
+registered nowhere is treated as =fix=. One that signals is dropped with a
+complaint rather than taking the board down.
+
+This is the seam for questions this package has no business answering. Whether
+the week is pointed where it was meant to be is one of them: it has nothing to
+do with whether the week fits, and deriving it needs a declaration rather than
+a clock.
 
 * When, then
 
