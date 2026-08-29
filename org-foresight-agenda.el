@@ -1409,6 +1409,22 @@ Reset by any row that carries an entry and names it.")
 ;; rebuild for every keystroke forever.
 (put 'org-foresight-agenda--cures 'permanent-local t)
 
+(defconst org-foresight-agenda--row-name-chars 16
+  "How much of a heading a row must show for the row to be owning it.
+
+Not the whole of it.  A row is a line of a page with columns to keep, and a
+long heading is cut to fit -- by this package in its own sections, by Org in
+the day's -- so a row required to carry its entry's name in full would call
+every long heading a heading that had gone, rebuild the page, and put the
+cursor at the top.  The narrowest column that carries a marker holds about
+twenty characters, which is what this is measured against.
+
+Short enough to survive that, long enough that two headings do not share it
+by accident.  Two that do -- the same words for sixteen characters, differing
+after -- would hide a marker that slid from one to the other.  That is the
+case this misses, and it is the right one to miss: the alternative was a page
+that could not be walked down.")
+
 (defun org-foresight-agenda--row-state ()
   "Return what the row under point claims: `lies\=', `agrees\=' or `no-entry\='.
 
@@ -1419,7 +1435,11 @@ nothing either way about whether the page is good.
 
 Links are resolved before comparing.  Org draws `[[url][a name]]\=' as /a
 name/ and stores it whole, and a row read literally against the heading it
-came from would say every such entry had gone."
+came from would say every such entry had gone.
+
+Compared by its first `org-foresight-agenda--row-name-chars\=' characters,
+for the reason written there: a row shows as much of a heading as its columns
+allow, and that is often not all of it."
   (let ((marker (org-get-at-bol 'org-hd-marker)))
     (if (null marker)
         'no-entry
@@ -1428,10 +1448,12 @@ came from would say every such entry had gone."
                        (org-link-display-format (org-get-heading t t t t))))))
         (if (and title
                  (not (string-empty-p title))
-                 (string-search title
-                                (buffer-substring-no-properties
-                                 (line-beginning-position)
-                                 (line-end-position))))
+                 (string-search
+                  (substring title 0 (min (length title)
+                                          org-foresight-agenda--row-name-chars))
+                  (buffer-substring-no-properties
+                   (line-beginning-position)
+                   (line-end-position))))
             'agrees
           'lies)))))
 
