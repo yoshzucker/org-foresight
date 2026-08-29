@@ -117,10 +117,34 @@ match string every custom command is handed and ignores it:
              '("b" "Board" org-foresight-board ""))
 #+end_src
 
-There are two views and one board, and they ask different questions: the day
-(=C-c a a=), the week just gone, and what has not been settled. A view that
-draws the same agenda with a different block underneath is not a third place
-— it is a toggle, and it will not be opened.
+There are three places because a week asks three questions, and they are not
+the same question.
+
+| What is being done                         | What it asks                                       |
+|--------------------------------------------+----------------------------------------------------|
+| Reviewing what you have taken on           | What is undecided, what is waiting, what has stalled |
+| Checking the record                        | Does the clock have holes or overlaps in it        |
+| Reading the record                         | Where did the week go, every day or one day, more than usual |
+
+The first is the weekly review as GTD means it, and it is the board: its
+signals /are/ Get Current — /Undecided (captured, not decided)/ is getting
+"in" to empty, /Gone quiet (follow-up overdue)/ is the waiting-for list,
+/Kept moving (not really NEXT)/ is a next action that is not one.
+
+The other two are not GTD at all. GTD manages commitments, not hours, and
+there is no timesheet anywhere in it — reviewing last week's calendar is for
+harvesting the actions it left behind, not for totalling it up. Measuring
+where time goes is Drucker's, from /The Effective Executive/: record it,
+because memory is not to be trusted about it; then ask what need not be done
+at all, what somebody else could do as well, and what you do that wastes
+other people's time; then consolidate what is left into blocks big enough to
+work in.
+
+That is why checking the record and reading it are one place and not two:
+they are the first two steps of the same act, and the second is worthless
+without the first. A view that draws the same agenda with a different block
+underneath is not a place at all — it is a toggle, and it will not be
+opened.
 
 =M-x org-foresight-diagnose= then reports what is set, what is having no
 effect, and what to do next. Worth running once after the above and again
@@ -847,6 +871,49 @@ Without an =aw-watcher-afk= there is no record of when the machine was
 attended, only of when a window was in front. The day is then drawn from
 that instead, and the header says =screen only=: a coarse picture is worth
 more than a blank one, but the two must not look alike.
+
+** The week, and the weeks before it
+
+The daily block says where today went. The weekly one says where the week
+went, and — given a window longer than the week — what that is against.
+
+#+begin_example
+Week 15:00 · avg 2:08/day · 7/7 active · peak Thu 3:00
+| Area           |  Time |     % | Share        | SMTWTFS | vs 4w |
+|----------------+-------+-------+--------------+---------+-------|
+| comms          | 14:00 |  93.3 | ████████████ | ███████ | +300% |
+| admin          |  1:00 |   6.7 | ▉            | ····█·· |   new |
+| procurement    |  0:00 |   0.0 |              | ······· | quiet |
+#+end_example
+
+*The band* is that area's own days, oldest first, scaled to its own busiest
+one. =███████= is something the week is made of; =····█··= is something that
+happened on Wednesday. A week's total cannot tell those apart, and they are
+not the same problem: one is answered by changing how the work arrives, the
+other is answered by nothing at all. How /much/ it was is already two columns
+to the left, which is why the band is scaled per area — a shared ceiling
+would leave every small area a row of dots saying nothing.
+
+*=vs 4w=* is that area's week against its own weekly average over the window
+behind it. =new= is an area the earlier weeks had nothing of; =quiet= is one
+they had and this week does not.
+
+A =quiet= area is a row. Built from the week alone it would not be — an area
+with nothing in it this week simply would not be in the table — and an
+absence nobody is shown is an absence nobody notices. That is the whole
+reason the rows come from the longer window.
+
+The window is =org-foresight-review-window=, five weeks by default: this one
+and the four before it. Long enough that one odd week does not become the
+standard, short enough that a change of role is not still being averaged in
+months later. Set it to seven and the two columns go away, because there is
+then nothing behind the week to compare it with.
+
+It is one survey, not two. The days a survey covers are only how many buckets
+it sorts its answers into — the walk of the logbooks is the price — so the
+window is declared by the view (=:days= in =org-foresight-report-renderers=)
+and the week is summed out of the days that come back. Two walks would be two
+chances to disagree about one afternoon.
 
 ** Filling in what the clock missed
 

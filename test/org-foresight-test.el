@@ -2035,6 +2035,108 @@ SCHEDULED: <2026-08-10 Mon 10:00>
       (should (string-match-p "peak" s))
       (should (org-foresight-test--within-80 s)))))
 
+(defun org-foresight-test--weeks-fixture ()
+  "Five weeks of clock, built so each column has something to say.
+
+comms   spends the same as it always has, every day of this week
+admin   is new, and happened on one day
+procure was there for four weeks and is not here now"
+  (let (out)
+    (cl-flet ((spell (title category offset minutes)
+                (setq out
+                      (concat out
+                              (format "* NEXT %s\n:PROPERTIES:\n:CATEGORY: %s\n:END:\n:LOGBOOK:\nCLOCK: %s--%s =>  %s\n:END:\n"
+                                      title category
+                                      (org-foresight-test--logstamp offset "09:00")
+                                      (org-foresight-test--logstamp
+                                       offset (format "%02d:%02d"
+                                                      (+ 9 (/ minutes 60))
+                                                      (% minutes 60)))
+                                      (org-duration-from-minutes minutes))))))
+      ;; This week: comms every day (2:00 each, 14:00 in all), admin once.
+      ;; Offsets are negative -- `org-foresight-test--logstamp' counts
+      ;; forward, and a week that has happened is behind us.
+      (dotimes (d 7) (spell (format "comms %d" d) "comms" (- d) 120))
+      (spell "admin once" "admin" -2 60)
+      ;; The four weeks before: comms 3:30 a week, so 14:00 in all and a
+      ;; baseline of 3:30 -- this week is four times it, which reads +300%.
+      ;; procurement was there and is not here now.
+      (dolist (d '(7 14 21 28))
+        (spell (format "comms back %d" d) "comms" (- d) 210)
+        (spell (format "procure back %d" d) "procurement" (- d) 60)))
+    out))
+
+(defmacro org-foresight-test--with-weeks (&rest body)
+  "Run BODY with the five-week fixture as the only agenda file.
+WEEK is a survey of the seven days alone; LONG is the one the review reads,
+covering the week and the four before it."
+  (declare (indent 0))
+  `(org-foresight-test--with-org (org-foresight-test--weeks-fixture)
+     (let ((week (org-foresight-clock-scan 7))
+           (long (org-foresight-clock-scan 35)))
+       (ignore week long)
+       ,@body)))
+
+(defun org-foresight-test--weeks-row (text area)
+  "Return the AREA row of the review table in TEXT, or nil."
+  (seq-find (lambda (l) (string-match-p (concat "| " area " ") l))
+            (split-string (substring-no-properties text) "\n")))
+
+(ert-deftest org-foresight-test-the-week-is-measured-against-the-weeks-before ()
+  "`vs 4w' compares a week with a week, not with the whole window.
+
+The baseline is the earlier window divided by the weeks in it.  Compared with
+its total instead, an area that has not changed at all would read as a
+collapse of three quarters -- and every week would look like a bad one."
+  (org-foresight-test--with-weeks
+    (let* ((text (org-foresight-report-week long))
+           (comms (org-foresight-test--weeks-row text "comms")))
+      ;; 14:00 this week; 14:00 across the four before, so 3:30 a week
+      (should comms)
+      (should (string-match-p "+300%" comms)))))
+
+(ert-deftest org-foresight-test-an-area-that-stopped-is-still-a-row ()
+  "What was dropped is the thing worth seeing, so it keeps its line.
+
+Built from the seven-day survey, an area with nothing in it this week is not
+in the table at all -- and an absence nobody is shown is an absence nobody
+notices."
+  (org-foresight-test--with-weeks
+    (let* ((text (org-foresight-report-week long))
+           (gone (org-foresight-test--weeks-row text "procurement"))
+           (fresh (org-foresight-test--weeks-row text "admin")))
+      (should gone)
+      (should (string-match-p "quiet" gone))
+      (should (string-match-p "0:00" gone))
+      (should fresh)
+      (should (string-match-p "new" fresh)))))
+
+(ert-deftest org-foresight-test-the-band-is-each-area-s-own-days ()
+  "Every day or one day: the band answers it, and the week's total cannot.
+
+Scaled per area, so a small area is a shape rather than a row of dots, and
+two areas with the same total but different weeks do not draw the same band."
+  (org-foresight-test--with-weeks
+    (let* ((text (org-foresight-report-week long))
+           (comms (org-foresight-test--weeks-row text "comms"))
+           (admin (org-foresight-test--weeks-row text "admin"))
+           (band (lambda (row) (nth 5 (split-string row "|" nil " ")))))
+      ;; comms is every day of the week
+      (should-not (cl-find org-foresight-report-dot (funcall band comms)))
+      ;; admin is one day of it, and the rest are dots
+      (should (= 6 (cl-count org-foresight-report-dot (funcall band admin))))
+      (should (org-foresight-test--within-80 text)))))
+
+(ert-deftest org-foresight-test-without-a-longer-window-the-week-is-unchanged ()
+  "The extra columns arrive with the longer survey and not before it.
+A caller that has not asked for them gets the table it always got."
+  (org-foresight-test--with-weeks
+    (let ((plain (org-foresight-report-week week)))
+      (should-not (string-match-p "vs 4w" plain))
+      (should-not (string-match-p "quiet" plain))
+      ;; and the Share column keeps its full width
+      (should (string-match-p "| Share              |" plain)))))
+
 (ert-deftest org-foresight-test-report-estimates ()
   "The review names the sizes actually estimated with, and only a few of them.
 
@@ -4173,6 +4275,47 @@ clock -- asking afterwards would mean opening every one of them again."
         (should planned)
         (should (equal "Interruption" (plist-get arrived :title)))
         (should (equal "Planned work" (plist-get planned :title)))))))
+
+(ert-deftest org-foresight-test-a-scan-keeps-every-answer-it-gave-before ()
+  "The survey's existing keys say what they have always said.
+
+Written before anything is added to it.  Capacity, the day's report and the
+watcher all read this one plist, so a key that quietly changed shape would go
+wrong in three places at once and look like three faults."
+  (org-foresight-test--with-clocked
+      "* NEXT Draft the summary
+:PROPERTIES:
+:CATEGORY: reporting
+:END:
+:LOGBOOK:
+CLOCK: [@ 09:00]--[@ 10:00] =>  1:00
+CLOCK: [@ 13:00]--[@ 13:40] =>  0:40
+:END:
+* NEXT Something else
+:PROPERTIES:
+:CATEGORY: admin
+:END:
+:LOGBOOK:
+CLOCK: [@ 14:00]--[@ 14:20] =>  0:20
+:END:
+"
+    (let ((clock (org-foresight-clock-scan 7)))
+      (should (equal '(("reporting" . 100.0) ("admin" . 20.0))
+                     (plist-get clock :rows)))
+      (should (= 120.0 (plist-get clock :total)))
+      (should (= 7 (plist-get clock :days)))
+      (should (vectorp (plist-get clock :byday)))
+      (should (= 7 (length (plist-get clock :byday))))
+      ;; today is the newest day, and the whole of it is today's
+      (should (= 120.0 (aref (plist-get clock :byday) 6)))
+      (should (equal '(("reporting" . 100.0) ("admin" . 20.0))
+                     (plist-get clock :today-rows)))
+      (should (= 120.0 (plist-get clock :today-total)))
+      (should (= 3 (plist-get clock :today-segments)))
+      (should (= 3 (length (plist-get clock :today-intervals))))
+      (should (= 2 (length (plist-get clock :today-tasks))))
+      (should (vectorp (plist-get clock :intervals-byday)))
+      (should (= 3 (length (aref (plist-get clock :intervals-byday) 6)))))))
 
 (ert-deftest org-foresight-test-clock-scan-takes-a-now ()
   "A running clock is closed at NOW, so a test of one is reproducible."
