@@ -343,32 +343,63 @@ in three places meant nobody could see the answer.  CLOCK is the plist from
                           'face 'shadow))))
      "\n")))
 
-(defun org-foresight-report--category-table (rows total maxmin col2-label)
-  "Return a CATEGORY/Time/%/Share ASCII table (<=80 cols), shared by the
-daily and weekly Clocked views.  ROWS is a (CATEGORY . MINUTES) alist; TOTAL
-and MAXMIN scale the % and bar columns; COL2-LABEL names the category column
-\(e.g. \"Project\" or \"Area\")."
+(defun org-foresight-report--cell (string width align)
+  "Return STRING fitted to WIDTH, padded on the side ALIGN says."
+  (let ((cut (truncate-string-to-width string width)))
+    (if (eq align 'right)
+        (format "%s%s" (make-string (max 0 (- width (string-width cut))) ?\s) cut)
+      (truncate-string-to-width cut width 0 ?\s))))
+
+(defun org-foresight-report--category-table (rows total maxmin col2-label
+                                                  &optional extra)
+  "Return a CATEGORY/Time/%/Share ASCII table (<=80 cols) for the weekly review.
+ROWS is a (CATEGORY . MINUTES) alist; TOTAL and MAXMIN scale the % and bar
+columns; COL2-LABEL names the category column.
+
+EXTRA adds columns on the right: a list of (HEADER WIDTH FUNCTION ALIGN),
+where FUNCTION is called with the row and returns the cell.  Omitted, the
+table is what it has always been -- the Share column keeps its full width and
+nothing else moves, so a caller that has not asked for more gets exactly what
+it got before, to the character."
   (if (null rows)
       (propertize "(no clocked time)" 'face 'org-table)
-    (propertize
-     (concat
-      (format "| %-14s | %5s | %5s | %-18s |" col2-label "Time" "%" "Share")
-      "\n|" (make-string 16 ?-) "+" (make-string 7 ?-) "+" (make-string 7 ?-)
-      "+" (make-string 20 ?-) "|\n"
-      (mapconcat
-       (lambda (r)
-         (let ((cat (car r)) (min (cdr r)))
-           (format "| %-14s | %5s | %5.1f | %s |"
-                   (truncate-string-to-width
-                    (replace-regexp-in-string "[|\n\r]" " " cat) 14 0 ?\s)
-                   (org-duration-from-minutes min)
-                   (if (> total 0) (* 100.0 (/ (float min) total)) 0)
-                   (truncate-string-to-width
-                    (orgtbl-ascii-draw min 0 (max maxmin 1) 18
-                                       org-foresight-bar-chars)
-                    18 0 ?\s))))
-       rows "\n"))
-     'face 'org-table)))
+    (let* ((share (if extra 12 18))
+           (cols (append
+                  (list (list col2-label 14 nil 'left)
+                        (list "Time" 5 nil 'right)
+                        (list "%" 5 nil 'right)
+                        (list "Share" share nil 'left))
+                  extra))
+           (row (lambda (cells)
+                  (concat "|"
+                          (mapconcat
+                           (lambda (pair)
+                             (format " %s " (org-foresight-report--cell
+                                             (car pair) (nth 1 (cdr pair))
+                                             (nth 3 (cdr pair)))))
+                           (cl-mapcar #'cons cells cols) "|")
+                          "|"))))
+      (propertize
+       (concat
+        (funcall row (mapcar #'car cols))
+        "\n|" (mapconcat (lambda (c) (make-string (+ (nth 1 c) 2) ?-)) cols "+")
+        "|\n"
+        (mapconcat
+         (lambda (r)
+           (let ((cat (car r)) (min (cdr r)))
+             (funcall row
+                      (append
+                       (list (replace-regexp-in-string "[|\n\r]" " " cat)
+                             (org-duration-from-minutes min)
+                             (format "%.1f" (if (> total 0)
+                                                (* 100.0 (/ (float min) total))
+                                              0))
+                             (orgtbl-ascii-draw min 0 (max maxmin 1) share
+                                                org-foresight-bar-chars))
+                       (mapcar (lambda (e) (or (funcall (nth 2 e) r) "")) extra))
+                      )))
+         rows "\n"))
+       'face 'org-table))))
 
 (defcustom org-foresight-report-estimate-sizes 8
   "How many estimate sizes the weekly review names.
@@ -430,32 +461,137 @@ get estimated, and it is actionable on the very next one."
          rows))
        "\n"))))
 
+(defconst org-foresight-report--day-letters ["S" "M" "T" "W" "T" "F" "S"]
+  "One letter per weekday, Sunday first.
+Written out rather than taken from `format-time-string\=', which would give
+whatever the locale says and make the band header a different width in a
+different language.")
+
+(defun org-foresight-report--week-days (days)
+  "Return one letter per day for a DAYS-wide band header, oldest first."
+  (mapconcat (lambda (i)
+               (aref org-foresight-report--day-letters
+                     (nth 6 (decode-time
+                             (org-foresight--day-start (- days 1 i))))))
+             (number-sequence 0 (1- days)) ""))
+
+(defun org-foresight-report--week-band (category rows-byday &optional from)
+  "Return a band of CATEGORY's minutes per day in ROWS-BYDAY, oldest first.
+FROM is the first day of the week inside ROWS-BYDAY, which may hold more.
+
+Scaled to that area's own busiest day, because the question a band answers is
+whether the area was every day or one of them -- `▅▅▆▅▆▅▅\=' is something the
+week is made of, `▁··█···\=' is something that happened on Wednesday, and a
+week's total cannot tell them apart.  How much it was is already two columns
+to the left; scaling every area to one ceiling would leave the small ones a
+row of dots saying nothing."
+  (when rows-byday
+    (let* ((from (or from 0))
+           (days (- (length rows-byday) from))
+           (mins (mapcar (lambda (i)
+                           (or (cdr (assoc category
+                                           (aref rows-byday (+ from i))))
+                               0.0))
+                         (number-sequence 0 (1- days))))
+           (peak (apply #'max 0.0 mins)))
+      (mapconcat (lambda (m)
+                   (char-to-string
+                    (org-foresight-report--spark-char
+                     (if (> peak 0) (/ m peak) 0.0))))
+                 mins ""))))
+
+(defun org-foresight-report--week-change (minutes baseline)
+  "Return how MINUTES compares with BASELINE, in a few characters.
+
+`new\=' when there was nothing to compare with, `quiet\=' when there was
+something and now there is not.  The second is the reason the rows are built
+from the longer window: an area that has stopped would otherwise leave the
+table rather than appear in it, and stopping is the thing worth seeing."
+  (cond ((and (<= baseline 0) (> minutes 0)) "new")
+        ((and (<= minutes 0) (> baseline 0)) "quiet")
+        ((<= baseline 0) "")
+        (t (format "%+.0f%%" (* 100.0 (/ (- minutes baseline) baseline))))))
+
 (defun org-foresight-report-week (clock)
   "Return a week-by-CATEGORY review table with a rhythm header (<=80 cols).
-Mirrors the daily `org-foresight-report-clocked' layout (Area/Time/%/Share)
-but aggregates the past 7 days, and leads with weekly-review insight: total,
-daily average, active-day count, and the busiest day.
-CLOCK is the plist from `org-foresight-clock-scan'."
-  (let* ((rows (plist-get clock :rows))
-         (total (plist-get clock :total))
-         (days (plist-get clock :days))
+CLOCK is the plist from `org-foresight-clock-scan\='.
+
+CLOCK may cover more than a week.  The last seven days of it are the week;
+whatever lies behind them is what the week is measured against, and each area
+then carries a band of its days and a change against the weeks before.  Given
+exactly seven days there is nothing behind, and the table is what it always
+was.
+
+One survey, not two.  The window is chosen by whoever asks for the report --
+see `org-foresight-report-renderers\=' -- because a second walk of the
+logbooks is a second chance to disagree about one afternoon, and on a slow
+machine it is paid for on every keypress."
+  (let* ((days (or (plist-get clock :days) 7))
          (byday (plist-get clock :byday))
-         (maxmin (if rows (apply #'max (mapcar #'cdr rows)) 1))
+         (rows-byday (plist-get clock :rows-byday))
+         (span (min 7 days))
+         (first (- days span))
+         (windowed (and rows-byday byday (> days span)))
+         ;; The week, summed out of the days rather than surveyed again.
+         (week-rows
+          (if (not rows-byday)
+              (plist-get clock :rows)
+            (let (acc)
+              (dotimes (i span)
+                (dolist (cell (aref rows-byday (+ first i)))
+                  (let ((have (assoc (car cell) acc)))
+                    (if have (setcdr have (+ (cdr have) (cdr cell)))
+                      (push (cons (car cell) (cdr cell)) acc)))))
+              (seq-sort-by #'cdr #'> acc))))
+         (total (if (and rows-byday byday)
+                    (apply #'+ 0.0 (mapcar (lambda (i) (aref byday (+ first i)))
+                                           (number-sequence 0 (1- span))))
+                  (plist-get clock :total)))
+         (weeks (if windowed (/ (float first) span) 0))
+         (behind-rows (and windowed (plist-get clock :rows)))
+         ;; Every area the whole window saw, carrying what the week spent on
+         ;; it -- which is nothing, for the ones that stopped.
+         (listed (if windowed
+                     (seq-sort-by
+                      #'cdr #'>
+                      (mapcar (lambda (r)
+                                (cons (car r)
+                                      (or (cdr (assoc (car r) week-rows)) 0.0)))
+                              behind-rows))
+                   week-rows))
+         (maxmin (if listed (apply #'max 1 (mapcar #'cdr listed)) 1))
+         (extra
+          (when (and windowed (> weeks 0))
+            (list
+             (list (org-foresight-report--week-days span) span
+                   (lambda (r)
+                     (org-foresight-report--week-band (car r) rows-byday first))
+                   'left)
+             (list (format "vs %dw" (round weeks)) 5
+                   (lambda (r)
+                     (org-foresight-report--week-change
+                      (cdr r)
+                      (/ (- (or (cdr (assoc (car r) behind-rows)) 0.0) (cdr r))
+                         weeks)))
+                   'right))))
          (active 0) (peak 0) (peakmin 0))
-    (dotimes (i days)
-      (when (> (aref byday i) 0) (setq active (1+ active)))
-      (when (> (aref byday i) peakmin) (setq peakmin (aref byday i) peak i)))
-    (if (null rows)
+    (when byday
+      (dotimes (i span)
+        (let ((m (aref byday (+ first i))))
+          (when (> m 0) (setq active (1+ active)))
+          (when (> m peakmin) (setq peakmin m peak i)))))
+    (if (null listed)
         (concat "Week 0:00\n"
                 (propertize "(no clocked time this week)" 'face 'org-table))
       (concat
        (format "Week %s · avg %s/day · %d/%d active · peak %s %s"
                (org-duration-from-minutes total)
-               (org-duration-from-minutes (/ (float total) days))
-               active days
-               (format-time-string "%a" (org-foresight--day-start (- days 1 peak)))
+               (org-duration-from-minutes (/ (float total) span))
+               active span
+               (format-time-string "%a" (org-foresight--day-start (- span 1 peak)))
                (org-duration-from-minutes peakmin))
-       "\n" (org-foresight-report--category-table rows total maxmin "Area")))))
+       "\n" (org-foresight-report--category-table
+             listed total maxmin "Area" extra)))))
 
 ;;;; Capacity
 ;; The one block that looks forward.  Everything else here reports what has
@@ -1900,8 +2036,9 @@ asked you to attend was never yours to move in the first place."
 
 (defvar org-foresight-report-renderers
   '((daily  :body org-foresight-report--daily  :place bottom)
-    (review :body org-foresight-report--review :place bottom))
-  "Alist of (STYLE :body FUNCTION :place top-or-bottom).
+    (review :body org-foresight-report--review :place bottom
+            :days org-foresight-review-window))
+  "Alist of (STYLE :body FUNCTION :place top-or-bottom :days DAYS).
 
 FUNCTION is called with one argument: a survey of the horizon, or nil.  It is
 free to ignore it, and must work when it is nil -- but a renderer that wants
@@ -1917,7 +2054,14 @@ its own board here, and it depends on this file, not the other way round.
 that is a statement about what the view is for.  `bottom' is for a report
 consulted while working through the day; `top' is for one worked through in
 its own right, where reaching the entries means scrolling past what you came
-to act on.")
+to act on.
+
+`:days' is how many days of clock history the style reads -- an integer, or a
+symbol naming a variable holding one, so a setting can decide it.  Seven when
+absent.  It is declared here rather than taken by the renderer because the
+survey is made once and handed to whatever is being drawn: two walks of the
+logbooks are two chances to disagree about one afternoon, and on a slow
+machine the second is paid for on every keypress.")
 
 (defun org-foresight-report--renderer (&optional style)
   "Return the plist registered for STYLE, or nil."
@@ -1927,6 +2071,13 @@ to act on.")
 (defun org-foresight-report--place (&optional style)
   "Return where STYLE's report belongs, `top' or `bottom'."
   (or (plist-get (org-foresight-report--renderer style) :place) 'bottom))
+
+(defun org-foresight-report--days (&optional style)
+  "Return how many days of clock history STYLE's report reads."
+  (let ((days (plist-get (org-foresight-report--renderer style) :days)))
+    (cond ((integerp days) days)
+          ((and (symbolp days) days (boundp days)) (symbol-value days))
+          (t 7))))
 
 (defun org-foresight-report--body (&optional scan clock landing)
   "Return the report text for the current `org-foresight-report-style'.
@@ -1979,7 +2130,13 @@ between two meetings."
   (concat "\n"
           (org-foresight-report--badge "Clocked" "by area · last 7 days")
           "\n"
-          (org-foresight-report-week (or clock (org-foresight-clock-scan 7)))
+          ;; A second survey, over `org-foresight-review-window\='.  It looks
+          ;; like a second walk of every logbook and is not one that costs
+          ;; anything: the first opened the files, and the days a survey covers
+          ;; are only how many buckets it sorts the answers into.  Measured at
+          ;; 1.3s for the first and one millisecond for this.
+          (org-foresight-report-week
+           (or clock (org-foresight-clock-scan org-foresight-review-window)))
           "\n"
           (when-let ((estimates (org-foresight-report-estimates)))
             (concat "\n"
@@ -2087,7 +2244,8 @@ step afterwards."
              ;; it read the same seven days, and a second walk of the same
              ;; logbooks could only give them something to disagree about.
              (clock (org-foresight-report--guarded
-                     (lambda () (org-foresight-clock-scan 7))))
+                     (lambda () (org-foresight-clock-scan
+                                 (org-foresight-report--days)))))
              (clock (and (not (stringp clock)) clock))
              ;; What the elapsed half of the day was actually spent on.
              ;; Worked out here rather than in the verdict because the
