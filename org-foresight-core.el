@@ -169,6 +169,24 @@ them."
   :type '(repeat string)
   :group 'org-foresight)
 
+(defcustom org-foresight-clock-property "CATEGORY"
+  "Property the clock scan groups its rows by.
+
+CATEGORY is the right default and the reason is Org's, not this package's:
+every entry has one, because Org falls back to the file's name when nothing
+sets it, so a scan grouped by it always partitions the whole window.
+
+A layer above may want the same walk grouped by something it defines instead
+-- org-convect asks for time per area of accountability, which is a different
+question from time per kind of thing.  Binding this around a call answers it
+without a second pass over the files.
+
+An entry with no value for the property lands under \"?\".  With CATEGORY that
+never happens; with anything else it is where the unattributed time collects,
+and is usually the interesting row."
+  :type 'string
+  :group 'org-foresight)
+
 (defcustom org-foresight-private-categories nil
   "CATEGORY values whose entries are private commitments, not work.
 
@@ -297,8 +315,7 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                (let* ((cs (if (time-less-p s from) from s))
                       (ce (if (time-less-p today1 e) today1 e))
                       (dur (/ (float-time (time-subtract ce cs)) 60.0))
-                      (cat (or (org-entry-get (point) "CATEGORY" t)
-                               (org-get-category (point))
+                      (cat (or (org-entry-get (point) org-foresight-clock-property t)
                                "?"))
                       (idx (min (1- days)
                                 (floor (/ (float-time (time-subtract cs from)) 86400)))))
