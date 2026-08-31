@@ -2113,6 +2113,70 @@ procure was there for four weeks and is not here now"
         (spell (format "procure back %d" d) "procurement" (- d) 60)))
     out))
 
+(ert-deftest org-foresight-test-clock-scan-groups-by-category-by-default ()
+  "The default is CATEGORY and must stay it: every entry has one, because Org
+falls back to the file's name, so a scan grouped by it partitions the window."
+  (org-foresight-test--with-org "\
+* DONE one
+:PROPERTIES:
+:CATEGORY: comms
+:CONVECT_AREA: work.people
+:END:
+:LOGBOOK:
+CLOCK: [2026-08-30 Sun 09:00]--[2026-08-30 Sun 10:00] =>  1:00
+:END:
+"
+    (should (equal "CATEGORY" org-foresight-clock-property))
+    (let ((rows (plist-get (org-foresight-clock-scan
+                            30 (encode-time 0 0 12 30 8 2026))
+                           :rows)))
+      (should (assoc "comms" rows)))))
+
+(ert-deftest org-foresight-test-clock-scan-can-group-by-another-property ()
+  "One walk, a different question.  A layer above asks for time per area of
+accountability, which is not the same as time per kind of thing, and gets it
+without a second pass over the files."
+  (org-foresight-test--with-org "\
+* DONE one
+:PROPERTIES:
+:CATEGORY: comms
+:CONVECT_AREA: work.people
+:END:
+:LOGBOOK:
+CLOCK: [2026-08-30 Sun 09:00]--[2026-08-30 Sun 10:00] =>  1:00
+:END:
+"
+    (let* ((org-foresight-clock-property "CONVECT_AREA")
+           (rows (plist-get (org-foresight-clock-scan
+                             30 (encode-time 0 0 12 30 8 2026))
+                            :rows)))
+      (should (assoc "work.people" rows))
+      (should-not (assoc "comms" rows)))))
+
+(ert-deftest org-foresight-test-clock-scan-collects-the-unattributed ()
+  "With a property most entries do not carry, the rows nobody claimed are
+where the interesting time is, so they need a bucket of their own rather than
+being dropped or blamed on the file's name."
+  (org-foresight-test--with-org "\
+* DONE claimed
+:PROPERTIES:
+:CONVECT_AREA: work.dev
+:END:
+:LOGBOOK:
+CLOCK: [2026-08-30 Sun 09:00]--[2026-08-30 Sun 10:00] =>  1:00
+:END:
+* DONE unclaimed
+:LOGBOOK:
+CLOCK: [2026-08-30 Sun 13:00]--[2026-08-30 Sun 15:00] =>  2:00
+:END:
+"
+    (let* ((org-foresight-clock-property "CONVECT_AREA")
+           (rows (plist-get (org-foresight-clock-scan
+                             30 (encode-time 0 0 23 30 8 2026))
+                            :rows)))
+      (should (equal 60.0 (cdr (assoc "work.dev" rows))))
+      (should (equal 120.0 (cdr (assoc "?" rows)))))))
+
 (defmacro org-foresight-test--with-weeks (&rest body)
   "Run BODY with the five-week fixture as the only agenda file.
 WEEK is a survey of the seven days alone; LONG is the one the review reads,
