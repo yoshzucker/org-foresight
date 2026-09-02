@@ -1346,7 +1346,7 @@ first day with room in it."
   :type 'integer
   :group 'org-foresight)
 
-(defun org-foresight-report-load (&optional days scan now landing)
+(defun org-foresight-report-load (&optional days scan now landing behind)
   "Return the coming days drawn as today is, so that they can be compared.
 
 This is the block that turns \"I'm busy\" into a date.  Each row is one
@@ -1354,6 +1354,13 @@ working day: what may still be promised on it, and the same stacked bar the
 capacity block draws above -- same segments, same colours, same scale.  The
 point of a forward view is to hold it against today, and two pictures of the
 same thing drawn differently cannot be held against each other.
+
+BEHIND, from `org-foresight-behind\=', is how today's elapsed hours were
+actually spent.  Today is a row here like any other, and without it the row
+would be the only picture on the page drawn from the forecast alone -- the
+capacity block directly above draws the same day with its elapsed half
+measured, and two drawings of one day that disagree about the morning are
+worse than one drawing.  Later rows have no elapsed half and take none.
 
 The figure is `:headroom-min': free time less what is already promised and
 the reserve held back for interruptions.  Positive is what may still be taken
@@ -1394,7 +1401,30 @@ benchmark and always shows in a keystroke."
         (concat
          (mapconcat
          (lambda (r)
-           (let ((head (plist-get (cdr r) :headroom-min)))
+           (let* ((cap (cdr r))
+                  (head (plist-get cap :headroom-min))
+                  ;; Today alone has a half that has already happened, and it
+                  ;; is drawn from the clock in the same segments and colours
+                  ;; the capacity block uses above.  `eq' on the plist rather
+                  ;; than a comparison of times: the row for today is the one
+                  ;; whose capacity was kept as today's.
+                  (elapsed (and today-cap (eq cap today-cap)
+                                (org-foresight-report--behind-bar
+                                 behind per-column)))
+                  ;; Cut to what is left of this row's line, exactly as the
+                  ;; capacity bar is.  The leader here is longer than the one
+                  ;; there, so a day promised three times over drew a bar that
+                  ;; fitted the capacity block and ran off the end of this
+                  ;; one -- and an elapsed half takes its width from the same
+                  ;; line before the forecast is given any.
+                  (room (min org-foresight-bar-max-width
+                             (- org-foresight-report-columns
+                                (string-width
+                                 (format org-foresight-report--load-stub "" ""))
+                                (if elapsed (string-width elapsed) 0))))
+                  (ahead (org-foresight-report--draw-bar
+                          cap org-foresight-report--bar-segments per-column
+                          (plist-get cap :ahead-min) room)))
              (concat
               (format org-foresight-report--load-stub
                       (format-time-string "%a %m-%d" (car r))
@@ -1404,17 +1434,7 @@ benchmark and always shows in a keystroke."
                          (format "OVER by %s"
                                  (org-duration-from-minutes (- head)))
                          'face 'org-foresight-report-overcommitted)))
-              ;; Cut to what is left of this row's line, exactly as the
-               ;; capacity bar is.  The leader here is longer than the one
-               ;; there, so a day promised three times over drew a bar that
-               ;; fitted the capacity block and ran off the end of this one.
-               (org-foresight-report--draw-bar
-                (cdr r) org-foresight-report--bar-segments per-column
-                (plist-get (cdr r) :ahead-min)
-                (min org-foresight-bar-max-width
-                     (- org-foresight-report-columns
-                        (string-width (format org-foresight-report--load-stub
-                                              "" ""))))))))
+              (org-foresight-report--join-at-now elapsed ahead))))
           rows "\n")
          (when-let ((line (org-foresight-report--landing-line landing)))
            (concat "\n" line)))))))
@@ -2046,11 +2066,12 @@ asked you to attend was never yours to move in the first place."
             :days org-foresight-review-window))
   "Alist of (STYLE :body FUNCTION :place top-or-bottom :days DAYS).
 
-FUNCTION is called with one argument: a survey of the horizon, or nil.  It is
-free to ignore it, and must work when it is nil -- but a renderer that wants
-one should take the offered one rather than ask for its own, because a survey
-is a walk of every entry in every agenda file and the caller has already paid
-for this one.
+FUNCTION is called with four arguments: a survey of the horizon, a survey of
+the clock history, the deadline verdict, and how today's elapsed hours were
+actually spent.  Any of them may be nil and a renderer must work when they
+are -- but one that wants any should take what it is handed rather than ask
+for its own, because each is a walk of every entry in every agenda file and
+the caller has already paid for it.
 
 A registry rather than a `pcase' so that a file loaded later can add a style
 without this one having to know about it -- org-foresight-plan.el registers
@@ -2085,18 +2106,19 @@ machine the second is paid for on every keypress.")
           ((and (symbolp days) days (boundp days)) (symbol-value days))
           (t 7))))
 
-(defun org-foresight-report--body (&optional scan clock landing)
+(defun org-foresight-report--body (&optional scan clock landing behind)
   "Return the report text for the current `org-foresight-report-style'.
 
 Dispatches through `org-foresight-report-renderers'; an unknown style simply
 renders nothing.  SCAN is a survey of the horizon, CLOCK a survey of the
 clock history and LANDING the deadline verdict, all offered so a renderer
 reads them rather than taking its own -- see `org-foresight-report-render'.
-A renderer must work when any of them is nil."
+BEHIND is how today's elapsed hours were actually spent.  A renderer must work
+when any of them is nil."
   (when-let ((fn (plist-get (org-foresight-report--renderer) :body)))
-    (funcall fn scan clock landing)))
+    (funcall fn scan clock landing behind)))
 
-(defun org-foresight-report--daily (&optional scan clock landing)
+(defun org-foresight-report--daily (&optional scan clock landing behind)
   "Return the day looked back on: where the hours went, against where they were
 meant to go.
 
@@ -2117,14 +2139,14 @@ one afternoon."
             ;; happened.  What is done with is read last, and least often.
             (org-foresight-report--badge "Load" "when I could take this on")
             "\n"
-            (org-foresight-report-load nil scan nil landing)
+            (org-foresight-report-load nil scan nil landing behind)
             "\n\n"
             (org-foresight-report--badge "Spent" "where the hours actually went")
             "\n"
             (org-foresight-report--indent (org-foresight-report-spent clock))
             "\n")))
 
-(defun org-foresight-report--review (&optional _scan clock _landing)
+(defun org-foresight-report--review (&optional _scan clock _landing _behind)
   "Return the weekly review: where the last seven days went, and how far the
 estimates that shaped them were out.
 
@@ -2276,7 +2298,7 @@ step afterwards."
                        (lambda () (org-foresight-landing projects scan))))
              (landing (and (not (stringp landing)) landing))
              (body (org-foresight-report--guarded
-                    #'org-foresight-report--body scan clock landing))
+                    #'org-foresight-report--body scan clock landing behind))
              (line (org-foresight-report--guarded
                     #'org-foresight-report-capacity-line nil scan nil behind)))
         (org-foresight-report--clear)

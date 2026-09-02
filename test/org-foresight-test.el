@@ -2989,6 +2989,112 @@ SCHEDULED: " (org-foresight-test--stamp 0) "
         ;; and each is cut to its own line rather than to the other's
         (should (org-foresight-test--within-80 row))))))
 
+(defun org-foresight-test--todays-clock (from-h from-m to-h to-m)
+  "A clock survey holding one stretch worked on today, from HH:MM to HH:MM.
+
+Built on today rather than on the suite's fixed August date because the Load
+block asks about `org-foresight--day-start', and a clock filed on another day
+is a clock the block correctly ignores."
+  (let* ((day (org-foresight--day-start 0))
+         (at (lambda (h m) (time-add day (seconds-to-time (* 60 (+ (* 60 h) m))))))
+         (iv (cons (funcall at from-h from-m) (funcall at to-h to-m)))
+         (mins (/ (float-time (time-subtract (cdr iv) (car iv))) 60.0)))
+    (list :today-intervals (list iv)
+          :today-tasks (list (list :title "the morning's work" :minutes mins
+                                   :surge nil :intervals (list iv))))))
+
+(ert-deftest org-foresight-test-load-draws-todays-elapsed-half ()
+  "Today is a row in the Load block and a bar in the Capacity block above it,
+and the two have to be one picture.
+
+Without the elapsed half the row was the only drawing on the page made from
+the forecast alone: the block above showed the morning as it was clocked, the
+row below showed it as though it had not happened, and the reader was left
+holding two accounts of one day.  Later rows have no elapsed half and must not
+grow one -- nothing has happened on Thursday yet."
+  (org-foresight-test--with-day "* nothing\n"
+    (let* ((day (org-foresight--day-start 0))
+           (now (time-add day (seconds-to-time (* 60 60 14))))
+           (clock (org-foresight-test--todays-clock 9 0 11 0))
+           (behind (org-foresight-behind day clock nil now))
+           (rows (lambda (b) (split-string
+                              (substring-no-properties
+                               (org-foresight-report-load 14 nil now nil b))
+                              "\n")))
+           (with (funcall rows behind))
+           (without (funcall rows nil)))
+      ;; something elapsed, or the row has nothing to gain
+      (should (> (plist-get behind :behind-min) 0))
+      (should-not (equal (car with) (car without)))
+      ;; the seam, which is what says where now falls
+      (should (string-match-p "┃" (car with)))
+      ;; and tomorrow is untouched
+      (should (equal (nth 1 with) (nth 1 without)))
+      (should (org-foresight-test--within-80 (car with))))))
+
+(ert-deftest org-foresight-test-load-draws-today-as-the-capacity-block-does ()
+  "Same segments, same colours, same scale, which is the whole reason the Load
+block redraws a day the block above has already drawn.
+
+The scales coincide here rather than being made to: every day in this fixture
+is shaped alike, so the longest span among the rows is today's own, and the
+row is drawn at exactly the scale the capacity bar uses.  A row that opened
+with something other than that bar's elapsed half would be a different
+picture of the same morning."
+  (org-foresight-test--with-day "* nothing\n"
+    (let* ((day (org-foresight--day-start 0))
+           (now (time-add day (seconds-to-time (* 60 60 14))))
+           (clock (org-foresight-test--todays-clock 9 0 11 0))
+           (behind (org-foresight-behind day clock nil now))
+           (cap (org-foresight-capacity day nil now))
+           (above (substring-no-properties
+                   (org-foresight-report--behind-bar
+                    behind (org-foresight-report--bar-scale cap))))
+           (row (car (split-string
+                      (substring-no-properties
+                       (org-foresight-report-load 14 nil now nil behind))
+                      "\n")))
+           (lead (string-width (format org-foresight-report--load-stub "" ""))))
+      (should (> (length above) 0))
+      (should (string-prefix-p above (substring row lead))))))
+
+(ert-deftest org-foresight-test-the-renderer-is-handed-what-the-caller-paid-for ()
+  "Each of the four is a walk of every entry in every agenda file, or the
+watcher and the clock history behind it.  A renderer that had to fetch one for
+itself would pay for it twice and get a second chance to disagree with the
+block drawn from the first."
+  (let (seen)
+    (cl-letf (((symbol-function 'org-foresight-report--daily)
+               (lambda (&rest args) (setq seen args) "")))
+      (let ((org-foresight-report-style 'daily))
+        (org-foresight-report--body 'scan 'clock 'landing 'behind)))
+    (should (equal seen '(scan clock landing behind)))))
+
+(ert-deftest org-foresight-test-load-keeps-todays-row-on-its-line ()
+  "The elapsed half takes its width from the same line the forecast is drawn
+on, so it has to be deducted before the forecast is given any.
+
+The row that breaks is the one that has both: a morning long enough to draw
+and an afternoon promised past the end of the day, which runs to the ellipsis
+and would run past the window instead."
+  (org-foresight-test--with-window
+    (org-foresight-test--with-day
+        (concat "* NEXT far more than fits
+SCHEDULED: " (org-foresight-test--stamp 0) "
+:PROPERTIES:
+:EFFORT: 20:00
+:END:
+")
+      (let* ((day (org-foresight--day-start 0))
+             (now (time-add day (seconds-to-time (* 60 60 14))))
+             (behind (org-foresight-behind
+                      day (org-foresight-test--todays-clock 9 0 13 0) nil now))
+             (row (car (split-string
+                        (org-foresight-report-load 14 nil now nil behind)
+                        "\n"))))
+        (should (string-match-p "OVER by" (substring-no-properties row)))
+        (should (org-foresight-test--within-80 row))))))
+
 (ert-deftest org-foresight-test-report-load-within-80 ()
   (org-foresight-test--with-window
     (org-foresight-test--with-org "* nothing\n"
