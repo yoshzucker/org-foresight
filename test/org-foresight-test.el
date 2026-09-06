@@ -359,19 +359,57 @@ DEADLINE: <2026-08-10 Mon 17:00>
       (should (equal (org-foresight-test--busy-on scan 0) '("10:00-11:00")))
       (should (equal (org-foresight-test--busy-on scan 2) nil)))))
 
-(ert-deftest org-foresight-test-scan-survives-the-fixture ()
-  "Every timestamp shape the real files use must scan without error.
-`dayflow-fixture.org' is kept out of the agenda but is exactly the corpus of
-odd shapes this scan has to survive."
-  (let ((fixture (expand-file-name "~/Documents/memex/dayflow-fixture.org")))
-    (skip-unless (file-readable-p fixture))
-    (let* ((org-agenda-files (list fixture))
-           (scan (org-foresight-scan 14 (org-foresight-test--ts 0 0))))
+(defconst org-foresight-test--shapes "\
+* NEXT a bare active date
+<2026-08-10 Mon>
+* NEXT dated and timed
+<2026-08-11 Tue 09:00>
+* NEXT a time range inside one stamp
+<2026-08-11 Tue 13:00-14:30>
+* NEXT a range written as two stamps
+<2026-08-12 Wed 16:00>--<2026-08-12 Wed 17:00>
+* NEXT a range that crosses midnight
+<2026-08-13 Thu 22:00>--<2026-08-14 Fri 02:00>
+* NEXT an all-day range over several days
+<2026-08-15 Sat>--<2026-08-17 Mon>
+* NEXT a weekly repeater
+<2026-08-10 Mon 10:00-11:00 ++1w>
+* NEXT a catch-up repeater
+<2026-08-11 Tue 08:00 .+2d>
+* NEXT scheduled
+SCHEDULED: <2026-08-18 Tue>
+* NEXT scheduled with a delay
+SCHEDULED: <2026-08-19 Wed --2d>
+* NEXT with a deadline and a warning
+DEADLINE: <2026-08-20 Thu -3d>
+* DONE something that was clocked
+:LOGBOOK:
+CLOCK: [2026-08-10 Mon 09:00]--[2026-08-10 Mon 10:30] =>  1:30
+:END:
+* NEXT an inactive stamp, which is not a commitment
+[2026-08-21 Fri 09:00]
+"
+  "Every timestamp shape a real Org file puts in front of the scan.
+
+Kept as a corpus rather than one shape per test: what breaks a scan is
+rarely a shape on its own, it is a shape arriving among the others.")
+
+(ert-deftest org-foresight-test-scan-survives-every-timestamp-shape ()
+  "The scan must survive the whole corpus without error, and normalize.
+
+A fixture in the repository rather than a file on the author\='s disk: a
+test that reads somebody\='s real notes passes for one person and is
+skipped for everybody else, which is the same as not having it."
+  (org-foresight-test--with-org org-foresight-test--shapes
+    (let ((scan (org-foresight-scan 14 (org-foresight-test--ts 0 0))))
       (should (= (length (plist-get scan :busy)) 14))
       ;; intervals must come out normalized: sorted and non-overlapping
       (dotimes (i 14)
         (let ((ivs (aref (plist-get scan :busy) i)))
-          (should (equal ivs (org-foresight--intervals-normalize ivs))))))))
+          (should (equal ivs (org-foresight--intervals-normalize ivs)))))
+      ;; and the corpus has to actually reach the scan, or this proves nothing
+      (should (seq-some (lambda (i) (aref (plist-get scan :busy) i))
+                        (number-sequence 0 13))))))
 
 ;;;; Capacity
 
