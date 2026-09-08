@@ -139,14 +139,14 @@ what the importer writes and what a reader of the agenda can use."
      (org-foresight-demo--stamp d3 "13:00" "14:00") "\n\n"
 
      "* Architecture review\n:PROPERTIES:\n:UID: demo-architecture\n"
-     ":CATEGORY: meeting\n:LOCATION: 本社 会議室B\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:LOCATION: 本社 会議室B\n:FORESIGHT_PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp d3 "16:00" "17:00") "\n\n"
 
      ;; Two things in one hour.  Neither looks wrong on its own and Org draws
      ;; them one after the other, so without a mark on both the day reads as
      ;; though it could happen.
      "* Recruiting call\n:PROPERTIES:\n:UID: demo-recruiting\n"
-     ":CATEGORY: meeting\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:FORESIGHT_PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp 0 "15:00" "15:30") "\n\n"
 
      ;; Private, and somewhere: the journey to it is derived exactly as the
@@ -174,7 +174,7 @@ what the importer writes and what a reader of the agenda can use."
 
      ;; Already handled: must NOT appear in the meeting signal.
      "* Budget meeting\n:PROPERTIES:\n:UID: demo-budget\n"
-     ":CATEGORY: meeting\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:FORESIGHT_PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp d5 "11:00" "12:00") "\n\n"
 
      ;; A different category, and all-day: implies no preparation, and must not
@@ -191,7 +191,7 @@ what the importer writes and what a reader of the agenda can use."
 
      ;; An hour of yours, but one that will share itself with the commute.
      "* All-hands\n:PROPERTIES:\n:UID: demo-allhands\n"
-     ":CATEGORY: meeting\n:ATTENTION: background\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:FORESIGHT_ATTENTION: background\n:FORESIGHT_PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp 0 "13:00" "14:00") "\n\n"
 
      ;; A day that cannot be worked as written: this starts fifteen minutes
@@ -199,7 +199,7 @@ what the importer writes and what a reader of the agenda can use."
      ;; away.  Nothing about the entries looks wrong on its own, which is
      ;; exactly why a clash is worth being told about.
      "* Client review\n:PROPERTIES:\n:UID: demo-client\n"
-     ":CATEGORY: meeting\n:LOCATION: 顧客様先\n:PLAN_PREP: t\n:END:\n"
+     ":CATEGORY: meeting\n:LOCATION: 顧客様先\n:FORESIGHT_PLAN_PREP: t\n:END:\n"
      (org-foresight-demo--stamp 0 "15:45" "16:30") "\n\n"
 
      ;; Work put in the lunch break: with work declared as two intervals this
@@ -269,13 +269,13 @@ example of every situation the signals look for."
      ;; the office and in none of the others, and listed under `Here'.
      "**** NEXT Sign the contract in the safe\n"
      "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
-     ":PROPERTIES:\n:EFFORT:   0:30\n:CATEGORY: admin\n:PLACE: office\n:END:\n"
+     ":PROPERTIES:\n:EFFORT:   0:30\n:CATEGORY: admin\n:FORESIGHT_PLACE: office\n:END:\n"
 
      ;; And work the place decides on a day that never goes there.  Offered
      ;; nowhere -- which is right, and silent, which is why it carries `@'.
      "**** NEXT Count the stock\n"
      "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
-     ":PROPERTIES:\n:EFFORT:   1:00\n:CATEGORY: admin\n:PLACE: warehouse\n:END:\n"
+     ":PROPERTIES:\n:EFFORT:   1:00\n:CATEGORY: admin\n:FORESIGHT_PLACE: warehouse\n:END:\n"
 
      "**** NEXT Review the migration plan\n"
      "SCHEDULED: " (org-foresight-demo--stamp 0) "\n"
@@ -303,7 +303,7 @@ example of every situation the signals look for."
      ;; This is what `org-foresight-learn-surge\' reads, and what spends the
      ;; day\'s reserve for work that has not arrived.
      "**** ONGO Unblock the release for the field team\n"
-     ":PROPERTIES:\n:SURGE:    " (org-foresight-demo--inactive 0 11 40) "\n"
+     ":PROPERTIES:\n:FORESIGHT_SURGE:    " (org-foresight-demo--inactive 0 11 40) "\n"
      ":EFFORT:   0:45\n:CATEGORY: engineering\n:END:\n"
      ;; Ran twenty minutes into the declared lunch break, which is what an
      ;; interruption does: it does not stop because the day said it would.
@@ -342,7 +342,7 @@ example of every situation the signals look for."
      ;; Orphaned prep: points at a meeting no longer in the calendar.
      "**** NEXT Prep: Cancelled kickoff\n"
      "SCHEDULED: " (org-foresight-demo--stamp d1) "\n"
-     ":PROPERTIES:\n:EFFORT:   0:30\n:PLAN_MEETING_UID: demo-cancelled\n:END:\n"
+     ":PROPERTIES:\n:EFFORT:   0:30\n:FORESIGHT_PLAN_MEETING_UID: demo-cancelled\n:END:\n"
 
      ;; Gone quiet: both keywords, both overdue.
      "**** WAIT Legal sign-off on the contract\n"
@@ -374,10 +374,10 @@ example of every situation the signals look for."
      ;; that only looks like the second until you notice it has no place.
      "**** NEXT Get the contract stamped\n"
      "DEADLINE: " (org-foresight-demo--stamp d1) "\n"
-     ":PROPERTIES:\n:EFFORT:   0:15\n:PLACE: office\n:CATEGORY: admin\n:END:\n"
+     ":PROPERTIES:\n:EFFORT:   0:15\n:FORESIGHT_PLACE: office\n:CATEGORY: admin\n:END:\n"
 
      "**** NEXT Talk to Robin about the review\n"
-     ":PROPERTIES:\n:EFFORT:   0:30\n:PLACE: office\n:PEOPLE: Robin\n"
+     ":PROPERTIES:\n:EFFORT:   0:30\n:FORESIGHT_PLACE: office\n:PEOPLE: Robin\n"
      ":CATEGORY: team\n:END:\n"
 
      "**** NEXT Ask Robin how the migration went\n"

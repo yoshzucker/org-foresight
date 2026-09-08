@@ -32,6 +32,34 @@ off. Real files are never touched. Then =C-c a a= for the day, and
 =M-x org-foresight-demo-regenerate= returns the demo to a clean slate after
 experimenting.
 
+** The properties it reads
+
+Prefixed where the word is this package's, plain where it is not. The line is
+whether org-foresight decides what the value means: it invented what counts as
+a place and what a journey is, so those carry its name; it did not invent
+=EFFORT= or the idea that a meeting has a =LOCATION=, and putting its name on
+those would claim a word that other things read and write too.
+
+| Property | On | What it says |
+|----------+----+--------------|
+| =FORESIGHT_TRAVEL= | an entry | this entry *is* a journey, and where it ends |
+| =FORESIGHT_PLACE= | an entry, or a day's heading | where the body has to be |
+| =FORESIGHT_SURGE= | an entry | it arrived rather than was planned, and when |
+| =FORESIGHT_ATTENTION= | an entry | how much of you it takes |
+| =FORESIGHT_KIND= | a heading made by =org-foresight-clock-fill= | which kind of hour it collects |
+| =FORESIGHT_WAKE= / =_SLEEP= / =_WORK= | a day's heading | when that day begins, ends, and is worked |
+| =FORESIGHT_PLAN_PREP= / =_PLAN_MEETING_UID= | a meeting, and its preparation | that preparation was made, and what for |
+
+Not prefixed, and never will be: =EFFORT= and =LOCATION=, which are Org's and
+the calendar's; =CATEGORY=, which Org gives every entry and the agenda shows in
+a column of its own; and =PEOPLE=, which is a fact about the work rather than
+about this package — whatever writes it, this reads it.
+
+The entry-level names are settings (=org-foresight-travel-property= and its
+kin), so a layer above may point them elsewhere. The day's own are constants:
+nothing above this package writes on a day's heading, so there is nobody to
+want a different word.
+
 ** Where the settings go
 
 In an =init.el= or a module, not =custom.el=. Every value below says something
@@ -94,7 +122,7 @@ records the value and loses the reason.
   ;; (add-to-list
   ;;  'org-capture-templates
   ;;  `("i" "interrupt" entry (file+datetree my-journal)
-  ;;    ,(concat "* ONGO %?\n:PROPERTIES:\n:SURGE: %U\n:END:\n")
+  ;;    ,(concat "* ONGO %?\n:PROPERTIES:\n:FORESIGHT_SURGE: %U\n:END:\n")
   ;;    :clock-in t :clock-resume t)
   ;;  t)
 
@@ -424,8 +452,8 @@ They divide =elapsed = work hours ∩ [start of day, now]=.
 
 | Term        | What it means                          | How it is found |
 |-------------+----------------------------------------+-----------------|
-| =baseline=  | worked on something that did not arrive today | a clock ran, on a not-private entry with no dated =SURGE= mark |
-| =surge=     | worked on something that landed on you today  | a clock ran, on a not-private entry whose =SURGE= mark is dated today and has not been rescheduled to another day |
+| =baseline=  | worked on something that did not arrive today | a clock ran, on a not-private entry with no dated =FORESIGHT_SURGE= mark |
+| =surge=     | worked on something that landed on you today  | a clock ran, on a not-private entry whose =FORESIGHT_SURGE= mark is dated today and has not been rescheduled to another day |
 | =borrowed=  | a working hour spent on life           | a clock ran, on a private entry |
 | =unclocked= | the hour went, no clock ran, and nothing says you were elsewhere | no clock, and the watcher does not report =afk= |
 | =away=      | the hour went, no clock ran, and you were away from the machine | no clock, and the watcher reports =afk= |
@@ -441,7 +469,7 @@ They divide =remaining = work hours ∩ [now, end of day]=.
 | Term       | What it means                            | How it is found |
 |------------+------------------------------------------+-----------------|
 | =booked=   | work already fixed at a time             | a timed entry, not private, inside the work hours |
-| =travel=   | getting to and from it                   | derived from =PLACE= and =org-foresight-travel-matrix=, or written down with =TRAVEL= |
+| =travel=   | getting to and from it                   | derived from =FORESIGHT_PLACE= and =org-foresight-travel-matrix=, or written down with =FORESIGHT_TRAVEL= |
 | =borrowed= | a working hour already promised to life  | a timed entry, private, inside the work hours |
 | =promised= | effort owed on work dated today but not placed at an hour | =EFFORT= of entries scheduled today, less what is already clocked against them, corrected by the estimate bias |
 | =reserve=  | held back for what has not happened yet  | =surge + leak + lost=, each learned from history and scaled to the fraction of the span still ahead |
@@ -995,7 +1023,7 @@ figure rather than two entries:
 ,* NEXT Migrate the payments service
 ,** comms
    :PROPERTIES:
-   :KIND: comms
+   :FORESIGHT_KIND: comms
    :END:
    :LOGBOOK:
    CLOCK: [2026-08-25 Tue 10:05]--[2026-08-25 Tue 10:35] =>  0:30
@@ -1141,7 +1169,7 @@ altogether and press the redo key by hand.
 Occupying an hour and demanding all of it are different things, and treating
 them as one makes a full day look impossible.
 
-| =:ATTENTION:=   | Costs the hour | Shares it | Example                    |
+| =:FORESIGHT_ATTENTION:=   | Costs the hour | Shares it | Example                    |
 |-----------------+----------------+-----------+----------------------------|
 | (unset)         | yes            | no        | a meeting you run          |
 | =background=    | yes            | yes       | a call you only listen to  |
@@ -1316,13 +1344,13 @@ A day has a place as well as hours, and it is the one thing no entry can say:
       org-foresight-home-place 'home)                        ; the rest
 #+end_src
 
-A day that goes differently says so on its own heading, next to =WORK=:
+A day that goes differently says so on its own heading, next to =FORESIGHT_WORK=:
 
 #+begin_example
 *** 2026-08-17 Mon
 :PROPERTIES:
-:WORK:  09:00-12:00 13:00-17:30
-:PLACE: office
+:FORESIGHT_WORK:  09:00-12:00 13:00-17:30
+:FORESIGHT_PLACE: office
 :END:
 #+end_example
 
@@ -1335,7 +1363,7 @@ worked from home. So it is worth letting Org offer the names:
       "home office client")
 #+end_src
 
-=C-c C-x p= now completes =PLACE= wherever it is typed — on a day's heading
+=C-c C-x p= now completes =FORESIGHT_PLACE= wherever it is typed — on a day's heading
 and on the occasional entry whose =LOCATION= does not say where the body has
 to be. Global rather than a =#+PROPERTY:= line, so it holds in an imported
 calendar too, which a sync is free to rewrite.
@@ -1379,7 +1407,7 @@ here can infer. When it does need a room, say so the way anything else does:
 * NEXT ask about the spec          * NEXT talk about the review
 :PROPERTIES:                       :PROPERTIES:
 :PEOPLE: 佐藤                      :PEOPLE: 佐藤
-:END:                              :PLACE:  office
+:END:                              :FORESIGHT_PLACE:  office
                                    :END:
 #+end_example
 
@@ -1400,18 +1428,18 @@ be remembered on the morning it was too late to plan around.
 (define-key org-agenda-mode-map "D" #'org-foresight-shape-day)
 #+end_src
 
-A day's own heading may carry =WAKE=, =SLEEP= and =WORK=:
+A day's own heading may carry =FORESIGHT_WAKE=, =FORESIGHT_SLEEP= and =FORESIGHT_WORK=:
 
 #+begin_example
 *** 2026-08-10 Mon
 :PROPERTIES:
-:WAKE:  06:00
-:SLEEP: 22:00
-:WORK:  09:00-12:00 13:00-17:30
+:FORESIGHT_WAKE:  06:00
+:FORESIGHT_SLEEP: 22:00
+:FORESIGHT_WORK:  09:00-12:00 13:00-17:30
 :END:
 #+end_example
 
-=WORK= takes one range, several separated by spaces or commas, or =none= for a
+=FORESIGHT_WORK= takes one range, several separated by spaces or commas, or =none= for a
 day with no work in it at all.
 
 * Travel is work
@@ -1480,7 +1508,7 @@ journey. Set =org-foresight-places= to map locations onto places, and
 *** A free hour in the wrong place
 
 The other half of knowing where the body is: a gap only offers the work that
-can be done in it. A task carrying =:PLACE: office= is suggested in the hours
+can be done in it. A task carrying =:FORESIGHT_PLACE: office= is suggested in the hours
 actually spent at the office — after the journey in and before the journey
 back — and in no others. An hour free at home is no use to it at all, and a
 suggestion that ignored that would be worse than none: it reads as an answer,
@@ -1511,7 +1539,7 @@ and writes the journey down:
 ,* → office
 <2026-08-19 Wed 07:10--2026-08-19 Wed 08:10>
 :PROPERTIES:
-:TRAVEL: office
+:FORESIGHT_TRAVEL: office
 :END:
 #+end_example
 
@@ -1519,6 +1547,41 @@ From then on it is an entry like any other -- Org draws it, it is counted as
 travel, and it puts you at the office from the moment it ends -- and nothing
 derives a second leg to a place you have already said you are going to. The
 way back is still derived, since nobody wrote that down.
+
+A written journey has to say *when* it happened, and there are two ways: a
+timestamp with a time on it, as above, or a clock. Clocking the trip is the
+ordinary way to record one, so it is the ordinary way to declare one — put
+=FORESIGHT_TRAVEL= on the entry, clock it, and the day reads the hours off the
+clock. With neither, no day can place it, and the board says so under
+=Journey that cannot be placed= rather than leaving the day to be quietly
+wrong about where you are.
+
+*** What is derived, in order
+
+Eight rules, and the order is part of them.
+
+1. A day with no working hours derives no journeys at all.
+2. What counts as somewhere to be: entries with a time and a place. Somebody
+   else's commitment (=FORESIGHT_ATTENTION= informational) is not a journey of
+   yours to make.
+3. You start at =org-foresight-home-place=. The day's own base is its
+   heading's =FORESIGHT_PLACE=, failing that =org-foresight-day-places= for
+   that weekday, failing that home.
+4. If the base is not home, one journey in — skipped when a written one
+   already goes there.
+5. Then, in time order, one journey for every entry that is somewhere other
+   than where you now are. A written journey moves you without drawing
+   anything: it *is* the journey.
+6. After the last of them, if you are not at the base, one journey back to it.
+7. Finally, if you are not at home, one journey home.
+8. Leaving a place in =org-foresight-unworkable-places= pins the *departure*
+   rather than the arrival: nothing keeps you where nothing can be done, so
+   the hours that frees land where they are worth something.
+
+Rule 5 is where most of a day's journeys come from, and rule 3 is the one that
+surprises: the day's base is not where the first meeting is. A day worked from
+home with one appointment at the office is an excursion — out, and back — not
+an office day.
 
 It has a command of its own rather than answering to =s=. A derived row
 answers to none of Org's commands, because there is no entry behind it and
@@ -1642,7 +1705,7 @@ harder.
 
 *Interruptions* are not controllable, but their volume is stable and
 measurable — and they are measurable in Org alone. An entry carrying the
-=SURGE= property arrived rather than was planned, and the property's value is
+=FORESIGHT_SURGE= property arrived rather than was planned, and the property's value is
 when it arrived. =M-x org-foresight-learn-surge= sums the minutes clocked
 against such work on the day it landed, takes the median over days, and holds
 that much back.

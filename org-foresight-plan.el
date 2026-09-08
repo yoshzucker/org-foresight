@@ -374,7 +374,7 @@ than asking for one."
                   today (org-foresight-day-blocks today scan)))
          here elsewhere records
          meetings procrastinated unplannable followups outside-work
-         orphan-candidates undecided in-flight unreadable)
+         orphan-candidates undecided in-flight unreadable untimed-travel)
     (dolist (file (org-agenda-files))
       (when (file-exists-p file)
         (with-current-buffer (find-file-noselect file)
@@ -428,7 +428,7 @@ than asking for one."
                 (when (and (not done)
                            org-foresight-meeting-categories
                            (member cat org-foresight-meeting-categories)
-                           (null (org-entry-get (point) "PLAN_PREP"))
+                           (null (org-entry-get (point) org-foresight-prep-property))
                            (org-foresight--entry-has-future-time-p stamps now))
                   (push (org-foresight--finding
                          title
@@ -436,6 +436,21 @@ than asking for one."
                                  org-foresight-meeting-prep
                                  org-foresight-meeting-follow))
                         meetings))
+                ;; A journey written down that no day can place.  Between
+                ;; them a stamp and a clock are the only two ways an entry
+                ;; says when it happened; with neither, the derivation goes
+                ;; on believing you never left the house and draws the next
+                ;; leg from there.  It used to do that in silence, which is
+                ;; the part worth fixing -- a rule nobody can see broken is
+                ;; a rule nobody can follow.
+                (when (and (not done)
+                           org-foresight-travel-property
+                           (org-entry-get (point) org-foresight-travel-property)
+                           (not (seq-find #'org-foresight--ts-timed-p stamps))
+                           (not (org-foresight--entry-clocked-p)))
+                  (push (org-foresight--finding
+                         title "no time and no clock, so no day can place it")
+                        untimed-travel))
                 ;; (f) Work already parked outside the hours being defended.
                 ;; Excluded: private commitments, because dinner at seven is
                 ;; not work that escaped the day; and anything belonging to
@@ -541,7 +556,8 @@ than asking for one."
                                  (format-time-string "%m-%d" sched)))
                         followups))
                 ;; (e) Prep for something that may have been cancelled.
-                (when-let ((ref (org-entry-get (point) "PLAN_MEETING_UID")))
+                (when-let ((ref (org-entry-get
+                                 (point) org-foresight-meeting-uid-property)))
                   (unless done
                     (push (cons ref (org-foresight--finding
                                      title "meeting no longer in the calendar"))
@@ -581,6 +597,8 @@ than asking for one."
         (list (cons "Impossible (travel clashes with a meeting)"
                    (org-foresight--clash-findings scan))
              (cons "Meetings without prep" (nreverse meetings))
+             (cons "Journey that cannot be placed"
+                   (nreverse untimed-travel))
              (cons "Unreadable estimate (breaks the agenda itself)"
                    (nreverse unreadable))
              (cons "Outside work hours (invisible to capacity)"
@@ -1438,7 +1456,17 @@ recognised."
   :type '(repeat string)
   :group 'org-foresight)
 
-(defcustom org-foresight-clock-fill-kind-property "KIND"
+(defconst org-foresight-prep-property "FORESIGHT_PLAN_PREP"
+  "Property marking a meeting whose preparation has already been made.")
+
+(defconst org-foresight-meeting-uid-property "FORESIGHT_PLAN_MEETING_UID"
+  "Property on a preparation task, naming the meeting it was made for.
+
+Constants rather than settings, for the reason the day\='s own properties are:
+these are written and read by this package alone, so there is nobody above to
+want a different word for them.")
+
+(defcustom org-foresight-clock-fill-kind-property "FORESIGHT_KIND"
   "Property naming what a heading made by `org-foresight-clock-fill\=' records.
 
 A property rather than a tag, for the reason the surge property is one: it is
@@ -1681,10 +1709,16 @@ today when it is not."
            (journeys (org-foresight--clock-fill-journeys scan))
            ;; Kinds first.  They are the answer on the hours hardest to name,
            ;; which is exactly why those hours are the ones still unrecorded
-           ;; at six o\'clock.
-           (title (completing-read "What were you doing? "
-                                   (append org-foresight-clock-fill-kinds
-                                           (mapcar #'car known))))
+           ;; at six o\'clock.  Then the journeys, gathered rather than left
+           ;; where the day happened to put them: they arrive among the
+           ;; day\'s entries already, but behind everything clocked so far,
+           ;; and by the evening that is a long way down.
+           (title (completing-read
+                   "What were you doing? "
+                   (append org-foresight-clock-fill-kinds
+                           (mapcar #'car journeys)
+                           (seq-remove (lambda (name) (assoc name journeys))
+                                       (mapcar #'car known)))))
            (marker (cdr (assoc title known))))
       (when (string-empty-p (string-trim title))
         (user-error "Nothing named, nothing written"))
@@ -1969,14 +2003,14 @@ there is no side of a date."
                 (start (org-foresight--ts-start el))
                 (end (org-foresight--ts-end el))
                 (slots (org-foresight--meeting-slots start end))
-                (props (list (cons "PLAN_MEETING_UID" uid))))
+                (props (list (cons org-foresight-meeting-uid-property uid))))
            (org-foresight--file-task
             (format "Prep: %s" title) (car slots)
             org-foresight-meeting-prep props)
            (org-foresight--file-task
             (format "Follow up: %s" title) (cdr slots)
             org-foresight-meeting-follow props)
-           (org-entry-put (point) "PLAN_PREP" "t")
+           (org-entry-put (point) org-foresight-prep-property "t")
            (save-buffer)
            t))))))
 
@@ -2002,7 +2036,7 @@ them back to edit a property first."
       (org-with-point-at marker
         (org-back-to-heading t)
         (setq title (org-get-heading t t t t)
-              already (org-entry-get (point) "PLAN_PREP")))
+              already (org-entry-get (point) org-foresight-prep-property)))
       (cond
        (already (message "\"%s\" already has preparation" title))
        ((org-foresight--prepare-meeting marker)

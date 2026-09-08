@@ -498,7 +498,7 @@ buffer under it rather than whatever the test happened to be in."
 SCHEDULED goes before the drawer, where Org insists a planning line lives."
   (concat "* ONGO " title "\n"
           (when scheduled (concat "SCHEDULED: " scheduled "\n"))
-          ":PROPERTIES:\n:SURGE: " arrival "\n:END:\n"))
+          ":PROPERTIES:\n:FORESIGHT_SURGE: " arrival "\n:END:\n"))
 
 (ert-deftest org-foresight-test-pouring-nothing-lands-at-once ()
   "Nothing to pour runs out at the first free instant, not never.
@@ -583,7 +583,7 @@ mark, not anything of the child\'s."
   (org-foresight-test--with-window
     (org-foresight-test--with-org
         (concat "* ONGO the interruption\n"
-                ":PROPERTIES:\n:SURGE: [2026-08-10 Mon 10:00]\n:END:\n"
+                ":PROPERTIES:\n:FORESIGHT_SURGE: [2026-08-10 Mon 10:00]\n:END:\n"
                 "** NEXT part of it\nSCHEDULED: <2026-08-10 Mon>\n"
                 "** NEXT taken in hand later\nSCHEDULED: <2026-08-12 Wed>\n")
       (should (equal '("the interruption" "part of it")
@@ -600,20 +600,20 @@ has outlived a change of that setting has drawers both ways round."
   (org-foresight-test--with-org
       (concat
        ;; the property says so itself
-       "* ONGO marked\n:PROPERTIES:\n:SURGE: [2026-08-10 Mon 10:00]\n:END:\n"
+       "* ONGO marked\n:PROPERTIES:\n:FORESIGHT_SURGE: [2026-08-10 Mon 10:00]\n:END:\n"
        ;; only a log, and written newest-first
-       "* ONGO logged\n:PROPERTIES:\n:SURGE: t\n:END:\n"
+       "* ONGO logged\n:PROPERTIES:\n:FORESIGHT_SURGE: t\n:END:\n"
        ":LOGBOOK:\n"
        "- State \"DONE\"       from \"ONGO\"       [2026-08-12 Wed 18:00]\n"
        "- State \"ONGO\"       from              [2026-08-09 Sun 08:00]\n"
        ":END:\n"
        ;; only a clock
-       "* ONGO clocked\n:PROPERTIES:\n:SURGE: t\n:END:\n"
+       "* ONGO clocked\n:PROPERTIES:\n:FORESIGHT_SURGE: t\n:END:\n"
        ":LOGBOOK:\n"
        "CLOCK: [2026-08-11 Tue 13:00]--[2026-08-11 Tue 14:00] =>  1:00\n"
        ":END:\n"
        ;; nothing to go on
-       "* ONGO bare\n:PROPERTIES:\n:SURGE: t\n:END:\n")
+       "* ONGO bare\n:PROPERTIES:\n:FORESIGHT_SURGE: t\n:END:\n")
     (let (out)
       (dolist (file (org-agenda-files))
         (with-current-buffer (find-file-noselect file)
@@ -640,7 +640,7 @@ it while never being counted as the thing that spent it."
   (org-foresight-test--with-window
     (org-foresight-test--with-org
         (concat "* ONGO an interruption, no date\n"
-                ":PROPERTIES:\n:SURGE: [2026-08-10 Mon 09:00]\n"
+                ":PROPERTIES:\n:FORESIGHT_SURGE: [2026-08-10 Mon 09:00]\n"
                 ":EFFORT:   0:45\n:CATEGORY: work\n:END:\n")
       (let* ((day (org-foresight-test--ts 0 0 10))
              (scan (org-foresight-scan 1 day (org-foresight-test--ts 10 0 10)))
@@ -675,7 +675,7 @@ twice -- so what has landed comes off the allowance, finished or not."
       ;; an hour of it has, and is still going
       (org-foresight-test--with-org
           (concat "* ONGO an interruption\n"
-                  ":PROPERTIES:\n:SURGE: [2026-08-10 Mon 09:00]\n"
+                  ":PROPERTIES:\n:FORESIGHT_SURGE: [2026-08-10 Mon 09:00]\n"
                   ":EFFORT:   1:00\n:END:\n"
                   "SCHEDULED: <2026-08-10 Mon>\n")
         (should (= 60.0 (plist-get (org-foresight-capacity day nil now)
@@ -684,7 +684,7 @@ twice -- so what has landed comes off the allowance, finished or not."
       (org-foresight-test--with-org
           (concat "* DONE an interruption, dealt with\n"
                   "CLOSED: [2026-08-10 Mon 09:30]\n"
-                  ":PROPERTIES:\n:SURGE: [2026-08-10 Mon 09:00]\n"
+                  ":PROPERTIES:\n:FORESIGHT_SURGE: [2026-08-10 Mon 09:00]\n"
                   ":EFFORT:   1:00\n:END:\n"
                   ":LOGBOOK:\n"
                   "CLOCK: [2026-08-10 Mon 09:00]--[2026-08-10 Mon 09:30]"
@@ -1673,7 +1673,7 @@ one test that turns on a day not being one."
 (ert-deftest org-foresight-test-day-shape-honours-the-heading ()
   "Properties on the day's own heading beat the defaults."
   (let ((file (make-temp-file "org-foresight-day" nil ".org"
-                              "* 2026\n** 2026-08 August\n*** 2026-08-10 Mon\n:PROPERTIES:\n:WAKE:  06:00\n:SLEEP: 22:00\n:WORK:  10:00-16:00\n:END:\n")))
+                              "* 2026\n** 2026-08 August\n*** 2026-08-10 Mon\n:PROPERTIES:\n:FORESIGHT_WAKE:  06:00\n:FORESIGHT_SLEEP: 22:00\n:FORESIGHT_WORK:  10:00-16:00\n:END:\n")))
     (unwind-protect
         (let ((org-foresight-day-file file)
               (org-foresight-awake '("07:00" . "23:00"))
@@ -1722,7 +1722,7 @@ one test that turns on a day not being one."
 * explicitly placed
 :PROPERTIES:
 :LOCATION: https://teams.microsoft.com/l/meetup-join/xyz
-:PLACE:    office
+:FORESIGHT_PLACE:    office
 :END:
 * no location at all
 "
@@ -1757,6 +1757,56 @@ one test that turns on a day not being one."
                                           ((client . home) . 90)))
            (org-foresight-travel-default 30))
        ,@body)))
+
+(ert-deftest org-foresight-test-an-estimate-outlasts-a-keyword ()
+  "An appointment with no end time lasts as long as its EFFORT says.
+
+A TODO keyword says what state the work is in, and nothing about how long it
+takes -- so reading EFFORT only when one was present made the same estimate
+honoured or ignored by a word that has no opinion.  Written up as an
+appointment at 16:00 for three quarters of an hour, the day gave it a
+whole one, and everything after it moved."
+  (org-foresight-test--with-day
+      "* gym
+SCHEDULED: <2026-08-10 Mon 16:00>
+:PROPERTIES:
+:EFFORT: 0:45
+:END:
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      (should (member "meeting 16:00-16:45" bands)))))
+
+(ert-deftest org-foresight-test-with-no-estimate-the-default-still-stands ()
+  "Nothing said, so the default answers.  It is the last resort, not the rule."
+  (org-foresight-test--with-day
+      "* gym
+SCHEDULED: <2026-08-10 Mon 16:00>
+"
+    (let ((org-foresight-default-event-duration 60))
+      (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+        (should (member "meeting 16:00-17:00" bands))))))
+
+(ert-deftest org-foresight-test-the-day-says-where-it-is-worked-from ()
+  "The place property on the day's own heading, under its own name.
+
+Written out here rather than built from the setting: a fixture that asks the
+code what it is called agrees with the code whatever it is called, and pins
+nothing.  The name is what somebody types into a file, so the name is what
+this has to hold."
+  (org-foresight-test--with-day "* nothing\n"
+    (let* ((file (make-temp-file "org-foresight-day" nil ".org"))
+           (org-foresight-day-file file)
+           (org-foresight--shape-cache nil))
+      (unwind-protect
+          (progn
+            (with-temp-file file
+              (insert "* 2026\n** 2026-08 August\n*** 2026-08-10 Monday\n"
+                      ":PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n"))
+            (should (eq 'office
+                        (plist-get (org-foresight-day-shape
+                                    (org-foresight-test--ts 0 0 10))
+                                   :place))))
+        (delete-file file)))))
 
 (ert-deftest org-foresight-test-travel-out-and-back ()
   "One office meeting costs the hour plus both journeys.
@@ -1793,6 +1843,72 @@ nothing keeps you there once the thing that took you there has finished."
       (should (member "travel 09:00-10:00" bands))   ; home → office, 60
       (should (member "travel 12:30-13:00" bands))   ; office → client, 30
       (should (member "travel 14:00-15:30" bands))))) ; client → home, 90
+
+(ert-deftest org-foresight-test-a-clocked-journey-is-a-journey ()
+  "A journey written down and then clocked, with no time on its stamp.
+
+Clocking a trip is the ordinary way to record one, so it has to be a way to
+declare one.  Read only from a timed stamp, the day went on believing nobody
+had left the house."
+  (org-foresight-test--with-travel
+      "* NEXT Drive in
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:FORESIGHT_TRAVEL: office
+:END:
+:LOGBOOK:
+CLOCK: [2026-08-10 Mon 08:00]--[2026-08-10 Mon 09:00] =>  1:00
+:END:
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      ;; Borrowed, because a commute before nine is an hour the day took from
+      ;; the morning -- which is the honest reading and the point of counting
+      ;; the journey at all.
+      (should (member "travel 08:00-09:00 borrowed" bands)))))
+
+(ert-deftest org-foresight-test-a-clocked-journey-moves-you ()
+  "And the leg after it starts from where it left you.
+
+The office is 60 from home and the client 30 from the office.  A journey the
+day could not see left the next leg being drawn from home -- the wrong place,
+at the wrong length, before the trip that was actually made."
+  (org-foresight-test--with-travel
+      "* NEXT Drive in
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:FORESIGHT_TRAVEL: office
+:END:
+:LOGBOOK:
+CLOCK: [2026-08-10 Mon 08:00]--[2026-08-10 Mon 09:00] =>  1:00
+:END:
+* Site visit
+:PROPERTIES:
+:LOCATION: 顧客様先
+:END:
+<2026-08-10 Mon 13:00-14:00>
+"
+    (let ((bands (org-foresight-test--bands (org-foresight-test--ts 0 0 10))))
+      ;; office → client, 30 minutes
+      (should (member "travel 12:30-13:00" bands))
+      ;; and not home → client, which is 75 and would start at 11:45
+      (should-not (member "travel 11:45-13:00" bands)))))
+
+(ert-deftest org-foresight-test-a-journey-with-no-time-is-not-silent ()
+  "Neither a timed stamp nor a clock: nothing can place it, so the board says
+so rather than leaving the day to be wrong quietly."
+  (org-foresight-test--with-travel
+      "* NEXT Drive in
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:FORESIGHT_TRAVEL: office
+:END:
+"
+    (let* ((board (org-foresight--signals-compute))
+           (section (assoc "Journey that cannot be placed"
+                           (plist-get board :signals))))
+      (should section)
+      (should (seq-find (lambda (f) (equal (plist-get f :title) "Drive in"))
+                        (cdr section))))))
 
 (ert-deftest org-foresight-test-travel-not-invented-by-a-call-link ()
   "A meeting whose only location is a video link must not move anyone."
@@ -1921,7 +2037,7 @@ meeting it serves, however far back it had to go."
   (org-foresight-test--with-attention
       "* explicitly listen-only
 :PROPERTIES:
-:ATTENTION: background
+:FORESIGHT_ATTENTION: background
 :END:
 * by category
 :PROPERTIES:
@@ -1934,7 +2050,7 @@ meeting it serves, however far back it had to go."
 * an exception to its category
 :PROPERTIES:
 :CATEGORY: club
-:ATTENTION: blocking
+:FORESIGHT_ATTENTION: blocking
 :END:
 * ordinary
 "
@@ -2005,7 +2121,7 @@ alongside whatever else is happening, rather than instead of it."
 <2026-08-10 Mon 14:00-15:00>
 * 全社定例
 :PROPERTIES:
-:ATTENTION: background
+:FORESIGHT_ATTENTION: background
 :END:
 <2026-08-10 Mon 14:00-15:00>
 "
@@ -2594,7 +2710,7 @@ about what is overdue has to be told when today is."
 * already prepared
 :PROPERTIES:
 :CATEGORY: outlook
-:PLAN_PREP: t
+:FORESIGHT_PLAN_PREP: t
 :END:
 %s
 * private appointment
@@ -2628,16 +2744,16 @@ about what is overdue has to be told when today is."
 :PROPERTIES:
 :UID: still-here
 :CATEGORY: outlook
-:PLAN_PREP: t
+:FORESIGHT_PLAN_PREP: t
 :END:
 %s
 * NEXT prep for the live meeting
 :PROPERTIES:
-:PLAN_MEETING_UID: still-here
+:FORESIGHT_PLAN_MEETING_UID: still-here
 :END:
 * NEXT prep for a cancelled meeting
 :PROPERTIES:
-:PLAN_MEETING_UID: long-gone
+:FORESIGHT_PLAN_MEETING_UID: long-gone
 :END:
 "
               (org-foresight-test--stamp (org-foresight-test--offset-to 2) "10:00" "11:00"))
@@ -2914,7 +3030,7 @@ Binds `org-foresight-test-tasks' to the task file's path."
       (should (= 1 (org-foresight-test--count ":EFFORT:   0:30" text)))
       (should (= 1 (org-foresight-test--count ":EFFORT:   0:15" text)))
       ;; both point back at the meeting, which is what makes orphans findable
-      (should (= 2 (org-foresight-test--count ":PLAN_MEETING_UID: uid-1" text)))
+      (should (= 2 (org-foresight-test--count ":FORESIGHT_PLAN_MEETING_UID: uid-1" text)))
       ;; and they read in the order they happen, not upside down
       (should (< (string-search "Prep: board review" text)
                  (string-search "Follow up: board review" text))))))
@@ -2939,7 +3055,7 @@ Binds `org-foresight-test-tasks' to the task file's path."
       (should (= 1 (org-foresight-test--count "Prep: board review" text))))
     ;; and the meeting itself now carries the marker
     (should (string-match-p
-             ":PLAN_PREP:"
+             ":FORESIGHT_PLAN_PREP:"
              (with-current-buffer (find-file-noselect (car org-agenda-files))
                (buffer-string))))))
 
@@ -4384,7 +4500,7 @@ and what has to move is worth more than where it came from."
     (org-foresight-test--with-org
         (concat "* ONGO an interruption\n"
                 "SCHEDULED: <2026-08-10 Mon>\n"
-                ":PROPERTIES:\n:SURGE: [2026-08-10 Mon 09:00]\n"
+                ":PROPERTIES:\n:FORESIGHT_SURGE: [2026-08-10 Mon 09:00]\n"
                 ":EFFORT:   0:30\n:END:\n"
                 "* NEXT work that was chosen\n"
                 "SCHEDULED: <2026-08-10 Mon>\n"
@@ -4605,7 +4721,7 @@ Read while point is already on the heading, during the walk that reads the
 clock -- asking afterwards would mean opening every one of them again."
   (org-foresight-test--with-clocked
       (concat
-       "* ONGO Interruption\n:PROPERTIES:\n:CATEGORY: admin\n:SURGE: ["
+       "* ONGO Interruption\n:PROPERTIES:\n:CATEGORY: admin\n:FORESIGHT_SURGE: ["
        (format-time-string "%Y-%m-%d %a 14:00") "]\n:END:\n"
        ":LOGBOOK:\nCLOCK: [@ 14:00]--[@ 14:40] =>  0:40\n:END:\n"
        "* NEXT Planned work\n:PROPERTIES:\n:CATEGORY: admin\n:END:\n"
@@ -5041,7 +5157,7 @@ capacity."
   "A day may declare its own broken shape, and it survives the round trip."
   (let ((file (make-temp-file
                "org-foresight-day" nil ".org"
-               "* 2026\n** 2026-08 August\n*** 2026-08-10 Mon\n:PROPERTIES:\n:WORK: 09:00-12:00 13:00-17:30\n:END:\n")))
+               "* 2026\n** 2026-08 August\n*** 2026-08-10 Mon\n:PROPERTIES:\n:FORESIGHT_WORK: 09:00-12:00 13:00-17:30\n:END:\n")))
     (unwind-protect
         (let* ((org-foresight-day-file file)
                (org-foresight-work '(("08:00" . "16:00")))
@@ -5480,7 +5596,7 @@ free and in the wrong one."
               (org-foresight-test--stamp 0 "14:00" "15:00") "\n"
               "* NEXT only at the office\nSCHEDULED: "
               (org-foresight-test--stamp 0)
-              "\n:PROPERTIES:\n:EFFORT: 1:00\n:PLACE: office\n:END:\n"
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:FORESIGHT_PLACE: office\n:END:\n"
               "* NEXT anywhere at all\nSCHEDULED: " (org-foresight-test--stamp 0)
               "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n")
     (let* ((org-foresight-work '(("09:00" . "17:30")))
@@ -5519,7 +5635,7 @@ without competing for it is not one of them."
               "* standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
               (org-foresight-test--stamp 0 "09:00" "09:45") "\n"
               "* somebody else's fixture\n:PROPERTIES:\n:CATEGORY: meeting\n"
-              ":ATTENTION: informational\n:END:\n"
+              ":FORESIGHT_ATTENTION: informational\n:END:\n"
               (org-foresight-test--stamp 0 "09:15" "10:00") "\n"
               "* an hour of its own\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
               (org-foresight-test--stamp 0 "11:00" "12:00") "\n")
@@ -5848,7 +5964,7 @@ recorded nothing."
       (org-foresight--file-clocked-entry "a call from procurement" from to t)
       (let ((text (org-foresight-test--task-file-text)))
         (should (string-match-p "^\\* a call from procurement$" text))
-        (should (string-match-p ":SURGE:" text)))
+        (should (string-match-p ":FORESIGHT_SURGE:" text)))
       ;; and the survey finds it, with its half hour and its arrived-ness
       (let* ((clock (org-foresight-clock-scan 1))
              (task (seq-find (lambda (task)
@@ -6493,7 +6609,7 @@ all read out of."
   (require 'org-foresight-profile)
   (org-foresight-test--with-agenda
       (concat "* NEXT ACQUISITIONOFNORTHERNCO\n:PROPERTIES:\n"
-              ":CATEGORY: SECRETPROJECTX\n:PLACE: UNDISCLOSEDSITE\n"
+              ":CATEGORY: SECRETPROJECTX\n:FORESIGHT_PLACE: UNDISCLOSEDSITE\n"
               ":EFFORT: 1:00\n:END:\n"
               "SCHEDULED: " (org-foresight-test--stamp 0) "\n"
               "* CONFIDENTIALMEETING\n:PROPERTIES:\n:CATEGORY: SECRETPROJECTX\n"
@@ -6568,7 +6684,7 @@ synchronised drive that was the most expensive thing the package did."
   (org-foresight-test--with-day
       (concat "* 2026\n** 2026-08\n*** "
               (format-time-string "%Y-%m-%d %a" (org-foresight--day-start 0))
-              "\n:PROPERTIES:\n:WORK: 10:00-16:00\n:PLACE: office\n:END:\n")
+              "\n:PROPERTIES:\n:FORESIGHT_WORK: 10:00-16:00\n:FORESIGHT_PLACE: office\n:END:\n")
     (let ((org-foresight-day-file (car org-agenda-files))
           (org-foresight--shape-cache nil)
           (opens 0))
@@ -6633,7 +6749,7 @@ On a day that does go there the mark is wrong and must not appear: the work
 can be done, and the board lists it."
   (let ((body (concat "* NEXT only at the office\nSCHEDULED: "
                       (org-foresight-test--stamp 0)
-                      "\n:PROPERTIES:\n:EFFORT: 1:00\n:PLACE: office\n:END:\n"
+                      "\n:PROPERTIES:\n:EFFORT: 1:00\n:FORESIGHT_PLACE: office\n:END:\n"
                       "* NEXT anywhere at all\nSCHEDULED: "
                       (org-foresight-test--stamp 0)
                       "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"))
@@ -6676,7 +6792,7 @@ and the same work was reported as impossible below it."
               (org-foresight-test--stamp 0 "10:00" "11:00") "\n"
               "* NEXT only at the office\nSCHEDULED: "
               (org-foresight-test--stamp 0)
-              "\n:PROPERTIES:\n:EFFORT: 1:00\n:PLACE: office\n:END:\n")
+              "\n:PROPERTIES:\n:EFFORT: 1:00\n:FORESIGHT_PLACE: office\n:END:\n")
     (let* ((org-foresight-work '(("09:00" . "17:30")))
            (org-foresight-places '((office . "本社\\|会議室\\|オフィス")))
            (org-foresight-home-place 'home)
@@ -7152,7 +7268,7 @@ having quietly become a project."
   (org-foresight-test--with-org
       "* NEXT migrate the service\n** NEXT write the runbook\n"
     (let ((org-foresight-clock-fill-kinds '("comms"))
-          (org-foresight-clock-fill-kind-property "KIND")
+          (org-foresight-clock-fill-kind-property "FORESIGHT_KIND")
           (org-foresight--signals-cache nil))
       (cl-letf (((symbol-function 'completing-read)
                  (lambda (&rest _) "migrate the service")))
@@ -7164,7 +7280,7 @@ having quietly become a project."
             (org-with-point-at first
               (should (equal "comms" (org-get-heading t t t t)))
               (should (null (org-get-todo-state)))
-              (should (equal "comms" (org-entry-get (point) "KIND")))
+              (should (equal "comms" (org-entry-get (point) "FORESIGHT_KIND")))
               ;; one level under the work it belongs to
               (should (= 2 (org-current-level))))))))))
 
@@ -7228,6 +7344,41 @@ hour and a half of itself."
         (should (null (cdr journey)))
         ;; while the meeting itself is still somewhere to file
         (should (markerp (cdr (assoc "Standup" known))))))))
+
+(ert-deftest org-foresight-test-a-journey-is-offered-once-and-early ()
+  "Journeys are gathered behind the kinds rather than left among the day.
+
+They arrive among the day's own entries already, but behind everything
+clocked so far -- and by the evening, when the holes get filled, that is a
+long way down a list.  Gathered, and each one only once."
+  (org-foresight-test--with-org "* NEXT something\n"
+    (let ((org-foresight-clock-fill-kinds '("comms"))
+          (org-foresight--signals-cache nil)
+          offered)
+      (cl-letf (((symbol-function 'org-foresight-behind) (lambda (&rest _) nil))
+                ((symbol-function 'org-foresight-observe-coverage)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'org-foresight--clock-gaps)
+                 (lambda (_) (list (cons (cons (current-time) (current-time))
+                                         'unclocked))))
+                ((symbol-function 'org-foresight--clock-gap-label)
+                 (lambda (_) "a gap"))
+                ((symbol-function 'org-foresight--clock-fill-candidates)
+                 (lambda (&rest _) '(("the work" . nil) ("→ office" . nil))))
+                ((symbol-function 'org-foresight--clock-fill-journeys)
+                 (lambda (&rest _) '(("→ office" . office))))
+                ((symbol-function 'completing-read)
+                 (lambda (prompt collection &rest _)
+                   (if (string-prefix-p "Unrecorded" prompt)
+                       "a gap"
+                     (setq offered collection)
+                     "comms")))
+                ((symbol-function 'org-foresight--clock-fill-kind-marker)
+                 (lambda (kind) (list 'kind-marker kind)))
+                ((symbol-function 'org-foresight--file-clocked) #'ignore)
+                ((symbol-function 'org-foresight--invalidate-signals) #'ignore))
+        (org-foresight-clock-fill)
+        (should (equal '("comms" "→ office" "the work") offered))))))
 
 (ert-deftest org-foresight-test-a-journey-named-at-the-prompt-is-booked ()
   "Naming the drive writes a journey, so the day stops reserving another one.
@@ -8396,7 +8547,7 @@ there would make every placeless entry look bound."
   "A week with a shape needs no daily input; a day that breaks it says so."
   (let ((file (make-temp-file
                "org-foresight-day" nil ".org"
-               "* 2026\n** 2026-08 August\n*** 2026-08-11 Tue\n:PROPERTIES:\n:PLACE: client\n:END:\n")))
+               "* 2026\n** 2026-08 August\n*** 2026-08-11 Tue\n:PROPERTIES:\n:FORESIGHT_PLACE: client\n:END:\n")))
     (unwind-protect
         (let ((org-foresight-day-file file)
               (org-foresight-home-place 'home)
@@ -8883,7 +9034,7 @@ is the only reason the list is worth reading at the door."
   (org-foresight-test--with-places
       "* NEXT stamp the form
 :PROPERTIES:
-:PLACE: office
+:FORESIGHT_PLACE: office
 :END:
 * NEXT ask about the spec
 :PROPERTIES:
@@ -8891,7 +9042,7 @@ is the only reason the list is worth reading at the door."
 :END:
 * NEXT measure on site
 :PROPERTIES:
-:PLACE: client
+:FORESIGHT_PLACE: client
 :END:
 * NEXT write the report
 "
@@ -8911,11 +9062,11 @@ Sorted rather than filtered by deadline: a file that does not use them would
 show nothing at all under a filter, and \"what can only be done here\" is
 worth answering either way."
   (org-foresight-test--with-places
-      (concat "* NEXT no date\n:PROPERTIES:\n:PLACE: office\n:END:\n"
+      (concat "* NEXT no date\n:PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n"
               "* NEXT later\nDEADLINE: " (org-foresight-test--stamp 9) "\n"
-              ":PROPERTIES:\n:PLACE: office\n:END:\n"
+              ":PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n"
               "* NEXT sooner\nDEADLINE: " (org-foresight-test--stamp 2) "\n"
-              ":PROPERTIES:\n:PLACE: office\n:END:\n")
+              ":PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n")
     (should (equal '("sooner" "later" "no date")
                    (mapcar (lambda (r) (plist-get r :title)) (org-foresight-here))))))
 
@@ -8926,7 +9077,7 @@ A deadline that falls before you are next here is one this visit has to
 settle; one that falls after it can wait for the next."
   (org-foresight-test--with-places
       (concat "* NEXT before I am back\nDEADLINE: " (org-foresight-test--stamp 1) "\n"
-              ":PROPERTIES:\n:PLACE: office\n:END:\n")
+              ":PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n")
     (let* ((rendered (substring-no-properties (org-foresight-report-here)))
            (next (org-foresight-next-day-at 'office)))
       ;; only one office day a week, so tomorrow's deadline cannot wait
@@ -8938,7 +9089,7 @@ settle; one that falls after it can wait for the next."
   (org-foresight-test--with-places
       "* NEXT talk about the review
 :PROPERTIES:
-:PLACE: office
+:FORESIGHT_PLACE: office
 :PEOPLE: 佐藤 田中
 :END:
 "
@@ -8954,7 +9105,7 @@ A home day with an office errand on it is a plan that does not survive
 contact with the morning, and the morning is too late to find out."
   (org-foresight-test--with-places
       (concat "* NEXT measure on site\nSCHEDULED: " (org-foresight-test--stamp 0) "\n"
-              ":PROPERTIES:\n:PLACE: client\n:END:\n")
+              ":PROPERTIES:\n:FORESIGHT_PLACE: client\n:END:\n")
     (let ((found (org-foresight-test--signal "Cannot be done from here")))
       (should found)
       (should (equal "measure on site" (plist-get (car found) :title)))
@@ -8982,7 +9133,7 @@ leave, is everything moving, will the dates be met, what is unsettled -- and
 a section that drifted up or down the page would be a different argument
 made by accident."
   (org-foresight-test--with-places
-      "* NEXT stamp the form\n:PROPERTIES:\n:PLACE: office\n:END:\n"
+      "* NEXT stamp the form\n:PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n"
     (unwind-protect
         (progn
           (org-foresight-board)
@@ -9012,7 +9163,7 @@ signals -- and a page that asked for them section by section would walk every
 heading in every file once per section.  They are read at the top and handed
 down."
   (org-foresight-test--with-places
-      "* NEXT stamp the form\n:PROPERTIES:\n:PLACE: office\n:END:\n"
+      "* NEXT stamp the form\n:PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n"
     (unwind-protect
         (let ((walks 0) (surveys 0))
           (cl-letf* ((compute (symbol-function 'org-foresight--signals-compute))
@@ -9038,7 +9189,7 @@ down."
   (org-foresight-test--with-places
       "* NEXT stamp the form
 :PROPERTIES:
-:PLACE: office
+:FORESIGHT_PLACE: office
 :END:
 "
     (unwind-protect
