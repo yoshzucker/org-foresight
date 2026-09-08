@@ -760,7 +760,7 @@ project however small it looks and whatever its title calls it."
           :now now)))
 
 ;;;; Day scan
-(defcustom org-foresight-surge-property "SURGE"
+(defcustom org-foresight-surge-property "FORESIGHT_SURGE"
   "Property marking work that arrived rather than was planned.
 
 Its value is when the work arrived.  One property carries both facts, and
@@ -792,9 +792,12 @@ error a capacity figure must not make."
   :group 'org-foresight)
 
 (defcustom org-foresight-default-event-duration 60
-  "Minutes an appointment occupies when its timestamp gives no end time.
-Calendar imports always carry an explicit range, so this only affects
-hand-written appointments such as `<2026-08-11 Tue 10:00>'."
+  "Minutes an appointment occupies when nothing says how long it is.
+
+Calendar imports always carry an explicit range, so this only reaches
+hand-written appointments such as `<2026-08-11 Tue 10:00>' -- and among
+those, only the ones with no EFFORT either.  An estimate somebody wrote down
+is a better answer than a number guessed here."
   :type 'integer
   :group 'org-foresight)
 
@@ -945,7 +948,7 @@ Looked up in either direction, so only one of each pair need be listed."
   :type 'integer
   :group 'org-foresight)
 
-(defcustom org-foresight-travel-property "TRAVEL"
+(defcustom org-foresight-travel-property "FORESIGHT_TRAVEL"
   "Property naming an entry that *is* a journey, and where it goes.
 
 Journeys are normally derived: a meeting at the office implies getting there,
@@ -956,7 +959,7 @@ write the journey down and have the derivation defer to it.
   * Drive in early
   <2026-08-19 Wed 07:10-08:00>
   :PROPERTIES:
-  :TRAVEL: office
+  :FORESIGHT_TRAVEL: office
   :END:
 
 The value is the place the journey ends at.  An entry carrying it is booked
@@ -1432,7 +1435,7 @@ the order -- the journeys are settled first, and the checks take what is left
 ;; was the display, which had to drop one of the pair, and the clash signal,
 ;; which called every overlap impossible.
 
-(defcustom org-foresight-attention-property "ATTENTION"
+(defcustom org-foresight-attention-property "FORESIGHT_ATTENTION"
   "Property naming how much of you an entry demands.
 Its value is `blocking', `background' or `informational'; anything else, or
 nothing at all, means `blocking'."
@@ -1486,11 +1489,26 @@ needs them."
   (when org-foresight-people-property
     (org-entry-get-multivalued-property (point) org-foresight-people-property)))
 
+(defcustom org-foresight-place-property "FORESIGHT_PLACE"
+  "Property naming where an entry puts the body, and where a day is worked from.
+
+Prefixed because the word is this package\='s: what counts as a place here is
+whatever `org-foresight-places\=' lists, and a journey is derived from the
+answer.  `LOCATION\=' is not prefixed and never will be -- calendars write it,
+and reading somebody else\='s word for the same thing is the point of it.
+
+The same property on the day\='s own heading says where that day is worked
+from, which is a different question from where any one entry happens: a day
+worked from the office still begins and ends at home, and that pair of
+journeys is the cost of going in."
+  :type 'string
+  :group 'org-foresight)
+
 (defun org-foresight--entry-place ()
   "Return the place of the entry at point, or nil when it names none.
-An explicit `:PLACE:' property wins over `:LOCATION:', so a meeting whose
+An explicit place property wins over `:LOCATION:', so a meeting whose
 imported location is unhelpful can be corrected without editing the text."
-  (let ((explicit (org-entry-get (point) "PLACE")))
+  (let ((explicit (org-entry-get (point) org-foresight-place-property)))
     (if explicit
         (intern explicit)
       (let ((location (org-entry-get (point) "LOCATION")))
@@ -1627,6 +1645,11 @@ a done-type keyword such as DELEG drops out too."
                           (org-foresight--parked-p (org-get-todo-state)))
                 (let* ((todo (org-get-todo-state))
                        (effort (org-foresight--entry-effort-minutes))
+                       ;; Whether one was actually written.  The reader above
+                       ;; answers with the default when none was, so it cannot
+                       ;; tell an estimate from the absence of one -- and the
+                       ;; difference decides how long an appointment lasts.
+                       (effort-written (org-entry-get (point) "EFFORT"))
                        (clocked (org-foresight--entry-clocked-minutes now))
                        (title (org-get-heading t t t t))
                        (marker (point-marker))
@@ -1666,10 +1689,18 @@ a done-type keyword such as DELEG drops out too."
                         (when (and (>= idx 0) (< idx days))
                           (cond
                            ((org-foresight--ts-timed-p el)
+                            ;; How long it runs, in falling order of how
+                            ;; directly it was said: the stamp's own range, an
+                            ;; EFFORT somebody wrote, and only then the
+                            ;; default.  Reading EFFORT for a TODO alone was
+                            ;; the same estimate being honoured or ignored
+                            ;; depending on a keyword that says nothing about
+                            ;; how long anything takes -- an appointment at
+                            ;; 16:00 estimated at 0:45 came out an hour long.
                             (let ((end (if (org-foresight--ts-has-span-p el)
                                            (cdr occ)
                                          (time-add (car occ)
-                                                   (* 60 (if todo
+                                                   (* 60 (if (or todo effort-written)
                                                              effort
                                                            org-foresight-default-event-duration))))))
                               ;; Somebody else's commitment takes none of your
@@ -1712,6 +1743,38 @@ a done-type keyword such as DELEG drops out too."
                                         :place place :location location
                                         :category category)
                                   (aref ledger idx))))))))
+                  ;; A journey somebody wrote down and then clocked.  Its
+                  ;; hours are on the entry rather than in a stamp, and until
+                  ;; they were read a written journey without a time range
+                  ;; fell out of the day in silence: the derivation went on
+                  ;; thinking you were still at home, and drew the next leg
+                  ;; from there.  Clocking the trip is the ordinary way to
+                  ;; record one, so it is the ordinary way to declare one.
+                  ;;
+                  ;; Skipped on a day that already placed this entry by its
+                  ;; stamp -- that is the same journey, said twice.
+                  (when booked-travel
+                    (dolist (iv (org-foresight--entry-clock-intervals
+                                 from0 to now))
+                      (let ((idx (org-foresight--day-of (car iv) from0)))
+                        (when (and (>= idx 0) (< idx days)
+                                   (not (eq (gethash idx seen) 'timed)))
+                          (push (cons (car iv) (cdr iv)) (aref busy idx))
+                          (push (list :kind 'travel
+                                      ;; Org draws the row itself, as it does
+                                      ;; for any written journey.
+                                      :written t
+                                      :title title :marker marker
+                                      :attention attention
+                                      :effort (/ (float-time
+                                                  (time-subtract (cdr iv)
+                                                                 (car iv)))
+                                                 60.0)
+                                      :start (car iv) :end (cdr iv)
+                                      :place place :location location
+                                      :category category)
+                                (aref ledger idx))
+                          (puthash idx 'timed seen)))))
                   ;; Charge untimed effort only where nothing timed was found.
                   ;; What capacity spends is what is *left*: the corrected
                   ;; estimate less the hours already in it.  All three figures
@@ -1989,22 +2052,38 @@ be declared free of work by saying so."
       (setq start (match-end 0)))
     (nreverse out)))
 
+(defconst org-foresight-wake-property "FORESIGHT_WAKE"
+  "Property on a day\='s heading saying when that day begins.")
+
+(defconst org-foresight-sleep-property "FORESIGHT_SLEEP"
+  "Property on a day\='s heading saying when that day ends.")
+
+(defconst org-foresight-work-property "FORESIGHT_WORK"
+  "Property on a day\='s heading giving that day\='s working hours.
+
+Ranges, or the word \"none\" for a day with no working hours at all.  A
+constant rather than a setting: nothing above this package writes on a day\='s
+heading, so there is nobody to want a different word for it.")
+
 (defun org-foresight--day-shape-1 (day)
   "Work out DAY's shape from the day file and the defaults."
-  (let* ((declared (org-foresight--day-properties
-                    day '("WAKE" "SLEEP" "WORK" "PLACE")))
-         (wake (or (cdr (assoc "WAKE" declared))
+  (let* ((names (list org-foresight-wake-property
+                      org-foresight-sleep-property
+                      org-foresight-work-property
+                      org-foresight-place-property))
+         (declared (org-foresight--day-properties day names))
+         (wake (or (cdr (assoc org-foresight-wake-property declared))
                    (car org-foresight-awake)))
-         (sleep (or (cdr (assoc "SLEEP" declared))
+         (sleep (or (cdr (assoc org-foresight-sleep-property declared))
                     (cdr org-foresight-awake)))
-         (raw (cdr (assoc "WORK" declared)))
+         (raw (cdr (assoc org-foresight-work-property declared)))
          (work
           (cond
            (raw (org-foresight--parse-ranges raw))  ; "none" parses to nothing
            ((memq (nth 6 (decode-time day)) org-foresight-workdays)
             org-foresight-work)
            (t nil)))
-         (place (or (cdr (assoc "PLACE" declared))
+         (place (or (cdr (assoc org-foresight-place-property declared))
                     (cdr (assq (nth 6 (decode-time day))
                                org-foresight-day-places))
                     org-foresight-home-place))
@@ -2210,12 +2289,13 @@ dentist appointment lives where every other appointment lives."
       (org-with-wide-buffer
        (org-datetree-find-date-create
         (calendar-gregorian-from-absolute (time-to-days day)))
-       (org-entry-put (point) "WAKE" wake)
-       (org-entry-put (point) "SLEEP" sleep)
-       (org-entry-put (point) "WORK" span)
+       (org-entry-put (point) org-foresight-wake-property wake)
+       (org-entry-put (point) org-foresight-sleep-property sleep)
+       (org-entry-put (point) org-foresight-work-property span)
        (if (string-empty-p (string-trim place))
-           (org-entry-delete (point) "PLACE")
-         (org-entry-put (point) "PLACE" (string-trim place)))
+           (org-entry-delete (point) org-foresight-place-property)
+         (org-entry-put (point) org-foresight-place-property
+                        (string-trim place)))
        (save-buffer)))
     (setq org-foresight--shape-cache nil)
     ;; Shaping a day from the agenda is shaping the day on the screen, and the
@@ -3102,6 +3182,42 @@ which the day most needs to be right."
           (when (time-less-p s e)
             (setq total (+ total (/ (float-time (time-subtract e s)) 60.0)))))))
     total))
+
+(defun org-foresight--entry-clocked-p ()
+  "Return non-nil when the entry at point carries any clock line at all.
+
+Asked of a written journey that has no time on its stamp: between them, a
+stamp and a clock are the only two ways an entry can say when it happened,
+and one with neither cannot be placed on any day."
+  (string-match-p (concat "^[ \t]*" org-clock-string "[ \t]*\\[")
+                  (org-foresight--entry-text)))
+
+(defun org-foresight--entry-clock-intervals (from to &optional now)
+  "Return the entry\='s clock segments overlapping [FROM, TO) as (START . END).
+
+The same reading `org-foresight--entry-clocked-minutes\=' does, kept as
+segments rather than summed: a journey is a stretch of the day at a
+particular hour, and a total cannot say which hour.  A clock still running is
+closed at NOW, so a trip being made right now is already on the day."
+  (let ((text (org-foresight--entry-text))
+        (now (or now (current-time)))
+        (re (concat "^[ \t]*" org-clock-string
+                    "[ \t]*\\(\\[[^]\n]+\\]\\)\\(?:--\\(\\[[^]\n]+\\]\\)\\)?"))
+        (pos 0)
+        out)
+    (while (string-match re text pos)
+      ;; Both groups read before either is converted, for the reason the
+      ;; sibling gives: `org-time-string-to-time\=' matches internally.
+      (let ((s-str (match-string 1 text))
+            (e-str (match-string 2 text)))
+        (setq pos (match-end 0))
+        (let ((s (org-time-string-to-time s-str))
+              (e (if e-str (org-time-string-to-time e-str) now)))
+          (when (and (time-less-p s e)
+                     (time-less-p s to)
+                     (time-less-p from e))
+            (push (cons s e) out)))))
+    (nreverse out)))
 
 (defun org-foresight--entry-arrival ()
   "Return when the entry at point arrived, or nil when nothing says.
