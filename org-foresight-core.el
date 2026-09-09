@@ -1074,145 +1074,158 @@ the calendar used to look like a day at home."
          ;; and without this the backward search happily puts the second
          ;; journey before the first.
          (since (car (car work)))
+         (opens (car (car work)))
+         (closes (cdr (car (last work))))
          out)
-    ;; Going in.  Pinned by the earliest thing that actually needs you there:
-    ;; a meeting at the place, if one comes early enough to matter, and
-    ;; otherwise the working day itself.  In the first case the arrival is
-    ;; what is fixed and the journey is the last slot that makes it; in the
-    ;; second nothing needs you at any particular minute, so what is fixed is
-    ;; the departure and the journey is the first thing the day does.
-    ;;
-    ;; Which is what puts it inside the working hours, and that is the point.
-    ;; Travel is work here: an hour spent getting somewhere is an hour that
-    ;; could have gone on something else.  Placed before the hours instead, it
-    ;; would come out of the morning, and going in would cost the same working
-    ;; day as staying home -- which is exactly the arithmetic that makes a
-    ;; token appearance at the office look free.
-    (when (and work (not (eq base here))
-               ;; Unless the way in is already written down, in which case
-               ;; the walk below picks it up and this would be the same
-               ;; journey a second time.
-               (not (seq-find (lambda (e) (eq (plist-get e :place) base))
-                              written)))
-      (let* ((mins (org-foresight--travel-minutes here base))
-             (opens (car (car work)))
-             ;; The first thing today that is at the day's own place.
-             (needed-by
-              (car (sort (seq-keep (lambda (e)
-                                     (and (plist-get e :start)
-                                          (eq (plist-get e :place) base)
-                                          (plist-get e :start)))
-                                   placed)
-                         #'time-less-p))))
-        (when (> mins 0)
-          (let ((leg (if (and needed-by
-                              (time-less-p needed-by (time-add opens (* 60 mins))))
-                         ;; Something is there before you could be: the
-                         ;; arrival is what is pinned, and the journey starts
-                         ;; before the day if it has to.
-                         (org-foresight--travel-slot needed-by mins taken nil off)
-                       (org-foresight--travel-slot-from opens mins taken off))))
-            (push (list :kind 'travel
-                        :title (format "→ %s" base)
-                        :marker nil
-                        :effort (float mins)
-                        :start (car leg) :end (cdr leg)
-                        :place base :location nil :category nil)
-                  out)
-            (push leg taken))))
-      (setq here base))
-    (dolist (e stops)
-      (let ((there (plist-get e :place)))
-        (when (eq (plist-get e :kind) 'travel)
-          ;; Written: it takes you there itself.  Say so and emit nothing.
-          (setq here there))
-        (unless (or (eq there here) (eq (plist-get e :kind) 'travel))
-          (let ((mins (org-foresight--travel-minutes here there)))
-            (when (> mins 0)
-              (let ((leg (if (memq here org-foresight-unworkable-places)
-                             ;; Nothing keeps you where nothing can be done.
-                             ;; The departure is what is pinned, so the hours
-                             ;; between are spent where they are of some use
-                             ;; rather than sitting in a changing room.
-                             (org-foresight--travel-slot-from
-                              since mins taken off)
-                           (org-foresight--travel-slot
-                            (plist-get e :start) mins taken since off))))
-                (push (list :kind 'travel
-                            :title (format "→ %s" there)
-                            :marker (plist-get e :marker)
-                            :effort (float mins)
-                            :start (car leg) :end (cdr leg)
-                            :place there :location nil :category nil)
-                      out)
-                (push leg taken))))
-          (setq here there))
-        (setq since (if since
-                        (org-foresight--max-time since (plist-get e :end))
-                      (plist-get e :end)))))
-    ;; Coming back from somewhere the day is not worked from.  What took you
-    ;; there is over, so nothing keeps you: you leave when it ends.  Waiting
-    ;; instead until the day closed -- which is what this used to do -- put you
-    ;; at the office from noon until half four with nothing to be there for,
-    ;; and offered those hours as though they could be worked.
-    ;;
-    ;; Where you go back to is where the day is worked from, not home: on a day
-    ;; worked from the office an errand elsewhere is an excursion, and the rest
-    ;; of the day still happens at the office.  On a day worked from home the
-    ;; two are the same place, and this is the journey home.
-    ;;
-    ;; Skipped when there would be nothing left to come back for -- if getting
-    ;; back lands after the moment you would have to set off home anyway, going
-    ;; back is a journey to nowhere, and the leg below takes you straight home.
-    (when (and work (not (eq here base)))
-      (let ((mins (org-foresight--travel-minutes here base)))
-        (when (> mins 0)
-          (let* ((leg (org-foresight--travel-slot-from since mins taken off))
-                 (home-mins (org-foresight--travel-minutes
-                             base org-foresight-home-place))
-                 (must-leave (time-subtract (cdr (car (last work)))
-                                            (* 60 home-mins))))
-            (when (time-less-p (cdr leg) must-leave)
-              (push (list :kind 'travel
-                          :title (format "→ %s" base)
-                          :marker nil
-                          :effort (float mins)
-                          :start (car leg) :end (cdr leg)
-                          :place base :location nil :category nil)
-                    out)
-              (push leg taken)
-              (setq here base
-                    since (cdr leg)))))))
-    ;; And home, by the way in read from the other end.  What pins it is
-    ;; normally the arrival: the day ends at half five and you are home then,
-    ;; so the journey is the last slot that manages it and sits inside the
-    ;; hours like the one that opened them.
-    ;;
-    ;; Unless something is still holding you there.  A meeting that runs to six
-    ;; makes being home at half five impossible, and then the departure is what
-    ;; is pinned -- exactly as a meeting early enough to matter pins the
-    ;; arrival on the way in.  The journey runs past the end of the day and is
-    ;; counted as borrowed, because that is what it is: an hour of the evening
-    ;; the day took without asking.
-    (when (and work (not (eq here org-foresight-home-place)))
-      (let* ((mins (org-foresight--travel-minutes here org-foresight-home-place))
-             (closes (cdr (car (last work))))
-             (held (and since
-                        (time-less-p (time-subtract closes (* 60 mins)) since)
-                        since)))
-        (when (> mins 0)
-          (let ((leg (if held
-                         (org-foresight--travel-slot-from held mins taken off)
-                       (org-foresight--travel-slot closes mins taken since off))))
-            (push (list :kind 'travel
-                        :title (format "→ %s" org-foresight-home-place)
-                        :marker nil
-                        :effort (float mins)
-                        :start (car leg) :end (cdr leg)
-                        :place org-foresight-home-place
-                        :location nil :category nil)
-                  out)))))
+    (cl-labels
+        ((plan (to pin)
+           ;; Where a journey to TO would go, pinned as PIN says, and nil
+           ;; when there is no journey to make.  Works nothing out about the
+           ;; day: one caller has to see where a leg would land before
+           ;; deciding whether to make it at all.
+           (let ((mins (org-foresight--travel-minutes here to)))
+             (when (> mins 0)
+               (org-foresight--travel-slot-for pin mins taken since off))))
+         (take (to leg &optional marker)
+           ;; Put LEG on the day and stand at TO.  Every journey in the day
+           ;; comes through here: the four of them differ in where they are
+           ;; going and in what pins them, and in nothing else, so the rest
+           ;; is written once.
+           (push (list :kind 'travel
+                       :title (format "→ %s" to)
+                       :marker marker
+                       :effort (/ (float-time (time-subtract (cdr leg) (car leg)))
+                                  60.0)
+                       :start (car leg) :end (cdr leg)
+                       :place to :location nil :category nil)
+                 out)
+           (push leg taken)
+           (setq here to))
+         (emit (to pin &optional marker)
+           ;; Both, which is what three of the four callers want.
+           (when-let ((leg (plan to pin)))
+             (take to leg marker)
+             leg)))
+      ;; Going in.  Pinned by the earliest thing that actually needs you
+      ;; there: a meeting at the place, if one comes early enough to matter,
+      ;; and otherwise the working day itself.  In the first case the arrival
+      ;; is what is fixed and the journey is the last slot that makes it; in
+      ;; the second nothing needs you at any particular minute, so what is
+      ;; fixed is the departure and the journey is the first thing the day
+      ;; does.
+      ;;
+      ;; Which is what puts it inside the working hours, and that is the
+      ;; point.  Travel is work here: an hour spent getting somewhere is an
+      ;; hour that could have gone on something else.  Placed before the
+      ;; hours instead, it would come out of the morning, and going in would
+      ;; cost the same working day as staying home -- which is exactly the
+      ;; arithmetic that makes a token appearance at the office look free.
+      (when (and work (not (eq base here))
+                 ;; Unless the way in is already written down, in which case
+                 ;; the walk below picks it up and this would be the same
+                 ;; journey a second time.
+                 (not (seq-find (lambda (e) (eq (plist-get e :place) base))
+                                written)))
+        (let* ((mins (org-foresight--travel-minutes here base))
+               ;; The first thing today that is at the day's own place.
+               (needed-by
+                (car (sort (seq-keep (lambda (e)
+                                       (and (plist-get e :start)
+                                            (eq (plist-get e :place) base)
+                                            (plist-get e :start)))
+                                     placed)
+                           #'time-less-p))))
+          (emit base
+                (if (and needed-by
+                         (time-less-p needed-by (time-add opens (* 60 mins))))
+                    ;; Something is there before you could be: the arrival is
+                    ;; what is pinned, and the journey starts before the day
+                    ;; if it has to.
+                    (cons 'arrive-by needed-by)
+                  (cons 'depart-at opens))))
+        (setq here base))
+      (dolist (e stops)
+        (let ((there (plist-get e :place)))
+          (when (eq (plist-get e :kind) 'travel)
+            ;; Written: it takes you there itself.  Say so and emit nothing.
+            (setq here there))
+          (unless (or (eq there here) (eq (plist-get e :kind) 'travel))
+            (emit there
+                  (if (memq here org-foresight-unworkable-places)
+                      ;; Nothing keeps you where nothing can be done.  The
+                      ;; departure is what is pinned, so the hours between
+                      ;; are spent where they are of some use rather than
+                      ;; sitting in a changing room.
+                      (cons 'depart-at since)
+                    (cons 'arrive-by (plist-get e :start)))
+                  (plist-get e :marker))
+            (setq here there))
+          (setq since (if since
+                          (org-foresight--max-time since (plist-get e :end))
+                        (plist-get e :end)))))
+      ;; Coming back from somewhere the day is not worked from.  What took
+      ;; you there is over, so nothing keeps you: you leave when it ends.
+      ;; Waiting instead until the day closed -- which is what this used to
+      ;; do -- put you at the office from noon until half four with nothing
+      ;; to be there for, and offered those hours as though they could be
+      ;; worked.
+      ;;
+      ;; Where you go back to is where the day is worked from, not home: on a
+      ;; day worked from the office an errand elsewhere is an excursion, and
+      ;; the rest of the day still happens at the office.  On a day worked
+      ;; from home the two are the same place, and this is the journey home.
+      ;;
+      ;; Skipped when there would be nothing left to come back for -- if
+      ;; getting back lands after the moment you would have to set off home
+      ;; anyway, going back is a journey to nowhere, and the leg below takes
+      ;; you straight home.
+      (when (and work (not (eq here base)))
+        (let ((must-leave (time-subtract
+                           closes
+                           (* 60 (org-foresight--travel-minutes
+                                  base org-foresight-home-place))))
+              (leg (plan base (cons 'depart-at since))))
+          ;; Looked at before it is taken: a leg that lands after the moment
+          ;; you would have to set off home anyway is a journey to nowhere,
+          ;; and the leg home below goes straight from where you are.
+          (when (and leg (time-less-p (cdr leg) must-leave))
+            (take base leg)
+            (setq since (cdr leg)))))
+      ;; And home, by the way in read from the other end.  What pins it is
+      ;; normally the arrival: the day ends at half five and you are home
+      ;; then, so the journey is the last slot that manages it and sits
+      ;; inside the hours like the one that opened them.
+      ;;
+      ;; Unless something is still holding you there.  A meeting that runs to
+      ;; six makes being home at half five impossible, and then the departure
+      ;; is what is pinned -- exactly as a meeting early enough to matter
+      ;; pins the arrival on the way in.  The journey runs past the end of
+      ;; the day and is counted as borrowed, because that is what it is: an
+      ;; hour of the evening the day took without asking.
+      (when (and work (not (eq here org-foresight-home-place)))
+        (let* ((mins (org-foresight--travel-minutes here org-foresight-home-place))
+               (held (and since
+                          (time-less-p (time-subtract closes (* 60 mins)) since)
+                          since)))
+          (emit org-foresight-home-place
+                (if held (cons 'depart-at held) (cons 'arrive-by closes))))))
     (nreverse out)))
+
+(defun org-foresight--travel-slot-for (pin mins taken earliest off)
+  "Return (START . END) for a MINS journey placed as PIN says.
+
+PIN is (arrive-by . TIME) or (depart-at . TIME).  One rule with two ends: a
+journey sits as close as it can to the moment that pins it, and which moment
+that is depends on whether something needs you at the far end or something
+is letting you go at the near one.
+
+Written once because it was written four times: the way in, each stop, the
+way back to the day\'s own place, and the way home each chose between the
+same two searches, and the choosing was the only thing that differed."
+  (pcase-let ((`(,kind . ,at) pin))
+    (if (eq kind 'depart-at)
+        (org-foresight--travel-slot-from at mins taken off)
+      (org-foresight--travel-slot at mins taken earliest off))))
 
 (defun org-foresight--travel-slot-from (depart mins taken off)
   "Return (START . END) for a MINS journey that may begin at DEPART.
@@ -1677,7 +1690,18 @@ a done-type keyword such as DELEG drops out too."
                   ;; while never being counted as the thing that spent it.
                   ;; Charged to the day it arrived, through the same path an
                   ;; undated SCHEDULED takes.
-                  (when-let* (((org-foresight--entry-surge-p))
+                  ;;
+                  ;; Work, though: a keyword is what says the day still owes
+                  ;; it.  `org-foresight--file-clocked-entry\' writes the hour
+                  ;; that has already gone without one, and says why -- "a
+                  ;; keyword would put it back on the list of things to do,
+                  ;; and the day would then carry it twice".  Reading the
+                  ;; surge mark alone put it back anyway, and an hour nobody
+                  ;; owes was offered into every gap for the rest of the day.
+                  ;; The reserve is not read from here (`surged\' above is),
+                  ;; so nothing it teaches is lost.
+                  (when-let* (todo
+                              ((org-foresight--entry-surge-p))
                               (arrival (org-foresight--entry-arrival))
                               (idx (org-foresight--day-of arrival from0))
                               ((<= 0 idx))

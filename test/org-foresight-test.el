@@ -574,6 +574,67 @@ it."
                        (org-foresight-test--headings-where
                         #'org-foresight--entry-surge-p)))))))
 
+(defun org-foresight-test--surge-text (keyword clock)
+  "Return one entry carrying a surge mark, with KEYWORD and maybe a CLOCK."
+  (let ((today (format-time-string "%Y-%m-%d %a" (org-foresight--day-start 0))))
+    (concat "* " (if keyword (concat keyword " ") "") "割り込み\n"
+            ":PROPERTIES:\n:FORESIGHT_SURGE: [" today " 10:00]\n"
+            ":EFFORT: 1:00\n:END:\n"
+            (when clock
+              (concat ":LOGBOOK:\nCLOCK: [" today " 10:00]--["
+                      today " 11:00] =>  1:00\n:END:\n")))))
+
+(defun org-foresight-test--promised (scan)
+  "Return the entries SCAN says today still owes."
+  (seq-filter (lambda (e) (eq (plist-get e :kind) 'promised))
+              (org-foresight-scan-day scan :ledger (org-foresight--day-start 0))))
+
+(ert-deftest org-foresight-test-an-hour-that-is-gone-is-not-owed ()
+  "`org-foresight--file-clocked-entry' writes the hour it is told about
+without a TODO keyword, and says why: a keyword would put it back on the list
+of things to do, and the day would then carry it twice.  Reading the surge
+mark on its own put it back anyway -- an hour nobody owes, offered into every
+gap for the rest of the day."
+  (org-foresight-test--with-day (org-foresight-test--surge-text nil t)
+    (should-not (org-foresight-test--promised
+                 (org-foresight-scan 1 (org-foresight--day-start 0))))))
+
+(ert-deftest org-foresight-test-no-keyword-is-not-owed-clocked-or-not ()
+  "The keyword is what says the day still owes it, and the clock is not."
+  (org-foresight-test--with-day (org-foresight-test--surge-text nil nil)
+    (should-not (org-foresight-test--promised
+                 (org-foresight-scan 1 (org-foresight--day-start 0))))))
+
+(ert-deftest org-foresight-test-an-interruption-with-a-keyword-still-lands ()
+  "The capture that files an interruption writes `ONGO' on it.  That work is
+being done and is still owed, so it lands on the day it arrived exactly as
+before -- which is the whole reason the surge path is there."
+  (org-foresight-test--with-day (org-foresight-test--surge-text "ONGO" t)
+    (should (org-foresight-test--promised
+             (org-foresight-scan 1 (org-foresight--day-start 0))))))
+
+(defun org-foresight-test--surged (keyword clock)
+  "Return the minutes today\='s arrivals are counted at, for one entry."
+  (org-foresight-test--with-day (org-foresight-test--surge-text keyword clock)
+    (aref (plist-get (org-foresight-scan 1 (org-foresight--day-start 0)) :surged)
+          0)))
+
+(ert-deftest org-foresight-test-the-keyword-gates-what-is-owed-only ()
+  "Two questions are asked of an interruption and only one of them reads the
+keyword.  What the day still owes does; what the reserve learns from does
+not, being counted before any of it and from the entry itself.
+
+Held as an equality rather than as a number, because the number is beside
+the point: whatever arriving work is counted at, it has to be counted at the
+same figure with the keyword and without it."
+  (should (= (org-foresight-test--surged nil t)
+             (org-foresight-test--surged "ONGO" t)))
+  (should (= (org-foresight-test--surged nil nil)
+             (org-foresight-test--surged "ONGO" nil)))
+  ;; and unfinished arriving work is counted at something, so the equality
+  ;; above is not two zeroes agreeing
+  (should (> (org-foresight-test--surged nil nil) 0)))
+
 (ert-deftest org-foresight-test-surge-is-inherited-with-its-arrival ()
   "A task broken out of an interruption is part of it, and dated by it.
 
@@ -1909,6 +1970,72 @@ SCHEDULED: <2026-08-10 Mon>
       (should section)
       (should (seq-find (lambda (f) (equal (plist-get f :title) "Drive in"))
                         (cdr section))))))
+
+(ert-deftest org-foresight-test-a-pin-is-an-end-of-the-journey ()
+  "One rule with two ends, and the pin says which end is fixed.
+
+Written once because it was written four times: the way in, each stop, the
+way back and the way home each chose between the same two searches, and the
+choosing was the only thing that differed."
+  (let ((ten (org-foresight-test--ts 10 0 10))
+        (twelve (org-foresight-test--ts 12 0 10)))
+    (should (equal ten (car (org-foresight--travel-slot-for
+                             (cons 'depart-at ten) 30 nil nil nil))))
+    (should (equal twelve (cdr (org-foresight--travel-slot-for
+                                (cons 'arrive-by twelve) 30 nil nil nil))))))
+
+(ert-deftest org-foresight-test-the-way-in-is-pinned-by-what-needs-you ()
+  "A meeting early enough to matter fixes the arrival; with nothing early,
+nothing needs you at any particular minute and the departure is fixed
+instead -- the journey becomes the first thing the day does."
+  (org-foresight-test--with-travel
+      "* Morning at the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 09:30-10:00>
+"
+    (let ((org-foresight-day-places '((1 . office))))
+      ;; the meeting is at 09:30 and the office is an hour away, so being
+      ;; there in time means leaving before the day opens
+      (should (member "travel 08:30-09:30 borrowed"
+                      (org-foresight-test--bands
+                       (org-foresight-test--ts 0 0 10))))))
+  (org-foresight-test--with-travel "* nothing at the office\n"
+    (let ((org-foresight-day-places '((1 . office))))
+      ;; nothing needs you there, so the journey is the first thing the day
+      ;; does and starts when the working hours do
+      (should (member "travel 09:00-10:00"
+                      (org-foresight-test--bands
+                       (org-foresight-test--ts 0 0 10)))))))
+
+(ert-deftest org-foresight-test-leaving-a-place-nothing-is-done-in ()
+  "Rule eight, on its own: the departure is pinned rather than the arrival,
+so the hours it frees land where they are of some use instead of being spent
+sitting in a changing room."
+  (org-foresight-test--with-travel
+      "* NEXT gym
+SCHEDULED: <2026-08-10 Mon 10:00>
+:PROPERTIES:
+:FORESIGHT_PLACE: gym
+:EFFORT: 0:30
+:END:
+* Afternoon at the office
+:PROPERTIES:
+:LOCATION: 会議室A
+:END:
+<2026-08-10 Mon 15:00-16:00>
+"
+    (let ((org-foresight-unworkable-places '(gym))
+          (org-foresight-travel-matrix '(((home . gym) . 15)
+                                         ((gym . office) . 30)
+                                         ((home . office) . 60))))
+      ;; the gym ends at 10:30 and the office is not needed until 15:00, so
+      ;; an arrival-pinned leg would sit at 14:30.  The departure is pinned
+      ;; instead: you leave when the gym is over.
+      (should (member "travel 10:30-11:00"
+                      (org-foresight-test--bands
+                       (org-foresight-test--ts 0 0 10)))))))
 
 (ert-deftest org-foresight-test-travel-not-invented-by-a-call-link ()
   "A meeting whose only location is a video link must not move anyone."
