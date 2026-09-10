@@ -10796,6 +10796,134 @@ DEADLINE: %s
                                (not (string-match-p "unestimated" r))))
                         rows)))))
 
+(ert-deftest org-foresight-test-the-legend-names-only-live-commands ()
+  "A foot that names a command nobody can run is worse than no foot.  Every
+name in the registry has to be a command that exists and takes no required
+argument -- an autoload typo would otherwise be discovered by somebody typing
+what the page told them to."
+  (should org-foresight-commands)
+  (pcase-dolist (`(,command ,pages ,scope ,what) org-foresight-commands)
+    (should (fboundp command))
+    (should (commandp command))
+    (should (memq scope '(row page)))
+    (should pages)
+    (should (seq-every-p (lambda (p) (memq p '(agenda board))) pages))
+    (should (stringp what))))
+
+(ert-deftest org-foresight-test-the-legend-fits-the-width ()
+  "Every block in a report is written to fit `org-foresight-report-columns\=',
+and a foot that wraps stops being a table.  Measured with the longest key any
+configuration is likely to bind in front of it, since the key column is the
+one part this package does not choose."
+  (dolist (page '(agenda board))
+    (with-temp-buffer
+      (use-local-map
+       (let ((map (make-sparse-keymap)))
+         (pcase-dolist (`(,command ,pages ,_ ,_) org-foresight-commands)
+           (when (memq page pages)
+             (define-key map (kbd "C-c C-x C-f") command)))
+         map))
+      (let ((text (substring-no-properties
+                   (org-foresight--legend page '(("RET" . "go to the entry"))))))
+        (dolist (line (split-string text "\n"))
+          (should (<= (string-width line) org-foresight-report-columns)))))))
+
+(ert-deftest org-foresight-test-the-legend-shows-the-keys-it-finds ()
+  "The keys are read from the keymap rather than written down, so a binding
+this package never made still appears -- and a page with none shows no key
+column at all rather than a stripe of blanks."
+  (let ((bare (with-temp-buffer
+                (use-local-map (make-sparse-keymap))
+                (substring-no-properties (org-foresight--legend 'agenda))))
+        (bound (with-temp-buffer
+                 (use-local-map
+                  (let ((map (make-sparse-keymap)))
+                    (define-key map (kbd "C") #'org-foresight-clock-fill)
+                    map))
+                 (substring-no-properties (org-foresight--legend 'agenda)))))
+    (should (string-match-p "^    C  +clock-fill" bound))
+    (should (string-match-p "^    clock-fill" bare))))
+
+(ert-deftest org-foresight-test-each-page-names-what-belongs-to-it ()
+  "The two pages are not the same list.  What is learned from history is asked
+from the board, and the row commands of a day's agenda would bury it."
+  (let ((agenda (substring-no-properties (org-foresight--legend 'agenda)))
+        (board (substring-no-properties (org-foresight--legend 'board))))
+    (should (string-match-p "board" agenda))
+    (should-not (string-match-p "learn-bias" agenda))
+    (should (string-match-p "learn-bias" board))
+    (should-not (string-match-p "set-attention" board))
+    ;; and what is offered on both is on both
+    (dolist (text (list agenda board))
+      (should (string-match-p "clock-fill" text)))))
+
+(ert-deftest org-foresight-test-the-legend-separates-row-from-page ()
+  "A row command run from the wrong line fails without explaining itself, so
+the page says which is which."
+  (let ((text (substring-no-properties (org-foresight--legend 'agenda))))
+    (should (string-match-p "on the row under the cursor" text))
+    (should (string-match-p "on the whole page" text))
+    ;; a row command above the page heading, a page command below it
+    (let ((split (string-match "on the whole page" text)))
+      (should (< (string-match "set-attention" text) split))
+      (should (> (string-match "clock-fill" text) split)))))
+
+(ert-deftest org-foresight-test-the-agenda-ends-with-the-legend ()
+  "The foot is the foot: after the listing and after whatever tail the style
+draws, in either view -- and after a body placed at the top as well, which is
+the case the placement is easy to get wrong in."
+  (org-foresight-test--with-day "* NEXT something\nSCHEDULED: <2026-08-10 Mon>\n"
+    (dolist (style '(daily review))
+      (org-foresight-test--in-agenda
+        (let ((org-foresight-report-style style))
+          (org-foresight-report-render)
+          (let ((text (substring-no-properties (buffer-string))))
+            (should (string-search "what can be done from here" text))
+            (should (< (string-search "Day-agenda" text)
+                       (string-search "what can be done from here" text)))
+            (should (string-suffix-p
+                     "Each is M-x org-foresight-NAME, or the key beside it."
+                     (string-trim-right text)))))))
+    ;; a style that draws its body above the listing still puts the foot below
+    (org-foresight-test--in-agenda
+      (let* ((org-foresight-report-renderers
+              (cons '(topped :body org-foresight-report--daily :place top)
+                    org-foresight-report-renderers))
+             (org-foresight-report-style 'topped))
+        (org-foresight-report-render)
+        (let ((text (substring-no-properties (buffer-string))))
+          (should (< (string-search "Spent" text)
+                     (string-search "Day-agenda" text)))
+          (should (< (string-search "Day-agenda" text)
+                     (string-search "what can be done from here" text))))))))
+
+(ert-deftest org-foresight-test-the-legend-is-redrawn-not-repeated ()
+  "It is inserted as part of the report, so a second render reclaims it."
+  (org-foresight-test--with-day "* NEXT something\nSCHEDULED: <2026-08-10 Mon>\n"
+    (org-foresight-test--in-agenda
+      (let ((org-foresight-report-style 'daily))
+        (org-foresight-report-render)
+        (org-foresight-report-render)
+        (let ((text (substring-no-properties (buffer-string))))
+          (should (= 1 (cl-count "what can be done from here"
+                                 (split-string text "\n")
+                                 :test (lambda (a b) (string-search a b))))))))))
+
+(ert-deftest org-foresight-test-the-board-ends-with-the-legend ()
+  "And the board, which is the page somebody comes back to least often and so
+remembers the least about."
+  (org-foresight-test--with-day "* NEXT something\nSCHEDULED: <2026-08-10 Mon>\n"
+    (save-window-excursion
+      (org-foresight-board)
+      (with-current-buffer "*Org Foresight Board*"
+        (let ((text (substring-no-properties (buffer-string))))
+          (should (string-search "what can be done from here" text))
+          (should (string-search "learn-bias" text))
+          (should (string-search "go to the entry on this row" text))
+          (should (string-suffix-p
+                   "Each is M-x org-foresight-NAME, or the key beside it."
+                   (string-trim-right text))))))))
+
 (provide 'org-foresight-test)
 
 ;;; org-foresight-test.el ends here
