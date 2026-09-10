@@ -318,7 +318,45 @@ Thursday   13 August 2026
  ↳ leak 0:52 · Slack 0:20 · Mail 0:18 · Terminal 0:14
  ↳ lost 0:40 · away from the machine
 
+[Commands] what can be done from here
+
+  on the row under the cursor
+    H  clock-split       give part of a clocked spell to its real work
+    T  book-travel       write down the journey on this row
+       set-attention     how much of you it needs, not how long
+       mark-surge        this arrived; it was never planned for
+       prepare-meeting   preparation and follow-up for this meeting
+    D  shape-day         declare a day's working shape
+
+  on the whole page
+    C  clock-fill        say what an unrecorded stretch was spent on
+    M  plan-fill         propose times for work not yet placed
+       prepare-meetings  preparation and follow-up where missing
+       board             what has not been settled
+
+  Each is M-x org-foresight-NAME, or the key beside it.
 #+end_example
+
+*** The foot names what you can do
+
+This package binds no keys. The agenda's keymap belongs to Org and to
+whoever is reading it, so every command here is reached by name, and the
+bindings suggested through this README are suggestions somebody makes in
+their own configuration.
+
+That leaves a discoverability problem the foot of the page solves. It names
+the commands, and puts in front of each the key it is on /in this buffer/ —
+read from the keymap rather than written down, so it stays true when a
+binding changes and shows nothing where there is none. The example above is
+what a reader who took every suggestion in this README would see.
+
+The two groups are not decoration. A command in the first reads the entry
+under the cursor and fails from the wrong line without explaining itself; a
+command in the second does not care where point is.
+
+The board carries the same foot, with the list that belongs there: it drops
+the row commands a day's agenda is made of and adds the three that learn from
+history, and =diagnose=.
 
 *** Both bars are ruled at now
 

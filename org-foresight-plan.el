@@ -1230,7 +1230,14 @@ nothing but drop it."
                 (org-foresight-report--badge
                  "Signals" "everything unsettled, the fixable part first")
                 "\n\n"
-                (org-foresight-report-signals signals)))
+                (org-foresight-report-signals signals)
+                "\n\n"
+                ;; The board is reached by a key somebody bound once and is
+                ;; then read for minutes at a time, which is exactly the page
+                ;; whose commands have been forgotten by the next visit.
+                (or (org-foresight--legend
+                     'board '(("RET" . "go to the entry on this row")))
+                    "")))
         (put-text-property (point-min) (point-max) 'org-agenda-type 'agenda)
         ;; The board is not drawn through `org-agenda-finalize-hook\=', so it
         ;; names its own rows.  Without this its fifty-odd rows would be the

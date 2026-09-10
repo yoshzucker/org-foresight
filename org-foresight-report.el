@@ -2058,6 +2058,131 @@ asked you to attend was never yours to move in the first place."
       (when named
         (propertize (concat lead named) 'face 'shadow)))))
 
+;;;; What can be done from here
+
+;; A page that reports is a page somebody then wants to act on, and every act
+;; this package offers is a command it never bound a key to -- the agenda's
+;; keymap belongs to Org and to whoever is reading, not to a package that
+;; decorates it.  So the foot of a page names the commands, and puts a key in
+;; front of the ones that happen to have one here.  Read from the keymap
+;; rather than written down: a legend that states a key is a legend that goes
+;; wrong the first time somebody rebinds it.
+
+(defconst org-foresight-commands
+  '((org-foresight-clock-fill      (agenda board) page
+     "say what an unrecorded stretch was spent on")
+    (org-foresight-clock-split     (agenda)       row
+     "give part of a clocked spell to its real work")
+    (org-foresight-book-travel     (agenda)       row
+     "write down the journey on this row")
+    (org-foresight-set-attention   (agenda)       row
+     "how much of you it needs, not how long")
+    (org-foresight-mark-surge      (agenda)       row
+     "this arrived; it was never planned for")
+    (org-foresight-prepare-meeting (agenda)       row
+     "preparation and follow-up for this meeting")
+    (org-foresight-shape-day       (agenda board) row
+     "declare a day's working shape")
+    (org-foresight-plan-fill       (agenda board) page
+     "propose times for work not yet placed")
+    (org-foresight-prepare-meetings (agenda board) page
+     "preparation and follow-up where missing")
+    (org-foresight-board           (agenda)       page
+     "what has not been settled")
+    (org-foresight-learn-surge     (board)        page
+     "how much of a day arriving work takes")
+    (org-foresight-learn-bias      (board)        page
+     "how far estimates run over")
+    (org-foresight-learn-leak      (board)        page
+     "the daily leak and lost budgets")
+    (org-foresight-diagnose        (board)        page
+     "what is configured, and what is not"))
+  "The commands worth naming at the foot of a page: (COMMAND PAGES SCOPE WHAT).
+
+PAGES is where naming it earns its line -- `agenda\=', `board\=', or both.  Not
+everything belongs everywhere: the three that learn from history are asked
+once in a while from the wider view, and putting them under a day\='s agenda
+would bury the two commands somebody actually presses there.
+
+WHAT is held to 45 columns.  A report block is written to fit
+`org-foresight-report-columns\=', and the two columns in front of WHAT are the
+longest name here and a key this package does not choose -- 45 is what is
+left once a key as long as `C-c C-x C-f\=' has taken its share.
+
+SCOPE is `row\=' when the command reads the entry under the cursor and `page\='
+when it does not.  Worth saying on the page, because the failure is otherwise
+a puzzle: a row command run from the wrong line does not explain itself.")
+
+(defun org-foresight--command-key (command)
+  "The key COMMAND is on in this buffer, or nil when it is on none.
+
+`substitute-command-keys\=' answers with \\[execute-extended-command] and the
+name where nothing is bound, which is how an unbound command is recognised."
+  (let ((keys (substitute-command-keys (format "\\[%s]" command))))
+    (unless (string-prefix-p "M-x " keys) keys)))
+
+(defun org-foresight--command-rows (page)
+  "The commands to name on PAGE, as (KEY NAME WHAT) with KEY possibly nil.
+
+NAME is the command without its package prefix.  The prefix is stated once,
+at the foot, rather than thirteen times down a column that is being read for
+what differs between the lines."
+  (seq-keep
+   (pcase-lambda (`(,command ,pages ,scope ,what))
+     (when (and (memq page pages) (fboundp command))
+       (list (org-foresight--command-key command)
+             (string-remove-prefix "org-foresight-" (symbol-name command))
+             scope what)))
+   org-foresight-commands))
+
+(defun org-foresight--legend (page &optional extra)
+  "The foot of PAGE: what can be done from here, and how to reach it.
+
+EXTRA is an alist of (KEY . WHAT) for keys the page relies on that are not
+this package\='s -- `RET\=' and `q\=' on a buffer somebody has to get out of.
+
+Grouped by whether a command reads the row under the cursor.  Only the groups
+with something in them are drawn, and the key column is only as wide as the
+keys that are actually bound -- which on a configuration that binds none of
+them is no column at all."
+  (let* ((rows (org-foresight--command-rows page))
+         (keyw (apply #'max 0 (mapcar #'string-width
+                                      (seq-keep (lambda (r) (nth 0 r)) rows))))
+         (namew (apply #'max 0 (mapcar (lambda (r) (string-width (nth 1 r))) rows)))
+         (line (lambda (key name what)
+                 (concat "    "
+                         (if (> keyw 0)
+                             (format (format "%%-%ds  " keyw) (or key ""))
+                           "")
+                         (format (format "%%-%ds  " namew) name)
+                         (propertize what 'face 'shadow)))))
+    (when rows
+      (concat
+       (org-foresight-report--badge "Commands" "what can be done from here")
+       "\n\n"
+       (mapconcat
+        (pcase-lambda (`(,scope . ,heading))
+          (when-let ((group (seq-filter (lambda (r) (eq (nth 2 r) scope)) rows)))
+            (concat (propertize (format "  %s\n" heading) 'face 'shadow)
+                    (mapconcat (pcase-lambda (`(,key ,name ,_ ,what))
+                                 (funcall line key name what))
+                               group "\n")
+                    "\n")))
+        '((row . "on the row under the cursor") (page . "on the whole page"))
+        "\n")
+       (when extra
+         (let ((w (apply #'max 0 (mapcar (lambda (e) (string-width (car e)))
+                                         extra))))
+           (concat "\n"
+                   (mapconcat
+                    (pcase-lambda (`(,key . ,what))
+                      (concat "    " (format (format "%%-%ds  " w) key)
+                              (propertize what 'face 'shadow)))
+                    extra "\n")
+                   "\n")))
+       (propertize "\n  Each is M-x org-foresight-NAME, or the key beside it.\n"
+                   'face 'shadow)))))
+
 ;;;; Agenda integration
 
 (defvar org-foresight-report-renderers
@@ -2312,7 +2437,13 @@ step afterwards."
         ;; verdict and still precedes the agenda listing.
         (unless top-p
           (goto-char (point-max)))
-        (org-foresight-report--insert body)))))
+        (org-foresight-report--insert body)
+        ;; Last, and at the end whichever end the body went to: what can be
+        ;; done from here is read after what there is to do something about.
+        (goto-char (point-max))
+        (org-foresight-report--insert
+         (org-foresight-report--guarded
+          (lambda () (concat "\n" (org-foresight--legend 'agenda)))))))))
 
 (add-hook 'org-foresight-report-invalidate-functions
           #'org-foresight-invalidate-scan)
