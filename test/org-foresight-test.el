@@ -9490,6 +9490,33 @@ means something is the one between a section and the next."
                 (should-not (string-empty-p (nth (1+ i) lines)))))))
       (kill-buffer "*Org Foresight Board*"))))
 
+(ert-deftest org-foresight-test-a-summarised-group-is-a-count-and-a-door ()
+  "For a group whose length is the news and whose members are not.  Fifty
+rows nobody reads push the rest of the page off the screen; the number says
+the same thing in one line, and the command beside it says where it is
+settled -- a number with nowhere to go is a reproach."
+  (let* ((group (cons "Loose ends"
+                      (list (list :title "one" :note "a" :marker nil)
+                            (list :title "two" :note "b" :marker nil))))
+         (org-foresight-signal-commands
+          '(("Loose ends" . org-foresight-board))))
+    ;; drawn in full when it is not summarised
+    (let* ((org-foresight-signal-summarised nil)
+           (full (substring-no-properties
+                  (org-foresight-report--signal-group group))))
+      (should (string-match-p "Loose ends (2)" full))
+      (should (string-match-p "one" full))
+      (should (string-match-p "two" full)))
+    ;; and as a heading alone when it is
+    (let* ((org-foresight-signal-summarised '("Loose ends"))
+           (short (substring-no-properties
+                   (org-foresight-report--signal-group group))))
+      (should (string-match-p "Loose ends (2)" short))
+      (should-not (string-match-p "one" short))
+      (should-not (string-match-p "two" short))
+      ;; the door is still named
+      (should (string-match-p "org-foresight-board" short)))))
+
 (ert-deftest org-foresight-test-the-board-walks-the-files-once ()
   "Seven sections, one walk.
 
