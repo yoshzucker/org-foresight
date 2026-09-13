@@ -4176,25 +4176,50 @@ to run."
                                    (list :verdict 'over)))
             nil))))
 
-(ert-deftest org-foresight-test-the-board-badge-holds-no-figures ()
+(defun org-foresight-test--badge-lines ()
+  "The badge lines of the board buffer, in order.
+
+A badge is the only thing outdented to the frame edge, and on a terminal it
+is drawn as \"[Name] meaning\", so the edge and the bracket together name
+one without needing the renderer\='s help."
+  (seq-filter (lambda (line) (string-prefix-p "[" line))
+              (split-string (substring-no-properties (buffer-string)) "\n")))
+
+(ert-deftest org-foresight-test-no-badge-holds-a-figure ()
   "A badge names its section; what changes with the data goes in the body.
 
-Every other badge on the page is a fixed phrase, and a reader learns to
-skim them as labels rather than read them as content.  One badge whose text
-moved with the figures would be the single place that rule broke, and the
-figure would be the one thing on the page nobody looked at twice."
+Every badge is a fixed phrase, and a reader learns to skim them as labels
+rather than read them as content.  One badge whose text moved with the
+figures would be the single place that rule broke, and the figure would be
+the one thing on the page nobody looked at twice."
+  (org-foresight-test--with-demo
+    (org-foresight-board)
+    (unwind-protect
+        (with-current-buffer "*Org Foresight Board*"
+          (let ((badges (org-foresight-test--badge-lines)))
+            (should badges)
+            (dolist (badge badges)
+              (should-not (string-match-p "[0-9]" badge)))))
+      (kill-buffer "*Org Foresight Board*"))))
+
+(ert-deftest org-foresight-test-the-verdict-opens-the-page-without-a-badge ()
+  "The badge column is the page\='s table of contents, and what belongs in it
+is a section about the work.  The verdict is about the page, so it is read
+first and wears no badge -- given one, an eye running down the left edge
+would count a section that holds nothing."
   (org-foresight-test--with-demo
     (org-foresight-board)
     (unwind-protect
         (with-current-buffer "*Org Foresight Board*"
           (goto-char (point-min))
-          (let ((badge (buffer-substring-no-properties
+          (let ((first (buffer-substring-no-properties
                         (line-beginning-position) (line-end-position))))
-            (should (string-match-p "Board" badge))
-            (should-not (string-match-p "[0-9]" badge)))
-          ;; And the figure is there, one line down, where the other
-          ;; sections put their contents.
-          (should (re-search-forward "^ [^ ].*to fix" nil t)))
+            ;; the figure is there, on the first line
+            (should (string-match-p "to fix" first))
+            (should (string-match-p "[0-9]" first))
+            ;; and it is not a badge: at the margin, not at the edge
+            (should-not (string-prefix-p "[" first))
+            (should (string-prefix-p org-foresight-report-margin first))))
       (kill-buffer "*Org Foresight Board*"))))
 
 (ert-deftest org-foresight-test-board-rules-reach-the-same-edge ()
@@ -9253,34 +9278,139 @@ the dispatcher's own contract."
       (kill-buffer "*Org Foresight Board*"))))
 
 (ert-deftest org-foresight-test-the-board-keeps-its-sections-in-order ()
-  "The board's sections, and the order the questions are asked in.
+  "The board\='s sections, and the order the questions are asked in.
 
-Written before anything is added to it.  The order is the argument -- can I
-leave, is everything moving, will the dates be met, what is unsettled -- and
-a section that drifted up or down the page would be a different argument
-made by accident."
+The order is the argument -- can I leave, is everything moving, will it
+fit, what is unsettled -- and a section that drifted up or down the page
+would be a different argument made by accident.
+
+Four, because two pairs of them were one question each: what has a date and
+what the days are shaped like are the same arithmetic read from its two
+ends, and what is parked is a state of a project rather than a subject of
+its own.  They are subheadings now, and the test that they are subheadings
+is that they are not in this list."
   (org-foresight-test--with-places
       "* NEXT stamp the form\n:PROPERTIES:\n:FORESIGHT_PLACE: office\n:END:\n"
     (unwind-protect
         (progn
           (org-foresight-board)
           (with-current-buffer "*Org Foresight Board*"
-            (let* ((text (substring-no-properties (buffer-string)))
-                   (at (lambda (name) (string-search name text))))
-              (dolist (name '("Board" "Here" "Projects" "Landing"
-                              "Load" "Parked" "Signals"))
-                (should (funcall at name)))
-              ;; can I leave · is everything moving · will the dates be met ·
-              ;; what are the coming days like · is this still rightly down ·
-              ;; what is unsettled
-              (should (< (funcall at "Board") (funcall at "Here")))
-              (should (< (funcall at "Here") (funcall at "Projects")))
-              (should (< (funcall at "Projects") (funcall at "Landing")))
-              (should (< (funcall at "Landing") (funcall at "Load")))
-              (should (< (funcall at "Load") (funcall at "Parked")))
-              (should (< (funcall at "Parked") (funcall at "Signals"))))))
+            (let ((badges (mapcar (lambda (line)
+                                    (when (string-match "\\`\\[\\([^]]+\\)\\]" line)
+                                      (match-string 1 line)))
+                                  (org-foresight-test--badge-lines))))
+              ;; can I leave · is everything moving · will it fit ·
+              ;; what is unsettled · and how to act on any of it
+              (should (equal '("Here" "Projects" "Fit" "Signals" "Commands")
+                             badges)))))
       (when (get-buffer "*Org Foresight Board*")
         (kill-buffer "*Org Foresight Board*")))))
+
+(ert-deftest org-foresight-test-projects-holds-what-hangs-under-nothing ()
+  "The projects are walked from the top down, so a leaf with nothing above
+it is reached by neither pass -- and a task nobody has filed is exactly the
+one a review is looking for.  It is a destination on this page, not a fault:
+a standalone next action is ordinary, and the reason to show it is that
+otherwise there is nowhere to go and look at it."
+  (org-foresight-test--with-signals
+      "* NEXT Healthy project\n** NEXT step one\n* NEXT Lonely bare task\n"
+    (let ((rows (substring-no-properties
+                 (org-foresight-report-projects
+                  (org-foresight-outline-records t)))))
+      ;; one loose leaf, and it is the one with nothing above it: the leaf
+      ;; under the project is counted by the project, not here
+      (should (string-match-p "under no project (1)" rows))
+      (should (string-match-p "Lonely bare task" rows))
+      ;; and the project itself is in the moving group, named by its next step
+      (should (string-match-p "moving (1)" rows))
+      (should (string-match-p "Healthy project" rows)))))
+
+(ert-deftest org-foresight-test-projects-keeps-the-one-that-ran-out ()
+  "A project whose leaves are all finished still calls itself a project:
+`:project-p\=' is true of a heading with TODO children and stays true after
+every one of them is done.  That is the state a plan falls into without
+anybody deciding to let it, so it is a group of its own rather than a row
+lost among the moving ones."
+  (org-foresight-test--with-signals
+      "* NEXT Drained project\n** DONE step one\n* NEXT Healthy project\n** NEXT step one\n"
+    (let ((rows (substring-no-properties
+                 (org-foresight-report-projects
+                  (org-foresight-outline-records t)))))
+      (should (string-match-p "nothing live under it (1)" rows))
+      (should (string-match-p "Drained project" rows))
+      (should (string-match-p "moving (1)" rows)))))
+
+(ert-deftest org-foresight-test-parked-is-a-group-of-projects-not-a-section ()
+  "Put down on purpose is a state of a project, not a subject of its own.
+Asked once a week -- is this still rightly down -- which is a question about
+the same list the rest of the section is about."
+  (org-foresight-test--with-signals
+      "* NEXT Healthy project\n** NEXT step one\n* SDAY Someday thing\n"
+    (let* ((org-todo-keywords '((sequence "NEXT" "SDAY" "|" "DONE")))
+           (org-foresight-parked-keywords '("SDAY"))
+           (rows (substring-no-properties
+                  (org-foresight-report-projects
+                   (org-foresight-outline-records t)))))
+      (should (string-match-p "parked (1)" rows))
+      (should (string-match-p "Someday thing" rows))
+      ;; parked work occupies nothing, so it is not one of the loose ends
+      (should-not (string-match-p "under no project" rows)))))
+
+(ert-deftest org-foresight-test-an-empty-group-is-not-drawn ()
+  "Four groups that each say \"(none)\" is a section four lines longer for
+four answers nobody asked for.  A group that is not drawn has said
+everything true about itself."
+  (org-foresight-test--with-signals
+      "* NEXT Healthy project\n** NEXT step one\n"
+    (let ((rows (substring-no-properties
+                 (org-foresight-report-projects
+                  (org-foresight-outline-records t)))))
+      (should (string-match-p "moving (1)" rows))
+      (should-not (string-match-p "nothing live under it" rows))
+      (should-not (string-match-p "under no project" rows))
+      (should-not (string-match-p "parked" rows)))))
+
+(ert-deftest org-foresight-test-a-badge-reads-the-same-on-a-terminal ()
+  "The styles differ in fill and weight, and a terminal has neither to
+spare.  So the setting is about a graphical frame only, and a page read in
+a terminal is the same page whichever way it is set."
+  (dolist (style '(plain chip-title chip))
+    (let ((org-foresight-report-badge-style style))
+      (should (equal "[Here] what only this place can do"
+                     (substring-no-properties
+                      (org-foresight-report--badge
+                       "Here" "what only this place can do")))))))
+
+(ert-deftest org-foresight-test-a-group-heading-may-have-no-count ()
+  "The count is left out where the number would say nothing -- a horizon
+that is always the same length is not news."
+  (should (string-match-p "moving (3)"
+                          (substring-no-properties
+                           (org-foresight-report--group-heading "moving" 3))))
+  (should (string-match-p "the coming days"
+                          (substring-no-properties
+                           (org-foresight-report--group-heading "the coming days"))))
+  (should-not (string-match-p "[0-9]"
+                              (substring-no-properties
+                               (org-foresight-report--group-heading "the coming days")))))
+
+(ert-deftest org-foresight-test-fit-holds-both-halves-of-one-question ()
+  "Whether a date will be met and what a day is shaped like are the same
+arithmetic read from its two ends, so one badge holds both and neither has
+one of its own."
+  (org-foresight-test--with-demo
+    (org-foresight-board)
+    (unwind-protect
+        (with-current-buffer "*Org Foresight Board*"
+          (let ((text (substring-no-properties (buffer-string))))
+            (should (string-match-p "dated commitments" text))
+            (should (string-match-p "the coming days" text))
+            ;; as subheadings, which is to say not as badges
+            (should-not (string-match-p "^\\[Landing\\]" text))
+            (should-not (string-match-p "^\\[Load\\]" text))
+            (should-not (string-match-p "^\\[Parked\\]" text))
+            (should-not (string-match-p "^\\[Board\\]" text))))
+      (kill-buffer "*Org Foresight Board*"))))
 
 (ert-deftest org-foresight-test-the-board-walks-the-files-once ()
   "Seven sections, one walk.

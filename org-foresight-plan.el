@@ -908,21 +908,50 @@ Stable within a kind, so the order each group was written in survives."
          (pad (max 2 (- org-foresight-report-columns (string-width lead)))))
     (propertize (concat lead (make-string pad ?\u2500)) 'face 'shadow)))
 
+(defun org-foresight-report--count-rows (text)
+  "Return how many lines of TEXT are rows an agenda command could act on.
+
+Counted from the drawn text rather than from the data behind it.  A block
+decides for itself what it draws -- a rule here, a continuation there -- and
+a heading that said one number while the reader counted another would be
+worse than a heading with no number at all."
+  (if (null text)
+      0
+    (seq-count (lambda (line)
+                 (and (> (length line) 0)
+                      (get-text-property 0 'org-marker line)))
+               (split-string text "\n"))))
+
+(defun org-foresight-report--group-heading (title &optional count command)
+  "Return the heading of a group called TITLE, at the margin.
+
+A group heading belongs to the badge above it, so it sits at the margin
+rather than at the frame edge: only a badge is outdented, or an eye running
+down the left edge stops finding sections.
+
+COUNT is part of the heading because a group is read to decide whether to
+read it, and how many there are is most of that decision.  Left out where
+the number would say nothing -- a horizon that is always the same length is
+not news.  COMMAND, where a group has one that empties it, is named beside
+the title: the answer and the question in one line.
+
+Shared by every section that groups its rows -- the signals, the projects,
+what has a date.  One badge may hold several of these, and two sections
+whose subheadings looked different would read as two kinds of thing."
+  (org-foresight-report--indent
+   (concat
+    (propertize (if count (format "%s (%d)" title count) title)
+                'face 'org-agenda-structure)
+    (when command
+      (propertize (concat " · " (org-foresight-plan--command-hint command))
+                  'face 'shadow)))))
+
 (defun org-foresight-report--signal-group (group)
   "Return one signal GROUP: its heading, and a row per finding."
   (concat
-          ;; A group heading belongs to the badge above it, so it sits at the
-          ;; margin rather than at the frame edge: only a badge is outdented,
-          ;; or an eye running down the left edge stops finding sections.
-          (org-foresight-report--indent
-           (concat
-            (propertize (format "%s (%d)" (car group) (length (cdr group)))
-                        'face 'org-agenda-structure)
-            (when-let ((command (cdr (assoc (car group)
-                                            org-foresight-signal-commands))))
-              (propertize
-               (concat " · " (org-foresight-plan--command-hint command))
-               'face 'shadow))))
+          (org-foresight-report--group-heading
+           (car group) (length (cdr group))
+           (cdr (assoc (car group) org-foresight-signal-commands)))
           "\n"
           (mapconcat
            (lambda (f)
@@ -941,64 +970,92 @@ Stable within a kind, so the order each group was written in survives."
               (plist-get f :marker)))
            (cdr group) "\n")))
 
-(defun org-foresight-report-projects (&optional projects)
-  "Return a row per open project: what it is, and what is next in it.
+(defun org-foresight-report--project-row (rec next)
+  "Return the row for project REC, whose first live leaf is NEXT."
+  (org-foresight-report--actionable
+   (format "  %s  %s  %s"
+           (truncate-string-to-width (or (plist-get rec :category) "") 12 0 ?\s)
+           (truncate-string-to-width
+            (replace-regexp-in-string "[\n\r]" " " (or (plist-get rec :title) "?"))
+            28 0 ?\s)
+           (if next
+               (truncate-string-to-width
+                (propertize (concat "\u2192 " (or (plist-get next :title) "?"))
+                            'face 'shadow)
+                32)
+             (propertize "\u26a0 nothing live under it"
+                         'face 'org-foresight-report-overcommitted)))
+   (plist-get rec :marker)))
 
-The list a weekly review is mostly made of.  A project with nothing live
-under it is marked rather than dropped, because that is the row worth the
-visit: everything else here is a reminder, and this one is a decision waiting
-to be made."
-  (let ((projects (or projects (org-foresight-projects
-                                (org-foresight-outline-records)))))
-    (if (null projects)
+(defun org-foresight-report--plain-row (rec)
+  "Return the row for REC where there is no next step to name.
+
+The title is cut but not padded: nothing follows it, and padding a last
+field leaves every row of the group carrying whitespace to the edge."
+  (org-foresight-report--actionable
+   (format "  %s  %s"
+           (truncate-string-to-width (or (plist-get rec :category) "") 12 0 ?\s)
+           (truncate-string-to-width
+            (replace-regexp-in-string "[\n\r]" " " (or (plist-get rec :title) "?"))
+            50 nil nil t))
+   (plist-get rec :marker)))
+
+(defun org-foresight-report--group (title rows)
+  "Return a heading for TITLE over ROWS, or nil when there are none.
+
+Nil rather than a note saying the group is empty.  Four groups that each
+say \"(none)\" is a section four lines longer for four answers nobody
+asked for -- the whole section already says what it is about, and a group
+that is not drawn has said everything true about itself."
+  (when rows
+    (concat (org-foresight-report--group-heading title (length rows))
+            "\n"
+            (mapconcat #'identity rows "\n"))))
+
+(defun org-foresight-report-projects (&optional records)
+  "Return what is moving in RECORDS, and what is not, in four groups.
+
+The list a weekly review is mostly made of, and the order is the argument.
+What is moving is read first and quickest.  What has run out is the row
+worth the visit: a project whose leaves are all finished still calls itself
+a project, and that is the state a plan falls into without anybody deciding
+to let it.  What hangs under no project is the task that was captured and
+never filed, which no other section of this page can show -- the projects
+are walked from the top down, so a leaf with nothing above it is reached by
+neither pass.  What is parked is last, and is not a fault: the question is
+whether it is still rightly down, and that is a question for a review and
+no other day."
+  (let* ((records (or records (org-foresight-outline-records)))
+         (projects (org-foresight-projects records))
+         (moving (seq-filter (lambda (p) (plist-get p :next)) projects))
+         (drained (seq-remove (lambda (p) (plist-get p :next)) projects))
+         (loose (org-foresight-loose-leaves records))
+         (parked (seq-filter (lambda (r) (plist-get r :parked)) records))
+         (groups
+          (delq nil
+                (list
+                 (org-foresight-report--group
+                  "moving"
+                  (mapcar (lambda (p)
+                            (org-foresight-report--project-row
+                             (plist-get p :record) (plist-get p :next)))
+                          moving))
+                 (org-foresight-report--group
+                  "nothing live under it"
+                  (mapcar (lambda (p)
+                            (org-foresight-report--project-row
+                             (plist-get p :record) nil))
+                          drained))
+                 (org-foresight-report--group
+                  "under no project"
+                  (mapcar #'org-foresight-report--plain-row loose))
+                 (org-foresight-report--group
+                  "parked"
+                  (mapcar #'org-foresight-report--plain-row parked))))))
+    (if (null groups)
         (org-foresight-report--indent
-         (propertize "(no projects open)" 'face 'shadow))
-      (mapconcat
-       (lambda (p)
-         (let* ((rec (plist-get p :record))
-                (next (plist-get p :next)))
-           (org-foresight-report--actionable
-            (format "  %s  %s  %s"
-                    (truncate-string-to-width
-                     (or (plist-get rec :category) "") 12 0 ?\s)
-                    (truncate-string-to-width
-                     (replace-regexp-in-string
-                      "[\n\r]" " " (or (plist-get rec :title) "?"))
-                     28 0 ?\s)
-                    (if next
-                        (truncate-string-to-width
-                         (propertize
-                          (concat "→ " (or (plist-get next :title) "?"))
-                          'face 'shadow)
-                         32)
-                      (propertize "⚠ nothing live under it"
-                                  'face 'org-foresight-report-overcommitted)))
-            (plist-get rec :marker))))
-       projects "\n"))))
-
-(defun org-foresight-report-parked (&optional records)
-  "Return a row per heading that has been put down on purpose.
-
-Not a signal: there is nothing here to fix.  It is the question a review asks
-once a week and no other day -- is this still rightly parked -- and a list
-nobody looks at is how work quietly stops being decided about."
-  (let ((parked (seq-filter (lambda (r) (plist-get r :parked))
-                            (or records (org-foresight-outline-records)))))
-    (if (null parked)
-        (org-foresight-report--indent
-         (propertize "(nothing parked)" 'face 'shadow))
-      (mapconcat
-       (lambda (rec)
-         (org-foresight-report--actionable
-          (format "  %s  %s"
-                  (truncate-string-to-width
-                   (or (plist-get rec :category) "") 10 0 ?\s)
-                  (truncate-string-to-width
-                   (replace-regexp-in-string
-                    "[\n\r]" " " (or (plist-get rec :title) "?"))
-                   50 0 ?\s))
-          (plist-get rec :marker)))
-       parked "\n"))))
+         (propertize "(nothing open)" 'face 'shadow))
+      (string-join groups "\n\n"))))
 
 (defun org-foresight-report-signals (&optional signals)
   "Return the signal blocks, or a note when nothing is outstanding.
@@ -1195,9 +1252,13 @@ nothing but drop it."
                (landing (org-foresight-landing nil scan))
                (signals (org-foresight-signals nil scan))
                (records (org-foresight-outline-records)))
-        (insert (org-foresight-report--badge
-                 "Board" "what settled would look like, and how far off it is")
-                "\n\n"
+        (insert
+                ;; The verdict opens the page without a badge of its own.
+                ;; The badge column is this page's table of contents, and
+                ;; what belongs in it is a section about the work; the
+                ;; verdict is about the page.  Given one, an eye running
+                ;; down the left edge would count five sections and find
+                ;; four.
                 (org-foresight-report--indent
                  (org-foresight-plan--board-verdict landing signals))
                 "\n\n"
@@ -1209,23 +1270,25 @@ nothing but drop it."
                 (org-foresight-report--badge
                  "Projects" "what is moving, and what is not")
                 "\n\n"
-                (org-foresight-report-projects
-                 (org-foresight-projects records))
+                (org-foresight-report-projects records)
                 "\n\n"
                 (org-foresight-report--badge
-                 "Landing" "what has a date, and whether it will be met")
+                 "Fit" "what is promised, and whether the days hold it")
                 "\n\n"
-                (org-foresight-report-landing landing scan)
+                ;; Two questions about one thing, so one badge over both.
+                ;; Whether a date will be met and what a day is shaped like
+                ;; are the same arithmetic read from its two ends, and a
+                ;; reader who has just been told a date is short is asking
+                ;; which day to take the hours out of.
+                (let ((rows (org-foresight-report-landing landing scan)))
+                  (concat (org-foresight-report--group-heading
+                           "dated commitments"
+                           (org-foresight-report--count-rows rows))
+                          "\n" rows))
                 "\n\n"
-                (org-foresight-report--badge
-                 "Load" "what the coming days are shaped like")
-                "\n\n"
+                (org-foresight-report--group-heading "the coming days")
+                "\n"
                 (org-foresight-report-load nil scan nil landing)
-                "\n\n"
-                (org-foresight-report--badge
-                 "Parked" "put down on purpose, and still down")
-                "\n\n"
-                (org-foresight-report-parked records)
                 "\n\n"
                 (org-foresight-report--badge
                  "Signals" "everything unsettled, the fixable part first")

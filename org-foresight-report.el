@@ -65,10 +65,32 @@ nil      nothing.
 Bound to `review' in the \"r\" command's general settings; defaults to `daily'
 for the plain `a' agenda.")
 
-;; agent-shell-style two-segment badge (cf. `agent-shell--make-button'):
-;; a filled title chip followed by an outlined meaning chip, boxed.
 ;;;; Badges
 
+(defcustom org-foresight-report-badge-style 'plain
+  "How a section heading is drawn.
+
+  `plain\='       the title in bold, its meaning in the muted weight beside
+                it.  Nothing is filled or boxed.
+  `chip-title\='  the title as a filled chip, its meaning plain beside it.
+  `chip\='        both as chips, filled and outlined against each other.
+
+A badge is read by scanning rather than by reading, and how much ink that
+takes is a question about the page it sits on rather than about badges: a
+page of four sections wants less of it than a page of ten.  So this is a
+setting rather than a decision, until one page has been read enough times
+to make it a decision.
+
+Terminals draw all three the same way, as \"[Title] meaning\": the styles
+differ in fill and weight, and a terminal has neither to spare."
+  :type '(choice (const :tag "Bold title, muted meaning" plain)
+                 (const :tag "Filled title, muted meaning" chip-title)
+                 (const :tag "Two chips" chip))
+  :group 'org-foresight)
+
+;; The chip faces, in the agent-shell two-segment style
+;; (cf. `agent-shell--make-button'): a filled title chip followed by an
+;; outlined meaning chip, boxed.
 (defface org-foresight-report-badge-title
   '((t :inherit org-agenda-structure))
   "Left badge (filled): muted agenda fg on a subtle bg.")
@@ -76,6 +98,18 @@ for the plain `a' agenda.")
   '((t :inherit (org-agenda-structure highlight)))
   "Right badge (solid): `shadow' fg becomes the fill; text knocked out to
 the page background via inverse-video.")
+
+;; And the plain ones.  Both take their colour from `shadow', which is the
+;; colour the other listings in this family already use for a section
+;; heading -- one page's headings should not be a different grey from the
+;; next page's.
+(defface org-foresight-report-heading
+  '((t :inherit shadow :weight bold))
+  "A section title, unfilled.")
+(defface org-foresight-report-heading-meaning
+  '((t :inherit shadow))
+  "What a section title means, beside it.")
+
 ;; Right badge is a solid fill (inverse-video: `shadow' fg becomes the bg,
 ;; text drops to the page bg).  Both badges share one box color (= `shadow'
 ;; fg) so the left outline meets the right fill seamlessly (agent-shell
@@ -89,12 +123,28 @@ the page background via inverse-video.")
                       :box (list :line-width -1 :color frame)))
 
 (defun org-foresight-report--badge (title meaning)
-  "Return a styled \"TITLE MEANING\" header as an agent-shell-like badge.
-GUI: adjacent filled + outlined boxed chips.  TUI: bracketed fallback."
-  (if (display-graphic-p)
-      (concat (propertize (concat " " title " ") 'face 'org-foresight-report-badge-title)
-              (propertize (concat " " meaning " ") 'face 'org-foresight-report-badge-meaning))
-    (concat "[" title "] " meaning)))
+  "Return a styled \"TITLE MEANING\" section heading.
+
+Drawn as `org-foresight-report-badge-style\=' says, except on a terminal,
+which has no fill and one weight and so gets the bracketed form whatever
+the setting is."
+  (if (not (display-graphic-p))
+      (concat "[" title "] " meaning)
+    (pcase org-foresight-report-badge-style
+      ('chip
+       (concat (propertize (concat " " title " ")
+                           'face 'org-foresight-report-badge-title)
+               (propertize (concat " " meaning " ")
+                           'face 'org-foresight-report-badge-meaning)))
+      ('chip-title
+       (concat (propertize (concat " " title " ")
+                           'face 'org-foresight-report-badge-title)
+               (propertize (concat "  " meaning)
+                           'face 'org-foresight-report-heading-meaning)))
+      (_
+       (concat (propertize title 'face 'org-foresight-report-heading)
+               (propertize (concat "  " meaning)
+                           'face 'org-foresight-report-heading-meaning))))))
 
 ;;;; Sparklines
 
