@@ -104,11 +104,22 @@ the page background via inverse-video.")
 ;; heading -- one page's headings should not be a different grey from the
 ;; next page's.
 (defface org-foresight-report-heading
-  '((t :inherit shadow :weight bold))
-  "A section title, unfilled.")
+  '((t :inherit org-level-1 :weight bold))
+  "A section title, unfilled.
+
+Coloured like a heading because that is what it is, and from `org-level-1\='
+so that it is the colour headings already are here: the other listings in
+this family name their sections with the same face, and a page whose
+headings were a different colour from the next page\='s would read as a
+different program.")
 (defface org-foresight-report-heading-meaning
-  '((t :inherit shadow))
-  "What a section title means, beside it.")
+  '((t :inherit org-level-1))
+  "What a section title means, beside it.
+
+The title's colour, and only the weight between them.  Two colours in one
+heading make two things of it, and the meaning is not a second thing -- it
+is the title said in full, for the reading before the scanning has been
+learnt.")
 
 ;; Right badge is a solid fill (inverse-video: `shadow' fg becomes the bg,
 ;; text drops to the page bg).  Both badges share one box color (= `shadow'
@@ -1905,6 +1916,30 @@ agenda can act on belongs."
                    (concat (org-foresight-report--margin-for line) line)))
                (split-string text "\n") "\n")))
 
+(defun org-foresight-report--indent-deeper (text)
+  "Return TEXT one column further in, keeping any full-width rule at the edge.
+
+For the blocks that sit under a subheading rather than directly under a
+badge.  Depth means \"belongs to the line above\" here, so a block whose
+rows sat at the margin under a heading at the margin had nothing to say it
+was that heading\='s -- it read as a caption rather than as a parent.
+
+A rule drawn to `org-foresight-report-columns\=' gives up a dash for the
+column it has moved by.  Two rules a column apart read as a mistake on a
+page whose whole argument is that the figures line up, and the eye finds the
+ragged one before it finds anything the rules were drawn to say."
+  (when text
+    (mapconcat
+     (lambda (line)
+       (if (string-empty-p line)
+           line
+         (let ((moved (concat " " line)))
+           (while (and (> (string-width moved) org-foresight-report-columns)
+                       (string-suffix-p "\u2500" moved))
+             (setq moved (substring moved 0 -1)))
+           moved)))
+     (split-string text "\n") "\n")))
+
 (defun org-foresight-report--actionable (string marker &optional stamp)
   "Return STRING carrying the text properties Org's agenda commands look for.
 
@@ -2209,7 +2244,8 @@ them is no column at all."
     (when rows
       (concat
        (org-foresight-report--badge "Commands" "what can be done from here")
-       "\n\n"
+       ;; Straight under the badge, as every block on either page is.
+       "\n"
        (mapconcat
         (pcase-lambda (`(,scope . ,heading))
           (when-let ((group (seq-filter (lambda (r) (eq (nth 2 r) scope)) rows)))
@@ -2314,11 +2350,13 @@ one afternoon."
             ;; happened.  What is done with is read last, and least often.
             (org-foresight-report--badge "Load" "when I could take this on")
             "\n"
-            (org-foresight-report-load nil scan nil landing behind)
+            (org-foresight-report--indent-deeper
+             (org-foresight-report-load nil scan nil landing behind))
             "\n\n"
             (org-foresight-report--badge "Spent" "where the hours actually went")
             "\n"
-            (org-foresight-report--indent (org-foresight-report-spent clock))
+            (org-foresight-report--indent-deeper
+             (org-foresight-report--indent (org-foresight-report-spent clock)))
             "\n")))
 
 (defun org-foresight-report--review (&optional _scan clock _landing _behind)
@@ -2482,7 +2520,9 @@ step afterwards."
           (org-foresight-report--insert
            (concat (org-foresight-report--badge
                     "Capacity" "what today can still take")
-                   "\n" line "\n\n")))
+                   "\n"
+                   (org-foresight-report--indent-deeper line)
+                   "\n\n")))
         ;; Insertion leaves point after the text, so a `top' body follows the
         ;; verdict and still precedes the agenda listing.
         (unless top-p

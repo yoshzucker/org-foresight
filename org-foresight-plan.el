@@ -1264,17 +1264,12 @@ nothing but drop it."
                 "\n\n"
                 (org-foresight-report--badge
                  "Here" "what only this place can do")
-                "\n\n"
+                "\n"
                 (org-foresight-report-here)
                 "\n\n"
                 (org-foresight-report--badge
-                 "Projects" "what is moving, and what is not")
-                "\n\n"
-                (org-foresight-report-projects records)
-                "\n\n"
-                (org-foresight-report--badge
                  "Fit" "what is promised, and whether the days hold it")
-                "\n\n"
+                "\n"
                 ;; Two questions about one thing, so one badge over both.
                 ;; Whether a date will be met and what a day is shaped like
                 ;; are the same arithmetic read from its two ends, and a
@@ -1284,15 +1279,22 @@ nothing but drop it."
                   (concat (org-foresight-report--group-heading
                            "dated commitments"
                            (org-foresight-report--count-rows rows))
-                          "\n" rows))
+                          "\n"
+                          (org-foresight-report--indent-deeper rows)))
                 "\n\n"
                 (org-foresight-report--group-heading "the coming days")
                 "\n"
-                (org-foresight-report-load nil scan nil landing)
+                (org-foresight-report--indent-deeper
+                 (org-foresight-report-load nil scan nil landing))
+                "\n\n"
+                (org-foresight-report--badge
+                 "Projects" "what is moving, and what is not")
+                "\n"
+                (org-foresight-report-projects records)
                 "\n\n"
                 (org-foresight-report--badge
                  "Signals" "everything unsettled, the fixable part first")
-                "\n\n"
+                "\n"
                 (org-foresight-report-signals signals)
                 "\n\n"
                 ;; The board is reached by a key somebody bound once and is

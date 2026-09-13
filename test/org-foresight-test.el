@@ -1475,15 +1475,22 @@ side of a block about what already happened."
                      (string-search "Clocked" text))))))))
 
 (ert-deftest org-foresight-test-render-is-idempotent ()
-  "Rendering twice must replace, not accumulate."
+  "Rendering twice must replace, not accumulate.
+
+The clock is held still for the three renders.  Today\='s elapsed half is
+measured from the moment of drawing, so two renders a minute apart differ
+honestly -- and a test that compared them would fail once an hour, at
+whichever second the minute turned between the first render and the last."
   (org-foresight-test--with-day "* NEXT something\nSCHEDULED: <2026-08-10 Mon>\n"
     (org-foresight-test--in-agenda
-      (let ((org-foresight-report-style 'daily))
-        (org-foresight-report-render)
-        (let ((once (buffer-string)))
+      (let ((org-foresight-report-style 'daily)
+            (frozen (current-time)))
+        (cl-letf (((symbol-function 'current-time) (lambda () frozen)))
           (org-foresight-report-render)
-          (org-foresight-report-render)
-          (should (equal (buffer-string) once)))))))
+          (let ((once (buffer-string)))
+            (org-foresight-report-render)
+            (org-foresight-report-render)
+            (should (equal (buffer-string) once))))))))
 
 (ert-deftest org-foresight-test-refresh-follows-an-edit ()
   "Acting on a row must move the numbers above it.
@@ -4234,7 +4241,10 @@ finds anything the rules were drawn to say."
         (with-current-buffer "*Org Foresight Board*"
           (let (widths)
             (goto-char (point-min))
-            (while (re-search-forward "^ ──.*$" nil t)
+            ;; At whatever depth: a rule under a subheading is a column
+            ;; further in than one under a badge, and still has to stop where
+            ;; the others stop.
+            (while (re-search-forward "^ +──.*$" nil t)
               (push (string-width (substring-no-properties (match-string 0)))
                     widths))
             (should (> (length widths) 2))
@@ -9280,9 +9290,15 @@ the dispatcher's own contract."
 (ert-deftest org-foresight-test-the-board-keeps-its-sections-in-order ()
   "The board\='s sections, and the order the questions are asked in.
 
-The order is the argument -- can I leave, is everything moving, will it
-fit, what is unsettled -- and a section that drifted up or down the page
-would be a different argument made by accident.
+The order is the argument -- can I leave, will it fit, is everything moving,
+what is unsettled -- and a section that drifted up or down the page would be
+a different argument made by accident.
+
+Two short sections and then two long ones, which is the same order read a
+second way.  What only this place can do and whether the week holds are
+decisions, taken in a minute and wanted before anything is scrolled past;
+what is moving and what is unsettled are lists to work down.  On the day
+there is no time for the lists, the decisions have still been read.
 
 Four, because two pairs of them were one question each: what has a date and
 what the days are shaped like are the same arithmetic read from its two
@@ -9299,9 +9315,9 @@ is that they are not in this list."
                                     (when (string-match "\\`\\[\\([^]]+\\)\\]" line)
                                       (match-string 1 line)))
                                   (org-foresight-test--badge-lines))))
-              ;; can I leave · is everything moving · will it fit ·
+              ;; can I leave · will it fit · is everything moving ·
               ;; what is unsettled · and how to act on any of it
-              (should (equal '("Here" "Projects" "Fit" "Signals" "Commands")
+              (should (equal '("Here" "Fit" "Projects" "Signals" "Commands")
                              badges)))))
       (when (get-buffer "*Org Foresight Board*")
         (kill-buffer "*Org Foresight Board*")))))
@@ -9410,6 +9426,68 @@ one of its own."
             (should-not (string-match-p "^\\[Load\\]" text))
             (should-not (string-match-p "^\\[Parked\\]" text))
             (should-not (string-match-p "^\\[Board\\]" text))))
+      (kill-buffer "*Org Foresight Board*"))))
+
+(ert-deftest org-foresight-test-a-subheading-is-a-parent-not-a-caption ()
+  "Depth means \"belongs to the line above\" on this page, so a block under a
+subheading sits a column further in than the subheading does.  Left at the
+same depth it read as a caption, and the two sections that group their rows
+would have looked like two different kinds of thing."
+  (org-foresight-test--with-demo
+    (org-foresight-board)
+    (unwind-protect
+        (with-current-buffer "*Org Foresight Board*"
+          (let* ((lines (split-string (substring-no-properties (buffer-string)) "\n"))
+                 (depth (lambda (re)
+                          (when-let ((i (seq-position
+                                         lines re
+                                         (lambda (l r) (string-match-p r l)))))
+                            (cons (- (length (nth i lines))
+                                     (length (string-trim-left (nth i lines))))
+                                  (- (length (nth (1+ i) lines))
+                                     (length (string-trim-left
+                                              (nth (1+ i) lines)))))))))
+            ;; each subheading, and the first line under it
+            (pcase-dolist (`(,head . ,row)
+                           (list (funcall depth "^ moving (")
+                                 (funcall depth "^ dated commitments (")))
+              (should (= 1 head))
+              (should (= 2 row)))))
+      (kill-buffer "*Org Foresight Board*"))))
+
+(ert-deftest org-foresight-test-a-moved-rule-still-stops-at-the-edge ()
+  "A rule gives up a dash for the column it moves by.  Two rules a column
+apart read as a mistake on a page whose whole argument is that the figures
+line up."
+  (let* ((rule (org-foresight-report--signal-rule "owed"))
+         (moved (org-foresight-report--indent-deeper rule)))
+    (should (= org-foresight-report-columns
+               (string-width (substring-no-properties rule))))
+    (should (= org-foresight-report-columns
+               (string-width (substring-no-properties moved))))
+    ;; and an ordinary line just moves
+    (should (equal "  a row"
+                   (org-foresight-report--indent-deeper " a row")))))
+
+(ert-deftest org-foresight-test-a-block-sits-straight-under-its-badge ()
+  "One page, one spacing.  A badge and what it names are one thing, and a
+blank line between them is a gap where there is no join -- the gap that
+means something is the one between a section and the next."
+  (dolist (page '(board agenda))
+    (let ((lines (split-string (substring-no-properties
+                                (or (org-foresight--legend page) ""))
+                               "\n")))
+      (should (string-prefix-p "[" (nth 0 lines)))
+      (should-not (string-empty-p (nth 1 lines)))))
+  (org-foresight-test--with-demo
+    (org-foresight-board)
+    (unwind-protect
+        (with-current-buffer "*Org Foresight Board*"
+          (let ((lines (split-string (substring-no-properties (buffer-string))
+                                     "\n")))
+            (dotimes (i (length lines))
+              (when (string-prefix-p "[" (nth i lines))
+                (should-not (string-empty-p (nth (1+ i) lines)))))))
       (kill-buffer "*Org Foresight Board*"))))
 
 (ert-deftest org-foresight-test-the-board-walks-the-files-once ()
