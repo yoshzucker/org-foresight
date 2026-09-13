@@ -717,6 +717,24 @@ Document order throughout, so the answer reads in the order the file does."
           (push (list :record rec :next (car leaves) :live (length leaves))
                 out))))))
 
+(defun org-foresight-loose-leaves (records)
+  "Return the live leaves in RECORDS that hang under no project.
+
+The other half of `org-foresight-projects\='.  That one walks from the
+projects down, so a leaf with no project above it is reached by neither of
+its passes -- and a task nobody has filed is exactly the one a review is
+looking for.  Written down here beside it so the two answers come from one
+reading of the same records and cannot drift apart.
+
+A leaf, not a project: something with TODO children is a project with
+nothing above it, which is an ordinary top-level project rather than a
+loose end.  Document order, as everywhere here."
+  (seq-filter (lambda (rec)
+                (and (org-foresight--live-leaf-p rec)
+                     (not (plist-get rec :project-p))
+                     (not (org-foresight--nearest-project rec))))
+              records))
+
 (defun org-foresight-project-scan (&optional now)
   "Return the shape of the work in `org-agenda-files'.
 

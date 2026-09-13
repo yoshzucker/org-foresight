@@ -1859,29 +1859,71 @@ agenda's own commands work on them.
 
 It is a week's worth of questions, asked in the order they come up:
 
-| Board    | how far off settled is                | one line |
-| Here     | can I leave                           |          |
-| Projects | is everything moving                  |          |
-| Landing  | will the dates be met                 |          |
-| Load     | what are the coming days shaped like  |          |
-| Parked   | is this still rightly put down        |          |
-| Signals  | what is unsettled, fixable part first |          |
+| (opening) | how far off settled is                 | one line, no badge |
+| Here      | can I leave                            |                    |
+| Projects  | is everything moving                   | four groups        |
+| Fit       | will it fit                            | two groups         |
+| Signals   | what is unsettled, fixable part first  | grouped by kind    |
+| (closing) | what can be done from here             | the keys           |
+
+The opening line and the closing keys wear no badge. The badge column is the
+page's table of contents and what belongs in it is a section about the work;
+those two are about the page. Given badges, an eye running down the left edge
+would count six sections and find four.
+
+Inside a badge, a subheading names a group and says how many are in it:
+
+| Projects | moving · nothing live under it · under no project · parked |
+| Fit      | dated commitments · the coming days                        |
+| Signals  | the fixable part · what is owed · what is merely true      |
+
+=Fit= holds two questions because they are one: whether a date will be met
+and what a day is shaped like are the same arithmetic read from its two ends,
+and a reader who has just been told a date is short is asking which day to
+take the hours out of.
+
+=under no project= is the group no other section can show. The projects are
+walked from the top down, so a live leaf with nothing above it is reached by
+neither pass — and a task nobody has filed is the one a review is looking
+for. Not a fault: a standalone next action is ordinary, and the reason to
+draw it is that otherwise there is nowhere to go and look at it.
 
 Longer than the day's page, and meant to be: this is a list to work down, not
-a thing to glance at. One walk of the files answers all seven — the survey,
+a thing to glance at. One walk of the files answers all of it — the survey,
 the records and the signals are read at the top and handed to each section,
 because a page that asked them section by section would walk every heading in
 every file once per section.
+
+The badges themselves can be drawn three ways, through
+~org-foresight-report-badge-style~: =plain= (the title bold, its meaning
+muted beside it), =chip-title= (the title filled), =chip= (both filled and
+outlined against each other). How much ink a section heading wants is a
+question about the page it sits on rather than about badges. Terminals draw
+all three as =[Title] meaning=: the styles differ in fill and weight, and a
+terminal has neither to spare.
 
 ** Projects — what is moving, and what is not
 
 #+begin_example
 [Projects] what is moving, and what is not
 
+ moving (2)
   procurement   Choose a printer vendor       → Compare the three quotes
   engineering   Launch the field kit          → Order tooling
+
+ nothing live under it (1)
   reporting     Prepare the quarterly board   ⚠ nothing live under it
+
+ under no project (2)
+  admin         Chase the invoice
+  team          Ask Robin how the migration went
+
+ parked (1)
+  admin         Renew the office lease
 #+end_example
+
+A group with nothing in it is not drawn. Four groups each saying "(none)" is
+a section four lines longer for four answers nobody asked for.
 
 The list a weekly review is mostly made of, and the arrow is the whole of it:
 /is there something somebody could pick up under this/.
@@ -1899,6 +1941,10 @@ the nearest deadline or the largest — a review reads down a list, and the
 first thing under a heading is what somebody would pick up on opening it.
 
 ** Parked — put down on purpose, and still down
+
+A group of =Projects= rather than a section of its own: put down on purpose
+is a state of a project, and whether it is still rightly down is a question
+about the same list the rest of that section is about.
 
 Deciding not to do something now is a decision, and there was no way to
 record it. The only way out of the undecided pile was to make a heading look
@@ -2299,8 +2345,9 @@ opened deliberately rather than met on the way past, and its rows already
 answer to the agenda's own commands.
 
 #+begin_example
-Landing  what has a date, and whether it will be met
+Fit  what is promised, and whether the days hold it
 
+ dated commitments (7)
  Mon 08-24   2:00  Write the vendor comparison
  Mon 08-24   0:15  Get the contract stamped
  ── 2:15 owed · 2:10 free of 3:30 · 0:05 must move ──────────────────
