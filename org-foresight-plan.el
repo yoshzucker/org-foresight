@@ -797,7 +797,7 @@ drawn, and reaching for the network there would stall the display."
 
 ;;;; The board
 
-(defconst org-foresight-signal-commands
+(defvar org-foresight-signal-commands
   '(("Meetings without prep" . org-foresight-prepare-meetings))
   "Signal groups a single command can settle, and which command that is.
 
@@ -805,7 +805,24 @@ Most groups are fixed one row at a time, on the entry the row points at: an
 estimate is typed where the work is, and a task that keeps moving is a
 decision nobody else can make.  The few that are not have to be said out
 loud -- a board that names a problem and not the thing that answers it sends
-its reader off to find one, and a reader who has to go looking stops reading.")
+its reader off to find one, and a reader who has to go looking stops reading.
+
+A variable, like `org-foresight-signal-kinds\=', so a group contributed
+through `org-foresight-signal-functions\=' can name its own answer.  A
+contributor able to say what is wrong but not what settles it would be the
+one group on the page sending its reader off to look.")
+
+(defvar org-foresight-signal-summarised nil
+  "Signal groups drawn as a heading and a count, without their rows.
+
+For a group whose length is the news and whose members are not.  Fifty rows
+nobody reads push the rest of the page off the screen, and a reader learns
+to scroll past the section rather than read it -- which costs more than the
+rows were worth.
+
+Only worth it where the group also names the command that settles it: a
+number with nowhere to go is a reproach.  See
+`org-foresight-signal-commands\='.")
 
 (defvar org-foresight-signal-kinds
   '(("Impossible (travel clashes with a meeting)"     . fix)
@@ -947,8 +964,15 @@ whose subheadings looked different would read as two kinds of thing."
                   'face 'shadow)))))
 
 (defun org-foresight-report--signal-group (group)
-  "Return one signal GROUP: its heading, and a row per finding."
-  (concat
+  "Return one signal GROUP: its heading, and a row per finding.
+
+Or the heading alone, where the group is one of
+`org-foresight-signal-summarised\=' and its length is the news."
+  (if (member (car group) org-foresight-signal-summarised)
+      (org-foresight-report--group-heading
+       (car group) (length (cdr group))
+       (cdr (assoc (car group) org-foresight-signal-commands)))
+    (concat
           (org-foresight-report--group-heading
            (car group) (length (cdr group))
            (cdr (assoc (car group) org-foresight-signal-commands)))
@@ -968,7 +992,7 @@ whose subheadings looked different would read as two kinds of thing."
                       (truncate-string-to-width
                        (propertize (plist-get f :note) 'face 'shadow) 36))
               (plist-get f :marker)))
-           (cdr group) "\n")))
+           (cdr group) "\n"))))
 
 (defun org-foresight-report--project-row (rec next)
   "Return the row for project REC, whose first live leaf is NEXT."
