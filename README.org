@@ -2438,7 +2438,17 @@ takes is paid for when it is opened and at no other time.
 
 =M-x org-foresight-plan-fill= proposes times for work that has been accepted
 but never given a place to happen — unscheduled tasks, and tasks scheduled for
-today with no time on them.
+the day with no time on them.
+
+It fills the day under the cursor, and today from anywhere that is not an
+agenda line. Tomorrow is planned the evening before, and pressing the key
+while looking at tomorrow is how anybody would expect to say which day.
+
+A project is not among the candidates. Its children are, on their own
+account, and placing the parent as well would spend the same hour twice and
+leave the half of the list that is real short of budget for it. A project
+here is what it is everywhere else in this package: a heading with a
+descendant carrying a keyword, DONE included.
 
 Not the same question as the =↳= rows the agenda draws under a gap. Those
 report what would fit in one hole and choose nothing, so the same task appears
@@ -2461,9 +2471,48 @@ works if nothing happens. Nearest deadline goes first; among equals, the
 shortest job, which clears the most open loops per hour.
 
 Two things it will not do: split a task across a meeting, and write anything
-without being asked. Proposals open in a review buffer — =d= drops one,
-=C-c C-c= writes the rest — and whatever did not fit is listed with the reason
-rather than quietly dropped.
+without being asked. Whatever did not fit is listed with the reason rather
+than quietly dropped — =no budget left= when the day's allowance is spent,
+=no gap long enough= when no single free stretch would hold it.
+
+The proposals open in a review buffer that writes nothing until it is told
+to. It says so in org-capture's place, the header line, and names its keys at
+the foot the way every other page of this package does:
+
+#+begin_example
+Proposed, not written.  Write C-c C-c, abort C-c C-k.
+#+end_example
+
+Those are the two keys Org writes on every buffer that holds a change until
+it is confirmed, and they are named only while they are the keys: moved, the
+line names whatever moved them to. What to do with a row is at the foot,
+where the rows are.
+
+=j= and =k= move, =n= and =p= too, and =TAB= goes to the task the line is
+about and leaves the list standing -- the key the agenda puts that on. =RET=
+does the same.
+
+Disagreeing with a time is answered by going to the task, scheduling it by
+hand, and coming back: =r= proposes again from the files as they are now. The
+task you have just given a time to is no longer work that needs placing, so
+it is gone from the list, and the hour it was going to have is back in the
+budget for whatever is still waiting. Marks go with it, as they go on every
+listing that reads its data again.
+
+Forgetting to press =r= costs nothing either. Every proposal is asked again,
+at the moment of writing, whether it is still work that needs placing —
+anything that has moved on since the buffer opened is left alone and counted,
+so writing the list out can never take back a time somebody has just chosen.
+
+Letters are commands in this buffer, so it opens in Emacs state where evil is
+loaded — in normal state =d= would delete a line and =RET= would do nothing,
+and the foot, which reads its keys off the keymap, would go blank in the same
+breath.
+
+=d= and =u= mean what dired means by them: one marks a line to be left out,
+the other takes the mark off, and both step down, so a run of lines is a run
+of presses. Neither is a toggle — a key whose effect has to be read off the
+line first is a key that is pressed twice to find out what it did.
 
 #+begin_src emacs-lisp
 (define-key org-agenda-mode-map "M" #'org-foresight-plan-fill)
