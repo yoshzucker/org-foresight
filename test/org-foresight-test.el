@@ -28,6 +28,11 @@
 ;; is dropped on the way out.
 (defvar org-time-was-given)
 
+;; Bound in the review-buffer tests, which ask what this package does where a
+;; modal editor is loaded.  Evil is not a dependency, and the package reaches
+;; for it only when it is there.
+(defvar evil-state)
+
 ;;;; Helpers
 
 (defun org-foresight-test--ts (h m &optional day)
@@ -3915,6 +3920,325 @@ SCHEDULED: <2026-08-10 Mon>
       (should-not (member "finished" titles))
       (should-not (member "someone else's" titles)))))
 
+(ert-deftest org-foresight-test-a-project-is-not-a-thing-you-sit-down-to-do ()
+  "Its children are, and they are on the list on their own account.  Placing
+the parent as well spends the same hour twice and leaves the half of the
+list that is real short of budget for it."
+  (org-foresight-test--with-org
+      "* NEXT the project
+** NEXT first step
+:PROPERTIES:
+:EFFORT:   0:30
+:END:
+** NEXT second step
+:PROPERTIES:
+:EFFORT:   0:30
+:END:
+* NEXT a task on its own
+:PROPERTIES:
+:EFFORT:   0:30
+:END:
+* NEXT a project whose children are finished
+** DONE the only step
+"
+    (let ((titles (mapcar (lambda (c) (plist-get c :title))
+                          (org-foresight--candidates
+                           (org-foresight-test--ts 0 0 10)))))
+      (should (member "first step" titles))
+      (should (member "second step" titles))
+      (should (member "a task on its own" titles))
+      (should-not (member "the project" titles))
+      ;; A heading whose children are all finished is still a heading whose
+      ;; work was the children's -- the same claim `:project-p' makes.
+      (should-not (member "a project whose children are finished" titles)))))
+
+(ert-deftest org-foresight-test-the-day-planned-is-the-day-looked-at ()
+  "Tomorrow is planned the evening before, and pressing the key while
+looking at tomorrow is how anybody would expect to say so.  Today from
+anywhere that is not an agenda line."
+  (should (equal '(list (org-foresight--day-at-point))
+                 (cadr (interactive-form 'org-foresight-plan-fill))))
+  (org-foresight-test--with-day "* NEXT something\n"
+    (let (asked)
+      (cl-letf (((symbol-function 'org-foresight-capacity)
+                 (lambda (day &rest _)
+                   (setq asked day)
+                   (list :work t :free-min 600.0 :reserve-min 0.0
+                         :free (org-foresight-test--ivs '(9 0 12 0)))))
+                ((symbol-function 'org-foresight--candidates)
+                 (lambda (_day) nil)))
+        (org-foresight-plan-fill (org-foresight-test--ts 0 0 11))
+        (should (equal (org-foresight-test--ts 0 0 11) asked))
+        (setq asked nil)
+        (let ((org-foresight-now (org-foresight-test--ts 10 0 10)))
+          (org-foresight-plan-fill))
+        (should (equal (org-foresight--day-start 0) asked))))))
+
+(ert-deftest org-foresight-test-the-review-marks-the-way-dired-does ()
+  "`d' marks and `u' takes the mark off -- neither is a toggle, so what a
+key does is not a thing to be read off the line first.  Both step down."
+  (org-foresight-test--with-day
+      "* NEXT first\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n
+* NEXT second\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n"
+    (let ((org-foresight-now (org-foresight-test--ts 10 0 10)))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) b)))
+        (org-foresight-plan-fill))
+      (with-current-buffer "*Foresight Plan*"
+        (let ((first (org-foresight-test--plan-first-row)))
+          (should first)
+          (org-foresight-plan-drop)
+          (should (plist-get first :rejected))
+          ;; twice over, because a toggle would have put it back
+          (let ((second (tabulated-list-get-id)))
+            (should second)
+            (should-not (eq first second)))
+          (org-foresight-test--plan-first-row)
+          (org-foresight-plan-drop)
+          (should (plist-get first :rejected))
+          (org-foresight-test--plan-first-row)
+          (org-foresight-plan-keep)
+          (should-not (plist-get first :rejected)))
+        (should-error (progn (goto-char (point-min))
+                             (org-foresight-plan-drop))
+                      :type 'user-error)))))
+
+(ert-deftest org-foresight-test-the-review-says-what-it-is-holding ()
+  "A buffer that holds a change until it is confirmed has to say so where
+the reader starts and where they stop -- org-capture's header line, and the
+foot every other page of this package carries."
+  (org-foresight-test--with-day
+      "* NEXT something\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n"
+    (let ((org-foresight-now (org-foresight-test--ts 10 0 10)))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) b)))
+        (org-foresight-plan-fill))
+      (with-current-buffer "*Foresight Plan*"
+        (let ((head (substring-no-properties (or header-line-format "")))
+              (text (substring-no-properties (buffer-string))))
+          (should (string-match-p "not written" head))
+          ;; the two keys Org writes on every buffer that holds a change
+          (should (string-match-p "C-c C-c" head))
+          (should (string-match-p "C-c C-k" head))
+          ;; and only those: what to do with a row is at the foot, with the
+          ;; rows
+          (should-not (string-match-p "drop" head))
+          ;; a badge on the body, not only over the legend
+          (should (string-match-p "Plan" text))
+          ;; the foot, with the keys read off this buffer's own map
+          (should (string-match-p "plan-apply" text))
+          (should (string-match-p "plan-drop" text))
+          (should (string-match-p "plan-abort" text))
+          ;; and the titles are in the buffer, since the header line is not
+          ;; free to hold them any more
+          (should (string-match-p "When" text))
+          ;; drawn once however often the list is rebuilt
+          (org-foresight-test--plan-first-row)
+          (org-foresight-plan-drop)
+          (should (= 1 (how-many "\\[Commands\\]"
+                                 (point-min) (point-max)))))))))
+
+(ert-deftest org-foresight-test-the-review-moves-and-goes-like-a-listing ()
+  "Letters are commands here, so `j' and `k' are two of the few that would
+otherwise do nothing, and the key the agenda puts \"go to the entry, leave
+the listing standing\" on is TAB.  Both it and RET do it."
+  (dolist (pair '(("n" . next-line) ("p" . previous-line)
+                  ("j" . next-line) ("k" . previous-line)
+                  ("RET" . org-foresight-plan-goto)
+                  ("TAB" . org-foresight-plan-goto)))
+    (should (eq (cdr pair)
+                (lookup-key org-foresight-plan-review-mode-map
+                            (kbd (car pair))))))
+  ;; and the row it goes to is the row under the cursor, not the first one
+  (org-foresight-test--with-day
+      (concat "* NEXT the quick one\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n"
+              "* NEXT something\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n")
+    (let ((org-foresight-now (org-foresight-test--ts 10 0 10))
+          went)
+      ;; The stub follows the buffer: what `plan-goto' does is take the
+      ;; reader to the entry, and a stub that stayed where it was would
+      ;; leave the assertion reading the listing.
+      (cl-letf (((symbol-function 'pop-to-buffer)
+                 (lambda (b &rest _) (set-buffer b) b)))
+        (save-current-buffer
+          (org-foresight-plan-fill)
+          (set-buffer "*Foresight Plan*")
+          (org-foresight-test--plan-first-row)
+          (forward-line 1)              ; the second proposal, sorted shorter
+          (org-foresight-plan-goto)     ; first
+          (setq went (org-get-heading t t t t))))
+      (should (equal "something" went)))))
+
+(ert-deftest org-foresight-test-the-header-names-the-key-that-is-there ()
+  "Org writes `C-c C-c' and `C-c C-k' on every buffer holding a change, so
+those are the keys to name -- but a configuration is free to move them, and
+a header line that stated them regardless would be a lie at the top of the
+buffer."
+  (should (equal "C-c C-k"
+                 (org-foresight-plan--key #'org-foresight-plan-abort
+                                          "C-c C-k")))
+  (let ((org-foresight-plan-review-mode-map
+         (let ((map (make-sparse-keymap)))
+           (define-key map (kbd "Z") #'org-foresight-plan-abort)
+           map)))
+    (should (equal "Z" (org-foresight-plan--key #'org-foresight-plan-abort
+                                                "C-c C-k")))))
+
+(ert-deftest org-foresight-test-the-titles-are-bold-rather-than-ruled ()
+  "The fake header is overlined and underlined out of the box, which rules a
+buffer that has a rule in it already, at the foot.  Bold says \"titles\" on
+its own."
+  (org-foresight-test--with-day "* NEXT something\n"
+    (with-temp-buffer
+      (org-foresight-plan-review-mode)
+      (let* ((remap (cdr (assq 'tabulated-list-fake-header
+                               face-remapping-alist)))
+             (spec (car remap)))
+        (should spec)
+        (should (plist-member spec :overline))
+        (should (eq nil (plist-get spec :overline)))
+        (should (plist-member spec :underline))
+        (should (eq nil (plist-get spec :underline)))
+        (should (eq 'bold (plist-get spec :weight)))))))
+
+(ert-deftest org-foresight-test-letters-are-commands-where-evil-is-loaded ()
+  "A modal editor's normal state is letters meaning something else: `d'
+deletes rather than drops, and RET does nothing at all.  The keys named at
+the foot are read off the keymap, so they go blank in the same breath."
+  (org-foresight-test--with-day "* NEXT something\n"
+    (let ((called nil))
+      (cl-letf (((symbol-function 'evil-emacs-state)
+                 (lambda (&rest _) (setq called t))))
+        (let ((evil-state 'normal))
+          (with-temp-buffer
+            (org-foresight-plan-review-mode)))
+        (should called)))))
+
+(ert-deftest org-foresight-test-proposing-nothing-is-not-a-proposal ()
+  "`message' answers with the line it printed, so a branch that ended on one
+would report a proposal it had not made -- and the review buffer would open
+on a day with no working hours in it, holding whatever was in it last."
+  (org-foresight-test--with-day "* NEXT something\n"
+    ;; The shape is cached, and a day declared to have no working hours stays
+    ;; that way for the rest of the test unless the cache goes with the
+    ;; binding -- which would leave the second half of this passing for the
+    ;; first half's reason.
+    (let ((org-foresight-work nil)
+          (org-foresight--shape-cache nil)
+          (org-foresight-now (org-foresight-test--ts 10 0 10)))
+      (should-not (org-foresight-plan--propose (org-foresight--day-start 0))))
+    (let ((org-foresight--shape-cache nil)
+          (org-foresight-now (org-foresight-test--ts 10 0 10)))
+      (cl-letf (((symbol-function 'org-foresight--candidates) (lambda (_d) nil)))
+        (should-not (org-foresight-plan--propose
+                     (org-foresight--day-start 0))))
+      ;; and a day whose headroom is already spent, which is the third way
+      ;; of having nothing to propose
+      (let ((org-foresight--shape-cache nil)
+            (org-foresight-surge-default "99:00"))
+        (should-not (org-foresight-plan--propose
+                     (org-foresight--day-start 0))))
+      ;; and nothing is shown for it: no buffer, and none put on screen
+      (let ((shown nil))
+        (cl-letf (((symbol-function 'org-foresight--candidates) (lambda (_d) nil))
+                  ((symbol-function 'pop-to-buffer)
+                   (lambda (b &rest _) (setq shown b))))
+          (org-foresight-plan-fill))
+        (should-not shown)))))
+
+(ert-deftest org-foresight-test-a-hand-scheduled-task-leaves-the-list ()
+  "Disagreeing with a time is answered by going to the task and scheduling
+it by hand.  Coming back, `r' asks the files again: the task is no longer
+work that needs placing, and the hour it was going to have is back in the
+budget for whatever is still waiting."
+  (org-foresight-test--with-day
+      (concat "* NEXT the one you disagree with\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n"
+              "* NEXT the other one\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n")
+    (let ((org-foresight-now (org-foresight-test--ts 10 0 10)))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) b)))
+        (org-foresight-plan-fill))
+      (should (= 2 (length org-foresight-plan--placed)))
+      ;; scheduled by hand, at a time of somebody's own choosing
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (goto-char (point-min))
+        (re-search-forward "disagree with")
+        (let ((org-log-reschedule nil))
+          (org-schedule nil (format-time-string
+                             "%Y-%m-%d %a 15:00"
+                             (org-foresight--day-start 0)))))
+      (with-current-buffer "*Foresight Plan*"
+        (org-foresight-plan-redo)
+        (let ((titles (mapcar (lambda (p) (plist-get p :title))
+                              org-foresight-plan--placed)))
+          (should-not (member "the one you disagree with" titles))
+          (should (member "the other one" titles))))
+      (should (eq #'org-foresight-plan-redo
+                  (lookup-key org-foresight-plan-review-mode-map (kbd "r"))))
+      (should (eq #'org-foresight-plan-redo
+                  (lookup-key org-foresight-plan-review-mode-map (kbd "g"))))
+      ;; and with the last of it placed by hand there is nothing left to
+      ;; propose: the buffer stops showing a plan it no longer has
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (goto-char (point-min))
+        (re-search-forward "the other one")
+        (let ((org-log-reschedule nil))
+          (org-schedule nil (format-time-string
+                             "%Y-%m-%d %a 16:00"
+                             (org-foresight--day-start 0)))))
+      (with-current-buffer "*Foresight Plan*"
+        (org-foresight-plan-redo)
+        (should-not org-foresight-plan--placed)
+        (should-not (seq-find (lambda (l) (string-match-p "the other one" l))
+                              (split-string (substring-no-properties
+                                             (buffer-string))
+                                            "\n")))))))
+
+(ert-deftest org-foresight-test-writing-does-not-take-back-a-chosen-time ()
+  "A list of proposals is read for minutes and sometimes longer, and going
+to a task to schedule it by hand is the ordinary thing to do with one of
+them.  Written out regardless, this would take that time back."
+  (org-foresight-test--with-day
+      "* NEXT the one you disagree with\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n"
+    (let ((org-foresight-now (org-foresight-test--ts 10 0 10))
+          said)
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) b)))
+        (org-foresight-plan-fill))
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (goto-char (point-min))
+        (re-search-forward "disagree with")
+        (let ((org-log-reschedule nil))
+          (org-schedule nil (format-time-string
+                             "%Y-%m-%d %a 15:00"
+                             (org-foresight--day-start 0)))))
+      ;; applied without a redo: the list still holds the old proposal
+      (with-current-buffer "*Foresight Plan*"
+        (cl-letf (((symbol-function 'quit-window) (lambda (&rest _) nil))
+                  ((symbol-function 'message)
+                   (lambda (fmt &rest args) (setq said (apply #'format fmt args)))))
+          (org-foresight-plan-apply)))
+      (should (string-match-p "moved on" said))
+      (with-current-buffer (find-file-noselect (car org-agenda-files))
+        (let ((text (substring-no-properties (buffer-string))))
+          (should (string-match-p "15:00" text))
+          (should (= 1 (org-foresight-test--count "SCHEDULED" text))))))))
+
+(ert-deftest org-foresight-test-aborting-writes-nothing-and-forgets ()
+  "The proposals are state this package is holding.  Left behind after a
+buffer that wrote none of them, they are what the next command sees."
+  (org-foresight-test--with-day
+      "* NEXT something\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n"
+    (let ((org-foresight-now (org-foresight-test--ts 10 0 10)))
+      (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) b)))
+        (org-foresight-plan-fill))
+      (should org-foresight-plan--placed)
+      (with-current-buffer "*Foresight Plan*"
+        (cl-letf (((symbol-function 'quit-window) (lambda (&rest _) nil)))
+          (org-foresight-plan-abort)))
+      (should-not org-foresight-plan--placed)
+      (should-not org-foresight-plan--skipped)
+      (should-not
+       (with-current-buffer (find-file-noselect (car org-agenda-files))
+         (string-match-p "SCHEDULED"
+                         (substring-no-properties (buffer-string))))))))
+
 ;;;; The demo corpus, end to end
 ;; The generated demo is built to contain one of everything, which makes it the
 ;; closest thing here to an integration test: if a signal stops firing on it,
@@ -6213,6 +6537,13 @@ would send half of those to the wrong task by construction."
                             text))
     (should (string-match-p "09:00\\]--\\[[^]]*10:00\\]" text))
     (should (= 3 (org-foresight-test--count "CLOCK: " text)))))
+
+(defun org-foresight-test--plan-first-row ()
+  "Put point on the first line of the review buffer carrying a proposal."
+  (goto-char (point-min))
+  (while (and (not (eobp)) (not (tabulated-list-get-id)))
+    (forward-line 1))
+  (tabulated-list-get-id))
 
 (defun org-foresight-test--marker-at (regexp)
   "Return a marker on the first heading in the task file matching REGEXP."
@@ -11246,7 +11577,7 @@ what the page told them to."
     (should (commandp command))
     (should (memq scope '(row page)))
     (should pages)
-    (should (seq-every-p (lambda (p) (memq p '(agenda board))) pages))
+    (should (seq-every-p (lambda (p) (memq p '(agenda board plan))) pages))
     (should (stringp what))))
 
 (ert-deftest org-foresight-test-the-legend-fits-the-width ()

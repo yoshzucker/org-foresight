@@ -2183,10 +2183,23 @@ asked you to attend was never yours to move in the first place."
     (org-foresight-learn-leak      (board)        page
      "the daily leak and lost budgets")
     (org-foresight-diagnose        (board)        page
-     "what is configured, and what is not"))
+     "what is configured, and what is not")
+    (org-foresight-plan-goto       (plan)         row
+     "go to the task this line is")
+    (org-foresight-plan-drop       (plan)         row
+     "drop this one; it stays unplanned")
+    (org-foresight-plan-keep       (plan)         row
+     "put it back among the rest")
+    (org-foresight-plan-redo       (plan)         page
+     "propose again, from the files as they are")
+    (org-foresight-plan-apply      (plan)         page
+     "write the rest as timed SCHEDULED stamps")
+    (org-foresight-plan-abort      (plan)         page
+     "leave without writing any of it"))
   "The commands worth naming at the foot of a page: (COMMAND PAGES SCOPE WHAT).
 
-PAGES is where naming it earns its line -- `agenda\=', `board\=', or both.  Not
+PAGES is where naming it earns its line -- `agenda\=', `board\=', `plan\=', or
+more than one.  Not
 everything belongs everywhere: the three that learn from history are asked
 once in a while from the wider view, and putting them under a day\='s agenda
 would bury the two commands somebody actually presses there.

@@ -2326,11 +2326,31 @@ the day to the brim on paper and overruns it in practice."
   :type 'integer
   :group 'org-foresight)
 
+(defun org-foresight--todo-descendant-p ()
+  "Return non-nil when the entry at point has a descendant carrying a keyword.
+
+The same claim `:project-p\=' makes about a scanned record, asked at point
+because placement walks the files itself.  A keyword of any kind counts,
+DONE included: a heading whose children are all finished is still a heading
+whose work was the children\='s."
+  (save-excursion
+    (org-back-to-heading t)
+    (let ((end (save-excursion (org-end-of-subtree t t)))
+          (found nil))
+      (while (and (not found) (outline-next-heading) (< (point) end))
+        (when (org-get-todo-state) (setq found t)))
+      found)))
+
 (defun org-foresight--candidate-at-point (day)
   "Return a placement candidate for the entry at point, or nil.
-Placeable means: open, not already pinned to a time, and either unscheduled
-or scheduled for DAY without one -- work that has been accepted but not yet
-given a place to happen."
+Placeable means: open, not a project, not already pinned to a time, and
+either unscheduled or scheduled for DAY without one -- work that has been
+accepted but not yet given a place to happen.
+
+A project is left out because it is not a thing anybody sits down and does.
+Its children are, and they are here on their own account; placing the
+parent as well would spend an hour of the day twice and leave the half of
+the list that is real short of budget for it."
   (unless (org-entry-is-done-p)
     (let* ((todo (org-get-todo-state))
            (sched (org-get-scheduled-time (point)))
@@ -2339,6 +2359,7 @@ given a place to happen."
       (when (and todo
                  (not (member todo org-foresight-followup-keywords))
                  (not timed)
+                 (not (org-foresight--todo-descendant-p))
                  (or (null sched)
                      (= (org-foresight--day-of sched day) 0)))
         (let* ((raw (org-foresight--entry-effort-minutes))
@@ -2434,14 +2455,34 @@ estimate was wrong."
   "Placements awaiting confirmation in the review buffer.")
 (defvar org-foresight-plan--skipped nil
   "Candidates that could not be placed, with the reason.")
+(defvar org-foresight-plan--day nil
+  "The day the pending proposals are for.")
 
 (defvar org-foresight-plan-review-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "d") #'org-foresight-plan-toggle-reject)
-    (define-key map (kbd "u") #'org-foresight-plan-toggle-reject)
+    ;; `d\=' and `u\=' the way dired means them: one marks, the other takes the
+    ;; mark off, and both move down so a run of lines is a run of presses.
+    ;; One key that toggled was a key whose effect depended on a state the
+    ;; reader had to read off the line first.
+    (define-key map (kbd "d") #'org-foresight-plan-drop)
+    (define-key map (kbd "u") #'org-foresight-plan-keep)
+    ;; Motion, because the letters are commands here and `j\=' and `k\=' would
+    ;; otherwise be two of the few that do nothing.  The same four the other
+    ;; listings of this kind answer to.
+    (define-key map (kbd "n") #'next-line)
+    (define-key map (kbd "p") #'previous-line)
+    (define-key map (kbd "j") #'next-line)
+    (define-key map (kbd "k") #'previous-line)
+    (define-key map (kbd "r") #'org-foresight-plan-redo)
+    (define-key map (kbd "g") #'org-foresight-plan-redo)
+    ;; TAB as well as RET: going to the entry and leaving the listing
+    ;; standing is what the agenda puts on TAB, and this list is read the
+    ;; way an agenda is.
     (define-key map (kbd "RET") #'org-foresight-plan-goto)
+    (define-key map (kbd "TAB") #'org-foresight-plan-goto)
     (define-key map (kbd "C-c C-c") #'org-foresight-plan-apply)
-    (define-key map (kbd "q") #'quit-window)
+    (define-key map (kbd "C-c C-k") #'org-foresight-plan-abort)
+    (define-key map (kbd "q") #'org-foresight-plan-abort)
     map)
   "Keymap for `org-foresight-plan-review-mode'.")
 
@@ -2452,8 +2493,56 @@ estimate was wrong."
 \\{org-foresight-plan-review-mode-map}"
   (setq tabulated-list-format
         [("When" 13 nil) ("Effort" 7 nil) ("Task" 44 nil) ("Note" 12 nil)]
-        tabulated-list-padding 2)
-  (tabulated-list-init-header))
+        tabulated-list-padding 2
+        ;; The column titles go in the buffer, so that the header line can
+        ;; hold what org-capture puts there: a buffer holding a change until
+        ;; it is confirmed has to say so where the reader starts, not where
+        ;; they stop.  Two lines of titles is what a listing costs anyway.
+        tabulated-list-use-header-line nil)
+  (tabulated-list-init-header)
+  ;; The fake header the titles are drawn as is overlined and underlined by
+  ;; default, which rules a buffer that has a rule in it already, at the
+  ;; foot.  Bold says "these are the titles" on its own.
+  (face-remap-add-relative 'tabulated-list-fake-header
+                           '(:overline nil :underline nil :weight bold))
+  ;; After `tabulated-list-init-header\=', which writes the header line itself
+  ;; wherever it is still being used for the titles.
+  ;;
+  ;; What is written and how to stop it, and nothing else: the keys for the
+  ;; rows are at the foot, where the rows are.  Somebody reading the top of
+  ;; a buffer that is holding a change wants to know how to finish or get
+  ;; out of it.
+  (setq header-line-format
+        (format "Proposed, not written.  Write %s, abort %s."
+                (org-foresight-plan--key #'org-foresight-plan-apply "C-c C-c")
+                (org-foresight-plan--key #'org-foresight-plan-abort "C-c C-k")))
+  (when (and (boundp 'evil-state) (fboundp 'evil-emacs-state))
+    (evil-emacs-state)))
+
+;; Letters are commands here, and a modal editor's normal state is letters
+;; meaning something else -- `d\=' deleting rather than dropping a proposal,
+;; and RET doing nothing at all.  The same answer the rest of this kind of
+;; buffer gives.
+(when (fboundp 'evil-set-initial-state)
+  (evil-set-initial-state 'org-foresight-plan-review-mode 'emacs))
+
+(defun org-foresight-plan--key (command preferred)
+  "Name PREFERRED when it still runs COMMAND here, else whatever key does.
+
+Org writes `C-c C-c\=' and `C-c C-k\=' on every buffer that holds a change
+until it is confirmed, and this is one, so those are the keys to name.  But
+a configuration is free to move them, and a header line that stated them
+regardless would be a printed lie at the top of the buffer."
+  (if (eq (lookup-key org-foresight-plan-review-mode-map (kbd preferred))
+          command)
+      preferred
+    ;; Read off this buffer\='s own map rather than out of whatever is active
+    ;; where the question is asked: the header line is a statement about
+    ;; this buffer, and the mode is not necessarily on yet when it is built.
+    (if-let ((keys (where-is-internal command org-foresight-plan-review-mode-map
+                                      t)))
+        (key-description keys)
+      (format "M-x %s" command))))
 
 (defun org-foresight-plan--refresh ()
   "Rebuild the review buffer from the pending proposals."
@@ -2491,14 +2580,83 @@ estimate was wrong."
                         44 0 ?\s)
                        (cdr s))))
           org-foresight-plan--skipped)))
-  (tabulated-list-print t))
+  (tabulated-list-print t)
+  ;; After the print, which erases: the foot belongs to the buffer rather
+  ;; than to the list, and the list is what was just rebuilt.
+  (let ((inhibit-read-only t))
+    (save-excursion
+      ;; A badge on the body as well as on the foot.  The foot carries one,
+      ;; and a page whose only badge is over its legend reads as a legend
+      ;; with a list stuck above it.
+      (goto-char (point-min))
+      (insert (org-foresight-report--badge
+               "Plan"
+               (format "proposed for %s, nothing written yet"
+                       (downcase (org-foresight--plan-day-name
+                                  (or org-foresight-plan--day
+                                      (org-foresight--day-start 0))))))
+              "\n")
+      (goto-char (point-max))
+      (insert "\n" (org-foresight--legend 'plan)))))
 
-(defun org-foresight-plan-toggle-reject ()
-  "Drop the placement at point from what will be written, or put it back."
+(defun org-foresight-plan--set-rejected (rejected)
+  "Mark the placement at point REJECTED or not, and step to the next line.
+
+Down afterwards, as dired steps: a run of lines is then a run of presses.
+A line carrying no proposal -- the titles, or one of the leftovers, which
+is not going to be written whatever is done to it -- says so."
+  (let ((p (or (tabulated-list-get-id)
+               (user-error "No proposal on this line"))))
+    (plist-put p :rejected rejected)
+    (let ((line (line-number-at-pos)))
+      (org-foresight-plan--refresh)
+      (goto-char (point-min))
+      (forward-line line))))
+
+(defun org-foresight-plan-drop ()
+  "Drop the placement at point from what will be written, and move down."
   (interactive)
-  (when-let ((p (tabulated-list-get-id)))
-    (plist-put p :rejected (not (plist-get p :rejected)))
-    (org-foresight-plan--refresh)))
+  (org-foresight-plan--set-rejected t))
+
+(defun org-foresight-plan-keep ()
+  "Put the placement at point back among what will be written, and move down."
+  (interactive)
+  (org-foresight-plan--set-rejected nil))
+
+(defun org-foresight-plan-redo ()
+  "Propose again, from the files as they are now.
+
+The answer to disagreeing with a time: go to the task, schedule it by hand,
+and come back here.  The proposals in this buffer were worked out against
+the files as they were when it opened, and the task you have just given a
+time to is not work that still needs placing -- it is gone from the list on
+the next pass, and the hour it was going to have is back in the budget for
+whatever is still waiting.
+
+Marks go, as they go on every listing that reads its data again: what they
+pointed at may not be there any more."
+  (interactive)
+  (let ((day (or org-foresight-plan--day (org-foresight--day-start 0))))
+    (if (org-foresight-plan--propose day)
+        (progn
+          (org-foresight-plan--refresh)
+          (message "%s: %d placed, %d left over"
+                   (org-foresight--plan-day-name day)
+                   (length org-foresight-plan--placed)
+                   (length org-foresight-plan--skipped)))
+      ;; `--propose\=' has said why, and left what it had alone.  The buffer
+      ;; would otherwise go on showing a plan for a day that has none.
+      (setq org-foresight-plan--placed nil
+            org-foresight-plan--skipped nil)
+      (org-foresight-plan--refresh))))
+
+(defun org-foresight-plan-abort ()
+  "Leave without writing any of it."
+  (interactive)
+  (setq org-foresight-plan--placed nil
+        org-foresight-plan--skipped nil)
+  (quit-window)
+  (message "Nothing written"))
 
 (defun org-foresight-plan-goto ()
   "Visit the task at point."
@@ -2511,14 +2669,33 @@ estimate was wrong."
         (org-fold-show-entry)
       (with-no-warnings (org-show-entry)))))
 
+(defun org-foresight-plan--still-placeable-p (marker day)
+  "Return non-nil when the entry at MARKER is still work DAY has to place."
+  (and (markerp marker)
+       (marker-buffer marker)
+       (org-with-point-at marker
+         (and (org-foresight--candidate-at-point day) t))))
+
 (defun org-foresight-plan-apply ()
-  "Write the accepted placements as timed SCHEDULED stamps."
+  "Write the accepted placements as timed SCHEDULED stamps.
+
+Each entry is asked again, at the moment of writing, whether it is still
+work that needs placing.  A buffer of proposals is read for minutes and
+sometimes for longer, and the ordinary thing to do about a time you disagree
+with is to go to the task and schedule it by hand -- after which this list
+is out of date, and writing it out regardless would take back the time
+somebody had just chosen.  What has moved on is left alone and counted."
   (interactive)
-  (let ((n 0))
+  (let ((n 0)
+        (moved 0)
+        (day (or org-foresight-plan--day (org-foresight--day-start 0))))
     (dolist (p org-foresight-plan--placed)
       (unless (plist-get p :rejected)
         (let ((m (plist-get p :marker)))
-          (when (marker-buffer m)
+          (cond
+           ((not (org-foresight-plan--still-placeable-p m day))
+            (setq moved (1+ moved)))
+           ((marker-buffer m)
             (with-current-buffer (marker-buffer m)
               (org-with-wide-buffer
                (goto-char m)
@@ -2529,55 +2706,93 @@ estimate was wrong."
                  (org-schedule nil (format-time-string
                                     "%Y-%m-%d %a %H:%M"
                                     (plist-get p :start))))
-               (setq n (1+ n))))))))
+               (setq n (1+ n)))))))))
     (dolist (file (org-agenda-files))
       (when-let ((buf (get-file-buffer file)))
         (with-current-buffer buf
           (when (buffer-modified-p) (save-buffer)))))
     (org-foresight--invalidate-signals)
     (quit-window)
-    (message "Placed %d task%s" n (if (= n 1) "" "s"))))
+    (if (> moved 0)
+        (message "Placed %d task%s; %d had moved on and %s left alone"
+                 n (if (= n 1) "" "s") moved (if (= moved 1) "was" "were"))
+      (message "Placed %d task%s" n (if (= n 1) "" "s")))))
 
-;;;###autoload
-(defun org-foresight-plan-fill (&optional day)
-  "Propose times for work that has been accepted but not yet placed.
+(defun org-foresight--plan-day-name (day)
+  "Say which day DAY is, as a message would name it."
+  (if (equal day (org-foresight--day-start 0))
+      "Today"
+    (format-time-string "%a %-d %b" day)))
 
-Fills what is left of DAY (today by default) with unscheduled tasks, nearest
-deadline first, after taking out the surge reserve -- so the plan it proposes
-is one that survives an ordinary number of interruptions rather than one that
-only works if nothing happens.
+(defun org-foresight-plan--propose (day)
+  "Work out the proposals for DAY.  Return non-nil when there are any.
 
-Nothing is written here.  The proposals open in a review buffer; \\`d' drops
-one, \\`C-c C-c' writes the rest."
-  (interactive)
+Says why not, and changes nothing, when there are none: a day with no
+working hours in it, a day whose headroom is already spent, or a file with
+nothing in it left to place."
   (let* ((day (or day (org-foresight--day-start 0)))
          (scan (org-foresight-scan 1 day))
          (cap (org-foresight-capacity day scan))
          (free (plist-get cap :free))
          (budget (- (plist-get cap :free-min) (plist-get cap :reserve-min))))
+    ;; Nil in every branch that proposes nothing, and said out loud in each.
+    ;; `message\=' answers with the line it printed, so a branch that ended on
+    ;; one would report a proposal it had not made.
     (cond
      ((null (plist-get cap :work))
-      (message "Not a working day"))
+      (message "%s is not a working day" (org-foresight--plan-day-name day))
+      nil)
      ((<= budget 0)
-      (message "No headroom today: %s free, %s reserved for interruptions"
+      (message "No headroom %s: %s free, %s reserved for interruptions"
+               (downcase (org-foresight--plan-day-name day))
                (org-duration-from-minutes (plist-get cap :free-min))
-               (org-duration-from-minutes (plist-get cap :reserve-min))))
+               (org-duration-from-minutes (plist-get cap :reserve-min)))
+      nil)
      (t
       (pcase-let* ((candidates (org-foresight--candidates day))
                    (`(,placed . ,skipped)
                     (org-foresight--place candidates free budget)))
-        (if (null candidates)
-            (message "Nothing to place")
+        (cond
+         ((null candidates)
+          (message "Nothing %s has to place"
+                   (downcase (org-foresight--plan-day-name day)))
+          nil)
+         (t
           (setq org-foresight-plan--placed placed
-                org-foresight-plan--skipped skipped)
-          (let ((buf (get-buffer-create "*Foresight Plan*")))
-            (with-current-buffer buf
-              (org-foresight-plan-review-mode)
-              (org-foresight-plan--refresh))
-            (pop-to-buffer buf)
-            (message
-             "%d placed, %d left over · d to drop, C-c C-c to write"
-             (length placed) (length skipped)))))))))
+                org-foresight-plan--skipped skipped
+                org-foresight-plan--day day)
+          t)))))))
+
+;;;###autoload
+(defun org-foresight-plan-fill (&optional day)
+  "Propose times for work that has been accepted but not yet placed.
+
+Fills what is left of DAY with unscheduled tasks, nearest deadline first,
+after taking out the surge reserve -- so the plan it proposes is one that
+survives an ordinary number of interruptions rather than one that only works
+if nothing happens.
+
+Fills the day under the cursor, and today from anywhere that is not an
+agenda line.  The day that wants planning is often not today -- tomorrow is
+planned the evening before -- and pressing the key while looking at it is
+how anybody would expect to say which.
+
+Nothing is written here.  The proposals open in a review buffer; \\`d' drops
+one, \\`C-c C-c' writes the rest."
+  (interactive (list (org-foresight--day-at-point)))
+  (when (org-foresight-plan--propose (or day (org-foresight--day-start 0)))
+    (let ((buf (get-buffer-create "*Foresight Plan*")))
+      (with-current-buffer buf
+        (org-foresight-plan-review-mode)
+        (org-foresight-plan--refresh))
+      (pop-to-buffer buf)
+      ;; The counts only.  Which key does what is on the buffer now, at the
+      ;; top and at the foot, and an echo-area line that repeats it is one
+      ;; more thing to read before the list itself.
+      (message "%s: %d placed, %d left over"
+               (org-foresight--plan-day-name org-foresight-plan--day)
+               (length org-foresight-plan--placed)
+               (length org-foresight-plan--skipped)))))
 
 (provide 'org-foresight-plan)
 
