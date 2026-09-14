@@ -2156,8 +2156,10 @@ asked you to attend was never yours to move in the first place."
 (defconst org-foresight-commands
   '((org-foresight-clock-fill      (agenda board) page
      "say what an unrecorded stretch was spent on")
-    (org-foresight-clock-split     (agenda)       row
+    (org-foresight-clock-split     (agenda)       page
      "give part of a clocked spell to its real work")
+    (org-foresight-clock-switch    (agenda)       page
+     "move the clock, now or when a time comes")
     (org-foresight-book-travel     (agenda)       row
      "write down the journey on this row")
     (org-foresight-set-attention   (agenda)       row

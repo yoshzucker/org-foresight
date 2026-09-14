@@ -321,7 +321,6 @@ Thursday   13 August 2026
 [Commands] what can be done from here
 
   on the row under the cursor
-    H  clock-split       give part of a clocked spell to its real work
     T  book-travel       write down the journey on this row
        set-attention     how much of you it needs, not how long
        mark-surge        this arrived; it was never planned for
@@ -330,6 +329,8 @@ Thursday   13 August 2026
 
   on the whole page
     C  clock-fill        say what an unrecorded stretch was spent on
+    H  clock-split       give part of a clocked spell to its real work
+    W  clock-switch      move the clock, now or when a time comes
     M  plan-fill         propose times for work not yet placed
        prepare-meetings  preparation and follow-up where missing
        board             what has not been settled
@@ -1130,6 +1131,51 @@ ask for a time.
 
 #+begin_src emacs-lisp
 (define-key org-agenda-mode-map "H" #'org-foresight-clock-split)
+#+end_src
+
+** The clock that is still running
+
+The two above repair a record. This one is about the clock running now, and
+the two things it cannot say for itself.
+
+The first is that the work changed a while ago. You have been in the meeting
+for ten minutes before it occurs to anybody that the clock is still on what
+came before, and those ten minutes belong to the meeting. =M-x
+org-foresight-clock-switch= on the meeting's row asks for one thing -- when
+it started -- and writes both spells to meet there: what was running is
+closed at that moment, and this entry is opened from it and left running.
+
+The row under the cursor is the entry, where there is one. Where the cursor
+is on nothing -- the foot of the agenda, another buffer entirely -- it asks
+which, offering what today knows about: the same list filling a hole offers.
+A meeting about to start is exactly the moment somebody is looking at
+something else.
+
+The second is a time that has not come yet. A meeting at three will start at
+three whether or not you are at the keyboard to say so, and while you are
+looking at the row is when you know it. Name a time in the future and the
+switch waits for it; whatever is running goes on running until the stroke.
+
+#+begin_example
+Clock in at: 15:00
+org-foresight: the clock moves to "Weekly review" at 15:00 (C-u W to call it off)
+#+end_example
+
+Waiting is for this session and no longer. There is no file of pending
+switches, deliberately: a switch scheduled for three o'clock is a fact about
+this afternoon, and restoring one at tomorrow's startup would move somebody's
+clock for a reason they had forgotten by then -- help that cannot be told
+apart from a bug. A prefix argument calls a waiting switch off.
+
+The time is read the way Org reads every time -- =14:00=, =2pm=, =+2h=, =+1
+09:00= for tomorrow morning. A date with no time in it is refused: a clock
+starts at a moment, and midnight is not what anybody meant. Nothing is
+written where a spell would end before it began, either -- if the machine was
+asleep at three and woke at four with a newer clock running, the switch says
+so and leaves the record alone.
+
+#+begin_src emacs-lisp
+(define-key org-agenda-mode-map "W" #'org-foresight-clock-switch)
 #+end_src
 
 ** When the agenda outlives what it shows
