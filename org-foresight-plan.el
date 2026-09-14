@@ -1850,6 +1850,170 @@ today when it is not."
                (format-time-string "%H:%M" to)))))
 
 
+;;;; Moving the clock, now or at a time that has not come
+
+;; Declared here because `org-read-date' tells its caller through them, and
+;; the bare `defvar' in org.el makes them special in org.el alone: unbound
+;; where the call is, a time typed at the prompt parses and is then dropped
+;; on the way out.
+(defvar org-time-was-given)
+(defvar org-end-time-was-given)
+
+(defvar org-foresight--clock-pending nil
+  "Switches waiting for their time, newest first.
+
+Each is a plist of :at, :marker, :title and :timer.  Kept for this session
+and no longer.  A switch scheduled for three o'clock is a fact about this
+afternoon, and restoring one at tomorrow's startup would move somebody's
+clock for a reason they had forgotten by then -- the kind of help that is
+indistinguishable from a bug.")
+
+(defun org-foresight--clock-move (marker at)
+  "Close whatever clock is running at AT and open one on MARKER from AT.
+
+Closed at AT rather than at the moment of asking, so the two spells meet:
+the work being left off ran until the work being taken up began, and a
+record with a hole or an overlap between them is one somebody has to
+correct later."
+  (when (org-clocking-p)
+    (when (time-less-p at org-clock-start-time)
+      (user-error "The clock running started at %s, after that"
+                  (format-time-string "%H:%M" org-clock-start-time)))
+    (org-clock-out nil t at))
+  (org-with-point-at marker
+    ;; `org-clock-continuously' would take the last clock-out time in place
+    ;; of the one just named, which is the whole of what was asked for.
+    (let ((org-clock-continuously nil))
+      (org-clock-in nil at))))
+
+(defun org-foresight--clock-arrive (entry)
+  "Make the switch ENTRY was waiting for.  Run from its timer."
+  (setq org-foresight--clock-pending (delq entry org-foresight--clock-pending))
+  (let ((marker (plist-get entry :marker))
+        (at (plist-get entry :at))
+        (title (plist-get entry :title)))
+    (cond
+     ((not (and (markerp marker) (marker-buffer marker)))
+      (message "org-foresight: \"%s\" is gone; the clock stays where it is"
+               title))
+     ;; Only when the timer ran late enough for a newer clock to have started
+     ;; after the time it was waiting for -- a machine asleep at three
+     ;; o'clock, woken at four.  Nothing is written: a spell that ends before
+     ;; it began is worse than a switch that did not happen, and the person
+     ;; is at the keyboard now to make it themselves.
+     ((and (org-clocking-p) (time-less-p at org-clock-start-time))
+      (message "org-foresight: \"%s\" was due at %s and the clock has moved on since; left alone"
+               title (format-time-string "%H:%M" at)))
+     (t
+      (org-foresight--clock-move marker at)
+      (org-foresight--invalidate-signals)
+      (message "org-foresight: clock moved to \"%s\", from %s"
+               title (format-time-string "%H:%M" at))))))
+
+(defun org-foresight--clock-switch-read ()
+  "Read which entry to clock into, from what today knows about.
+
+Asked only where the cursor is on nothing.  The same list the other two
+clock commands offer -- what has been clocked today and what the day holds
+-- because the answer is the same kind of thing however the question was
+reached, and a command that could only be pressed on the right line would
+be a command nobody could press from the buffer they were reading when the
+meeting was about to start."
+  (let* ((clock (org-foresight-clock-scan 1))
+         (known (seq-filter #'cdr (org-foresight--clock-fill-candidates clock)))
+         (title (and known (completing-read "Clock in to: " known nil t))))
+    (unless known
+      (user-error "Nothing clocked today and nothing on the day to clock into"))
+    (cdr (assoc title known))))
+
+(defun org-foresight--clock-forget ()
+  "Call off a switch that has not happened yet."
+  (unless org-foresight--clock-pending
+    (user-error "No switch is waiting"))
+  (let* ((choices (mapcar (lambda (e)
+                            (cons (format "%s  %s"
+                                          (format-time-string "%H:%M"
+                                                              (plist-get e :at))
+                                          (plist-get e :title))
+                                  e))
+                          org-foresight--clock-pending))
+         (entry (cdr (assoc (completing-read "Call off: " choices nil t)
+                            choices))))
+    (when entry
+      (when (timerp (plist-get entry :timer))
+        (cancel-timer (plist-get entry :timer)))
+      (setq org-foresight--clock-pending
+            (delq entry org-foresight--clock-pending))
+      (message "org-foresight: \"%s\" at %s called off"
+               (plist-get entry :title)
+               (format-time-string "%H:%M" (plist-get entry :at))))))
+
+;;;###autoload
+(defun org-foresight-clock-switch (&optional call-off)
+  "Move the clock onto the entry at point, as of a time you name.
+
+Two things a running clock cannot say for itself.  The first is that the
+work changed a while ago: you have been in the meeting for ten minutes
+before it occurs to anybody that the clock is still on what came before, and
+the ten minutes belong to the meeting.  Name the time it started and both
+spells are written to meet there -- what was running is closed at it, and
+this entry is opened from it and left running.
+
+The second is a time that has not come yet.  A meeting at three will start
+at three whether or not you are at the keyboard to say so, and the clock
+that should move then is one thing you can decide now, while looking at the
+row.  Name a time in the future and the switch waits for it: whatever is
+running goes on running until then, and is closed at the stroke.
+
+Waiting is for this session only.  There is no file of pending switches to
+restore from, deliberately -- see `org-foresight--clock-pending\\='.
+
+The entry is the one under the cursor.  Where the cursor is on nothing --
+the foot of the agenda, another buffer entirely -- it asks which, from what
+today knows about: a meeting about to start is exactly the moment somebody
+is looking at something else.
+
+With a prefix argument CALL-OFF, pick a waiting switch and call it off.
+
+The time is read the way Org reads every time: `14:00\\=', `2pm\\=', `+2h\\=',
+`+1 09:00\\=' for tomorrow morning.  A date with no time in it is refused,
+because a clock is a moment and midnight is not what anybody meant."
+  (interactive "P")
+  (if call-off
+      (org-foresight--clock-forget)
+    (let ((marker (or (org-get-at-bol 'org-hd-marker)
+                      (org-get-at-bol 'org-marker)
+                      (and (derived-mode-p 'org-mode)
+                           (not (org-before-first-heading-p))
+                           (point-marker))
+                      (org-foresight--clock-switch-read))))
+      (let (at title)
+        (let (org-time-was-given org-end-time-was-given)
+          (setq at (org-read-date t t nil "Clock in at"))
+          (unless org-time-was-given
+            (user-error "No time of day in that; a clock starts at a moment")))
+        (org-with-point-at marker
+          (org-back-to-heading t)
+          (setq title (org-get-heading t t t t)))
+        (if (time-less-p (current-time) at)
+            (let ((entry (list :at at :marker (copy-marker marker)
+                               :title title :timer nil)))
+              (push entry org-foresight--clock-pending)
+              (plist-put entry :timer
+                         (run-at-time at nil #'org-foresight--clock-arrive
+                                      entry))
+              (message "org-foresight: the clock moves to \"%s\" at %s (%s to call it off)"
+                       title (format-time-string "%H:%M" at)
+                       (let ((key (org-foresight--command-key
+                                   'org-foresight-clock-switch)))
+                         (if key (format "C-u %s" key)
+                           "C-u M-x org-foresight-clock-switch"))))
+          (org-foresight--clock-move marker at)
+          (org-foresight--invalidate-signals)
+          (org-foresight-report-refresh)
+          (message "org-foresight: clocked into \"%s\", from %s"
+                   title (format-time-string "%H:%M" at)))))))
+
 ;;;; Dividing a spell that was two things
 
 (defun org-foresight--clocked-spells (clock)

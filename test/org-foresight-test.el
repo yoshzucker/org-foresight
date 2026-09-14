@@ -23,6 +23,11 @@
 (require 'org-foresight-plan)
 (require 'org-foresight-demo)
 
+;; `org-read-date' is stubbed in the clock-switch tests, and what it tells its
+;; caller it tells through this: bound where the call is, or the time it read
+;; is dropped on the way out.
+(defvar org-time-was-given)
+
 ;;;; Helpers
 
 (defun org-foresight-test--ts (h m &optional day)
@@ -6208,6 +6213,205 @@ would send half of those to the wrong task by construction."
                             text))
     (should (string-match-p "09:00\\]--\\[[^]]*10:00\\]" text))
     (should (= 3 (org-foresight-test--count "CLOCK: " text)))))
+
+(defun org-foresight-test--marker-at (regexp)
+  "Return a marker on the first heading in the task file matching REGEXP."
+  (with-current-buffer (find-file-noselect org-foresight-task-file)
+    (goto-char (point-min))
+    (re-search-forward regexp)
+    (org-back-to-heading t)
+    (point-marker)))
+
+(ert-deftest org-foresight-test-the-two-spells-meet-where-the-work-changed ()
+  "The clock cannot say the work changed ten minutes ago.  Naming the time
+closes what was running at it and opens this one from it -- meeting there,
+because a hole or an overlap between two spells is a thing somebody has to
+correct later."
+  (org-foresight-test--with-task-file
+      "* ONGO what came before\n* ONGO the meeting\n"
+    (let ((before (org-foresight-test--marker-at "what came before"))
+          (meeting (org-foresight-test--marker-at "the meeting"))
+          (start (time-add (current-time) (* -60 40)))
+          (changed (time-add (current-time) (* -60 10))))
+      (unwind-protect
+          (progn
+            (org-with-point-at before (org-clock-in nil start))
+            (org-with-point-at meeting
+              (cl-letf (((symbol-function 'org-read-date)
+                         (lambda (&rest _)
+                           (setq org-time-was-given t) changed)))
+                (org-foresight-clock-switch)))
+            ;; running, on the meeting, from the moment named
+            (should (org-clocking-p))
+            (should (equal "the meeting" org-clock-heading))
+            (should (< (abs (float-time (time-subtract org-clock-start-time
+                                                       changed)))
+                       60))
+            ;; and the spell left behind is closed at that same moment
+            (let* ((text (org-foresight-test--task-file-text))
+                   (at (format-time-string "%H:%M" changed))
+                   (closed (seq-find (lambda (l) (string-match-p "=>" l))
+                                     (split-string text "\n"))))
+              (should (string-match-p (concat "--\\[[^]]*" at "\\] +=>") closed))
+              ;; the open one, on the meeting, from it
+              (should (string-match-p
+                       (concat "the meeting\\(?:.\\|\n\\)*CLOCK: \\[[^]]*"
+                               at "\\]\\s-*$")
+                       text))))
+        (when (org-clocking-p) (org-clock-out nil t))))))
+
+(ert-deftest org-foresight-test-a-time-not-yet-come-waits-for-itself ()
+  "A meeting at three starts at three whether or not somebody is at the
+keyboard.  Nothing is written when the command runs: what is running goes on
+running, and the switch waits."
+  (org-foresight-test--with-task-file
+      "* ONGO what came before\n* ONGO the meeting\n"
+    (let ((before (org-foresight-test--marker-at "what came before"))
+          (meeting (org-foresight-test--marker-at "the meeting"))
+          (soon (time-add (current-time) 600))
+          (org-foresight--clock-pending nil))
+      (unwind-protect
+          (progn
+            (org-with-point-at before (org-clock-in))
+            (org-with-point-at meeting
+              (cl-letf (((symbol-function 'org-read-date)
+                         (lambda (&rest _)
+                           (setq org-time-was-given t) soon)))
+                (org-foresight-clock-switch)))
+            ;; the clock has not moved, and the switch is waiting for its time
+            (should (equal "what came before" org-clock-heading))
+            (should (= 1 (length org-foresight--clock-pending)))
+            (let ((entry (car org-foresight--clock-pending)))
+              (should (equal "the meeting" (plist-get entry :title)))
+              (should (timerp (plist-get entry :timer)))
+              (should (memq (plist-get entry :timer) timer-list))
+              ;; the stroke: what was running is closed at it, this opens from it
+              (org-foresight--clock-arrive entry)
+              (should (equal "the meeting" org-clock-heading))
+              (should (< (abs (float-time (time-subtract org-clock-start-time
+                                                         soon)))
+                         60))
+              (should-not org-foresight--clock-pending)))
+        (when (org-clocking-p) (org-clock-out nil t))
+        (dolist (e org-foresight--clock-pending)
+          (cancel-timer (plist-get e :timer)))))))
+
+(ert-deftest org-foresight-test-a-waiting-switch-can-be-called-off ()
+  "A time typed wrongly would otherwise move the clock later for a reason
+nobody remembers by then."
+  (org-foresight-test--with-task-file "* ONGO the meeting\n"
+    (let ((meeting (org-foresight-test--marker-at "the meeting"))
+          (soon (time-add (current-time) 600))
+          (org-foresight--clock-pending nil))
+      (unwind-protect
+          (progn
+            (org-with-point-at meeting
+              (cl-letf (((symbol-function 'org-read-date)
+                         (lambda (&rest _)
+                           (setq org-time-was-given t) soon)))
+                (org-foresight-clock-switch)))
+            (let ((timer (plist-get (car org-foresight--clock-pending) :timer)))
+              (cl-letf (((symbol-function 'completing-read)
+                         (lambda (_p coll &rest _) (car (car coll)))))
+                (org-foresight-clock-switch t))
+              (should-not org-foresight--clock-pending)
+              (should-not (memq timer timer-list))))
+        (dolist (e org-foresight--clock-pending)
+          (cancel-timer (plist-get e :timer)))))))
+
+(ert-deftest org-foresight-test-nothing-waits-past-this-session ()
+  "Deliberately no file of pending switches.  Restoring one at tomorrow's
+startup would move somebody's clock for a reason they had forgotten, which
+is the kind of help that cannot be told apart from a bug."
+  (should-not (get 'org-foresight--clock-pending 'saved-value))
+  (should-not (custom-variable-p 'org-foresight--clock-pending))
+  (should (string-match-p "session"
+                          (documentation-property
+                           'org-foresight--clock-pending
+                           'variable-documentation))))
+
+(ert-deftest org-foresight-test-a-clock-cannot-start-before-it-is-running ()
+  "A spell that ends before it began is worse than a switch that did not
+happen.  Both ways in say so rather than writing one."
+  (org-foresight-test--with-task-file
+      "* ONGO what came before\n* ONGO the meeting\n"
+    (let ((before (org-foresight-test--marker-at "what came before"))
+          (meeting (org-foresight-test--marker-at "the meeting"))
+          (earlier (time-add (current-time) (* -60 30))))
+      (unwind-protect
+          (progn
+            (org-with-point-at before (org-clock-in))
+            (should-error (org-foresight--clock-move meeting earlier)
+                          :type 'user-error)
+            (should (equal "what came before" org-clock-heading))
+            ;; and from the timer it is said, not signalled: nobody is
+            ;; standing at that end of it
+            (let ((said "")
+                  (entry (list :at earlier :marker meeting
+                               :title "the meeting" :timer nil)))
+              (cl-letf (((symbol-function 'message)
+                         (lambda (fmt &rest args)
+                           (setq said (apply #'format fmt args)))))
+                (org-foresight--clock-arrive entry))
+              (should (string-match-p "left alone" said))
+              (should (equal "what came before" org-clock-heading))))
+        (when (org-clocking-p) (org-clock-out nil t))))))
+
+(ert-deftest org-foresight-test-off-a-row-it-asks-which-rather-than-refusing ()
+  "A meeting about to start is exactly the moment somebody is looking at
+something else.  A command that could only be pressed on the right line
+could not be pressed at all then, so where the cursor is on nothing it asks
+which -- from the same list the other two clock commands offer."
+  (org-foresight-test--with-task-file
+      (concat "* ONGO something else\n"
+              "SCHEDULED: " (format-time-string "<%Y-%m-%d %a 09:00>") "\n"
+              "* ONGO the meeting\n"
+              "SCHEDULED: " (format-time-string "<%Y-%m-%d %a 15:00>") "\n")
+    (let ((soon (time-add (current-time) 600))
+          (org-foresight--clock-pending nil)
+          asked offered)
+      (unwind-protect
+          (with-temp-buffer         ; not Org, and no row under the cursor
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (prompt collection &rest _)
+                         (setq asked prompt
+                               offered (mapcar #'car collection))
+                         ;; the second one, so taking whichever came first
+                         ;; would not pass for having read the answer
+                         "the meeting"))
+                      ((symbol-function 'org-read-date)
+                       (lambda (&rest _) (setq org-time-was-given t) soon)))
+              (org-foresight-clock-switch))
+            (should (string-match-p "Clock in to" (or asked "")))
+            (should (member "something else" offered))
+            (should (equal "the meeting"
+                           (plist-get (car org-foresight--clock-pending)
+                                      :title))))
+        (dolist (e org-foresight--clock-pending)
+          (cancel-timer (plist-get e :timer)))))))
+
+(ert-deftest org-foresight-test-the-foot-says-which-commands-read-the-cursor ()
+  "The two groups exist so that a failure explains itself.  `clock-split\\='
+never looks at point -- it offers today's spells, like filling a hole offers
+today's holes -- and naming it under the cursor sent a reader to find a row
+for a command that does not want one."
+  (dolist (command '(org-foresight-clock-split org-foresight-clock-switch
+                     org-foresight-clock-fill))
+    (should (eq 'page (nth 2 (assq command org-foresight-commands)))))
+  (dolist (command '(org-foresight-book-travel org-foresight-set-attention
+                     org-foresight-mark-surge org-foresight-prepare-meeting))
+    (should (eq 'row (nth 2 (assq command org-foresight-commands))))))
+
+(ert-deftest org-foresight-test-a-date-with-no-time-is-not-a-moment ()
+  "Org's date prompt answers with midnight when nobody typed a time, and
+midnight is never what was meant by \"when did this start\"."
+  (org-foresight-test--with-task-file "* ONGO the meeting\n"
+    (let ((meeting (org-foresight-test--marker-at "the meeting")))
+      (org-with-point-at meeting
+        (cl-letf (((symbol-function 'org-read-date)
+                   (lambda (&rest _) (current-time))))
+          (should-error (org-foresight-clock-switch) :type 'user-error)))
+      (should-not (org-clocking-p)))))
 
 (ert-deftest org-foresight-test-clock-fill-asks-for-nothing-but-the-name ()
   "Choose a stretch, name the work: no hour is ever typed.
