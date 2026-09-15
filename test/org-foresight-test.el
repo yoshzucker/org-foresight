@@ -6744,6 +6744,114 @@ midnight is never what was meant by \"when did this start\"."
           (should-error (org-foresight-clock-switch) :type 'user-error)))
       (should-not (org-clocking-p)))))
 
+(defmacro org-foresight-test--with-clocked-morning (extra &rest body)
+  "Run BODY with one clocked stretch this morning, EXTRA after it, at nine."
+  (declare (indent 1))
+  `(org-foresight-test--with-task-file
+       (concat "* ONGO the work\n:LOGBOOK:\nCLOCK: "
+               (format-time-string "[%Y-%m-%d %a 09:15]"
+                                   (org-foresight--day-start 0))
+               "--"
+               (format-time-string "[%Y-%m-%d %a 10:30]"
+                                   (org-foresight--day-start 0))
+               " =>  1:15\n:END:\n"
+               ,extra)
+     (let ((org-foresight-work '(("09:00" . "12:15") ("13:30" . "18:30")))
+           (org-foresight-awake '("06:50" . "22:00"))
+           (org-foresight-workdays '(0 1 2 3 4 5 6))
+           (org-foresight--shape-cache nil)
+           (org-foresight-now (time-add (org-foresight--day-start 0)
+                                        (* 3600 21))))
+       (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                  (lambda (&rest _) nil))
+                 ;; nothing here names work from nowhere, and a stray
+                 ;; `y-or-n-p' in batch waits on a terminal nobody is at
+                 ((symbol-function 'y-or-n-p)
+                  (lambda (&rest _) (error "asked to judge a new entry"))))
+         ,@body))))
+
+(defun org-foresight-test--holes ()
+  "The stretches `org-foresight-clock-fill' offers, as it offers them.
+
+Through the command, not around it: a helper that worked out the span and
+the cuts for itself would pass whatever the command did with either."
+  (let (offered)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (prompt collection &rest _)
+                 (if (string-prefix-p "Unrecorded" prompt)
+                     (progn (setq offered (mapcar #'car collection))
+                            (car (car collection)))
+                   "the work"))))
+      (org-foresight-clock-fill))
+    offered))
+
+(ert-deftest org-foresight-test-a-cut-on-the-edge-is-not-a-cut ()
+  "Strictly inside, or the same stretch comes back as itself plus nothing:
+a moment that coincides with an end divides no time at all, and a zero-long
+stretch is a row that says an hour began and ended at once."
+  (let ((a (org-foresight-test--ts 9 0))
+        (b (org-foresight-test--ts 10 0))
+        (c (org-foresight-test--ts 11 0)))
+    (should (equal (list (cons a c))
+                   (org-foresight--intervals-split (list (cons a c))
+                                                   (list a))))
+    (should (equal (list (cons a c))
+                   (org-foresight--intervals-split (list (cons a c))
+                                                   (list c))))
+    (should (equal (list (cons a b) (cons b c))
+                   (org-foresight--intervals-split (list (cons a c))
+                                                   (list b))))
+    ;; a moment in no stretch at all divides none of them
+    (should (equal (list (cons a b))
+                   (org-foresight--intervals-split (list (cons a b))
+                                                   (list c))))))
+
+(ert-deftest org-foresight-test-the-holes-are-the-waking-day-s ()
+  "Work happens outside the hours set aside for it, and the hours nobody
+planned to work are exactly the ones no clock was started for.  Declared
+working hours are a decision about a day rather than something that happens
+in it, so they do not decide what the day may be asked about -- and with
+nothing happening in the afternoon, the afternoon is one stretch."
+  (org-foresight-test--with-clocked-morning ""
+    (should (equal '("06:50-09:15  2:25  (at the keyboard)"
+                     "10:30-21:00  10:30  (at the keyboard)")
+                   (org-foresight-test--holes)))))
+
+(ert-deftest org-foresight-test-a-meeting-cuts-the-day-and-a-plan-does-not ()
+  "A meeting is a hard fact: it began, it ended, and the hours either side
+are different hours.  A SCHEDULED time is a plan for a task, as easily kept
+as broken, and a day cut at those is a day cut where nothing happened."
+  (org-foresight-test--with-clocked-morning
+      (concat "* Weekly review\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (format-time-string "<%Y-%m-%d %a 14:00-15:00>\n"
+                                  (org-foresight--day-start 0))
+              "* NEXT a task planned for four\nSCHEDULED: "
+              (format-time-string "<%Y-%m-%d %a 16:00>\n"
+                                  (org-foresight--day-start 0))
+              ":PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
+    ;; the meeting's hour is a stretch of its own, the afternoon before it
+    ;; ends where it begins, and the plan for four cuts nothing
+    (should (equal '("06:50-09:15  2:25  (at the keyboard)"
+                     "10:30-14:00  3:30  (at the keyboard)"
+                     "14:00-15:00  1:00  (at the keyboard)"
+                     "15:00-21:00  6:00  (at the keyboard)")
+                   (org-foresight-test--holes)))))
+
+(ert-deftest org-foresight-test-the-keyboard-going-quiet-cuts-the-day ()
+  "The other hard fact.  What was happening at the keyboard and what was
+happening away from it are not remembered by the same kind of effort, so
+they are not one stretch to be answered at once."
+  (org-foresight-test--with-clocked-morning ""
+    (let ((away (cons (time-add (org-foresight--day-start 0) (* 3600 12))
+                      (time-add (org-foresight--day-start 0) (* 3600 13)))))
+      (cl-letf (((symbol-function 'org-foresight-observe-coverage)
+                 (lambda (&rest _) (list :afk-ivs (list away)))))
+        (should (equal '("06:50-09:15  2:25  (at the keyboard)"
+                         "10:30-12:00  1:30  (at the keyboard)"
+                         "12:00-13:00  1:00  (away)"
+                         "13:00-21:00  8:00  (at the keyboard)")
+                       (org-foresight-test--holes)))))))
+
 (ert-deftest org-foresight-test-clock-fill-asks-for-nothing-but-the-name ()
   "Choose a stretch, name the work: no hour is ever typed.
 
@@ -7997,8 +8105,9 @@ happened to match."
                 ((symbol-function 'org-foresight-observe-coverage)
                  (lambda (&rest _) nil))
                 ((symbol-function 'org-foresight--clock-gaps)
-                 (lambda (_) (list (cons (cons (current-time) (current-time))
-                                         'unclocked))))
+                 (lambda (_behind &optional _cuts)
+                   (list (cons (cons (current-time) (current-time))
+                               'unclocked))))
                 ((symbol-function 'org-foresight--clock-gap-label)
                  (lambda (_) "a gap"))
                 ((symbol-function 'completing-read)
@@ -8056,8 +8165,9 @@ long way down a list.  Gathered, and each one only once."
                 ((symbol-function 'org-foresight-observe-coverage)
                  (lambda (&rest _) nil))
                 ((symbol-function 'org-foresight--clock-gaps)
-                 (lambda (_) (list (cons (cons (current-time) (current-time))
-                                         'unclocked))))
+                 (lambda (_behind &optional _cuts)
+                   (list (cons (cons (current-time) (current-time))
+                               'unclocked))))
                 ((symbol-function 'org-foresight--clock-gap-label)
                  (lambda (_) "a gap"))
                 ((symbol-function 'org-foresight--clock-fill-candidates)
@@ -8139,8 +8249,9 @@ one tomorrow."
                 ((symbol-function 'org-foresight-observe-coverage)
                  (lambda (&rest _) nil))
                 ((symbol-function 'org-foresight--clock-gaps)
-                 (lambda (_) (list (cons (cons (current-time) (current-time))
-                                         'unclocked))))
+                 (lambda (_behind &optional _cuts)
+                   (list (cons (cons (current-time) (current-time))
+                               'unclocked))))
                 ((symbol-function 'org-foresight--clock-gap-label)
                  (lambda (_) "a gap"))
                 ((symbol-function 'org-foresight--clock-fill-candidates)
