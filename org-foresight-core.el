@@ -124,6 +124,22 @@ Returns a fresh, sorted, disjoint list; never mutates IVS."
         (if (time-less-p ae be) (setq a (cdr a)) (setq b (cdr b)))))
     (nreverse out)))
 
+(defun org-foresight--intervals-split (intervals times)
+  "Cut INTERVALS at each of TIMES that falls strictly inside one.
+
+A stretch of unrecorded time is one stretch only until something really
+happened in the middle of it.  What counts as really happening is the
+caller\='s business; this is the arithmetic."
+  (let ((cuts (seq-sort #'time-less-p (copy-sequence times)))
+        out)
+    (dolist (iv intervals (nreverse out))
+      (let ((start (car iv)))
+        (dolist (at cuts)
+          (when (and (time-less-p start at) (time-less-p at (cdr iv)))
+            (push (cons start at) out)
+            (setq start at)))
+        (push (cons start (cdr iv)) out)))))
+
 (defun org-foresight--intervals-subtract (a b)
   "Return the parts of A not covered by B (normalized internally)."
   (let ((a (org-foresight--intervals-normalize a))
@@ -3683,8 +3699,12 @@ about what the rest of the day will."
                            (copy-sequence (plist-get task :intervals))))
                     (and clock (plist-get clock :today-tasks))))))
 
-(defun org-foresight-behind (day &optional clock coverage now)
+(defun org-foresight-behind (day &optional clock coverage now span)
   "Return how the elapsed part of DAY's working hours was actually spent.
+
+SPAN, given, is measured instead of the working hours -- the waking day,
+where somebody is asking what the evening went on.  Everything below is
+then about that span: what it calls outside is outside *it*.
 
 The backward half of the day, and the counterweight to everything else here.
 `org-foresight-capacity\=' answers what may still be promised, and it answers
@@ -3757,7 +3777,7 @@ Never returns nil.  Given no clock it reports the whole elapsed span as
 unclocked, which is the truthful reading -- nothing is known about it -- and
 one a reader can see, where a nil would quietly draw the day at half length."
   (let* ((now (or now org-foresight-now (current-time)))
-         (work (org-foresight-work-intervals day))
+         (work (or span (org-foresight-work-intervals day)))
          (elapsed (org-foresight--intervals-elapsed work now))
          (all (org-foresight--intervals-normalize
                (copy-sequence (and clock (plist-get clock :today-intervals)))))

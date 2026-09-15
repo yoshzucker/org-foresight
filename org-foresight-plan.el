@@ -1572,13 +1572,38 @@ another mechanism."
   :type 'string
   :group 'org-foresight)
 
-(defun org-foresight--clock-gaps (behind)
+(defun org-foresight--clock-cuts (day scan)
+  "Return the moments in DAY that something really happened at.
+
+The edges of the meetings it holds.  A meeting is a hard fact about a day:
+it began, it ended, and the hours either side of it are different hours --
+which is what makes it a place to cut an unrecorded stretch in two.
+
+Not the working hours, which are a decision about the day rather than
+something that happens in it, and not a SCHEDULED time, which is a plan
+somebody made for a task and is as easily kept as broken.  Times the
+keyboard went quiet are real too, and `org-foresight-behind\=' has already
+cut at those.
+
+The meeting\='s own stretch becomes a candidate of its own by this, and its
+title is already among the answers to what the stretch was spent on."
+  (let (out)
+    (dolist (e (org-foresight-scan-day scan :ledger day) (nreverse out))
+      (when (eq (plist-get e :kind) 'meeting)
+        (push (plist-get e :start) out)
+        (push (plist-get e :end) out)))))
+
+(defun org-foresight--clock-gaps (behind &optional cuts)
   "Return BEHIND's unrecorded stretches as (INTERVAL . KIND), earliest first.
 
 KIND is `unclocked' or `away'.  It is the only thing that tells one stretch
 from another, and it is worth carrying because the two are remembered
 differently: what you were doing at the keyboard and what you were doing away
-from it are not recalled by the same kind of effort."
+from it are not recalled by the same kind of effort.
+
+CUTS are moments to divide a stretch at.  Without them a day with nothing
+clocked in it is one hole from breakfast to bedtime, and the answer to
+\"what was that?\" cannot be one thing."
   (let ((least (* 60 org-foresight-clock-fill-minimum)))
     (seq-sort-by
      (lambda (gap) (float-time (car (car gap)))) #'<
@@ -1586,9 +1611,11 @@ from it are not recalled by the same kind of effort."
       (lambda (gap)
         (>= (float-time (time-subtract (cdr (car gap)) (car (car gap)))) least))
       (append (mapcar (lambda (iv) (cons iv 'unclocked))
-                      (plist-get behind :unclocked-ivs))
+                      (org-foresight--intervals-split
+                       (plist-get behind :unclocked-ivs) cuts))
               (mapcar (lambda (iv) (cons iv 'away))
-                      (plist-get behind :away-ivs)))))))
+                      (org-foresight--intervals-split
+                       (plist-get behind :away-ivs) cuts)))))))
 
 (defun org-foresight--clock-gap-label (gap)
   "Return GAP as one line: when it ran, how long it was, and which kind."
@@ -1782,13 +1809,32 @@ collects nothing.
 
 Pick a stretch, name the work, and the clock line is written where it
 belongs: on the entry when the work is already in a file, in a new one under
-today when it is not."
+today when it is not.
+
+The holes are the waking day\='s, not the working day\='s.  Work happens
+outside the hours set aside for it -- an evening that ran long, a Saturday
+morning, the half hour before nine -- and hours nobody planned to work are
+exactly the ones no clock was started for.  Declared working hours are a
+decision about a day, not something that happens in it, so they are not
+allowed to decide what a day may be asked about.
+
+Where a stretch is cut in two is the other half of this.  A meeting is a
+hard fact -- it began, it ended, the hours either side of it are different
+hours -- and so is the moment the keyboard went quiet.  A SCHEDULED time is
+not: it is a plan for a task, as easily kept as broken.  Cut at the first
+two and an afternoon nobody clocked arrives as the few stretches it
+actually had; cut at none and it is one hole from lunch to bedtime, which
+no single answer fits."
   (interactive)
   (let* ((day (org-foresight--day-start 0))
          (clock (org-foresight-clock-scan 7))
+         (scan (org-foresight-scan 1 day))
+         (awake (plist-get (org-foresight-day-shape day) :awake))
+         (span (and awake (list (cons (car awake) (cdr awake)))))
          (behind (org-foresight-behind
-                  day clock (org-foresight-observe-coverage clock)))
-         (gaps (org-foresight--clock-gaps behind)))
+                  day clock (org-foresight-observe-coverage clock) nil span))
+         (gaps (org-foresight--clock-gaps
+                behind (org-foresight--clock-cuts day scan))))
     (unless gaps
       (user-error "Nothing today is unrecorded for longer than %d minutes"
                   org-foresight-clock-fill-minimum))
@@ -1800,7 +1846,6 @@ today when it is not."
                             choices)))
            (from (car (car gap)))
            (to (cdr (car gap)))
-           (scan (org-foresight-scan 1 (org-foresight--day-start 0)))
            (known (org-foresight--clock-fill-candidates clock scan))
            (journeys (org-foresight--clock-fill-journeys scan))
            ;; Kinds first.  They are the answer on the hours hardest to name,
