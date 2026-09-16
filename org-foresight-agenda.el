@@ -1302,8 +1302,36 @@ no way to tell that apart from having nothing to draw."
                         "the hours away from home need %d to be bracketed")
                 blanks (if (= blanks 1) "" "s") needed)))))
 
+(defun org-foresight-agenda--diagnose-effort ()
+  "Say when no row can carry a corrected estimate, or nothing.
+
+The other thing that fails silently here.  A corrected estimate is written
+beside the one Org printed, and it is found by looking for that one on the
+row -- which is there only because `org-agenda-prefix-format\=' asked for it
+with `%e\='.  Without it there is nothing to write beside, so every row is
+returned exactly as it came, which is also what a row with no correction
+looks like.  The estimate curve then runs, learns, and is applied to every
+figure the page draws, while the one place it could be seen never shows it."
+  (let ((prefix (if (stringp org-agenda-prefix-format)
+                    org-agenda-prefix-format
+                  (cdr (assq 'agenda org-agenda-prefix-format)))))
+    (when (and org-foresight-bias-enabled
+               (org-foresight--bias-data)
+               (stringp prefix)
+               ;; Org's own shape for a prefix field: an optional `?',
+               ;; a width, and a separator character that may be a space --
+               ;; see `org-compile-prefix-format'.  Matching `%e' alone
+               ;; would miss `% e', which is an ordinary way to write it.
+               (not (string-match-p "%[?]?[-+]?[0-9.]*[ .;,:!?=|/<>]?e"
+                                    prefix)))
+      (concat "`org-agenda-prefix-format' has no `%e'; the estimate "
+              "correction is applied but never shown beside an estimate"))))
+
 (add-to-list 'org-foresight-diagnose-extras
              #'org-foresight-agenda--diagnose-gutter t)
+
+(add-to-list 'org-foresight-diagnose-extras
+             #'org-foresight-agenda--diagnose-effort t)
 
 (defconst org-foresight-agenda-attentions
   '(("blocking" . "needs all of you")

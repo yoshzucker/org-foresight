@@ -2852,6 +2852,33 @@ A caller that has not asked for them gets the table it always got."
       ;; and the Share column keeps its full width
       (should (string-match-p "| Share              |" plain)))))
 
+(ert-deftest org-foresight-test-estimates-not-learned-says-so ()
+  "The review's Estimates block says when it has nothing, as the rest do.
+
+Every other block of that page speaks when it is empty -- `(no clocked
+time)' -- and this one was simply not there, badge and all.  A page with no
+such block reads as a page that does not have one, not as a page waiting on
+a command nobody has run, and the command is the whole point: until it is
+run every estimate on every other page is taken at face value.
+
+The line is part of the block, so the badge is drawn above it and the review
+still says what section it is."
+  (cl-letf (((symbol-function 'org-foresight--bias-data) (lambda (&rest _) nil)))
+    (let ((block (org-foresight-report-estimates)))
+      (should block)
+      (should (string-match-p "learn-bias" (substring-no-properties block))))
+    ;; and the badge above it, on the page itself
+    (let ((page (substring-no-properties
+                 (org-foresight-report--review
+                  nil (list :rows nil :total 0 :day-rows nil :day-total 0
+                            :byday (make-vector 7 0) :days 7
+                            :rows-byday (make-vector 7 nil)
+                            :intervals-byday (make-vector 7 nil)
+                            :day-intervals nil :day-tasks nil
+                            :day-segments 0 :day-private-intervals nil)))))
+      (should (string-match-p "Estimates" page))
+      (should (string-match-p "learn-bias" page)))))
+
 (ert-deftest org-foresight-test-report-estimates ()
   "The review names the sizes actually estimated with, and only a few of them.
 
@@ -8226,6 +8253,170 @@ it -- goes back to the watcher."
       (org-foresight-observe--redo-all t)
       (org-foresight-observe-today)
       (should (= 2 fetches)))))
+
+(ert-deftest org-foresight-test-a-correction-nobody-can-see-is-reported ()
+  "The estimate correction needs a column to be written beside, and says when
+it has none.
+
+It is written next to the estimate Org printed, and Org prints one only
+where `org-agenda-prefix-format' asked for it with `%e'.  Without that the
+correction is still learned and still applied to every figure on the page --
+capacity, the bars, what will fit -- while the one place it could be read is
+silently left exactly as it came.  Which is indistinguishable from having no
+correction to show.
+
+Said only when there is something to show: a correction nobody has learned
+yet is not a column anybody is missing."
+  (cl-letf (((symbol-function 'org-foresight--bias-data)
+             (lambda (&rest _) '((t . 1.4)))))
+    (let ((org-foresight-bias-enabled t))
+      ;; no effort field, and a correction to show: said
+      (let ((org-agenda-prefix-format "  %-12:c%?-12t% s"))
+        (should (string-match-p
+                 "%e" (or (org-foresight-agenda--diagnose-effort) ""))))
+      ;; every ordinary way of asking for one is recognised, separator and
+      ;; width included -- `org-compile-prefix-format' accepts all three
+      (dolist (prefix '("  %-12:c%?-12t%e% s"
+                        "  %-12:c%?-12t% e % s"
+                        "  %-12:c%?-12t%6e % s"))
+        (let ((org-agenda-prefix-format prefix))
+          (should-not (org-foresight-agenda--diagnose-effort))))
+      ;; a prefix that is a function cannot be read, and guessing at it
+      ;; would be worse than saying nothing
+      (let ((org-agenda-prefix-format '((agenda . my-own-prefix-function))))
+        (should-not (org-foresight-agenda--diagnose-effort))))
+    ;; applying turned off: there is no correction to miss
+    (let ((org-foresight-bias-enabled nil)
+          (org-agenda-prefix-format "  %-12:c%?-12t% s"))
+      (should-not (org-foresight-agenda--diagnose-effort))))
+  ;; and nothing learned yet: likewise
+  (cl-letf (((symbol-function 'org-foresight--bias-data) (lambda (&rest _) nil)))
+    (let ((org-foresight-bias-enabled t)
+          (org-agenda-prefix-format "  %-12:c%?-12t% s"))
+      (should-not (org-foresight-agenda--diagnose-effort)))))
+
+(ert-deftest org-foresight-test-nothing-to-prepare-says-which-nothing ()
+  "A quiet week and a setting nobody filled in are not the same silence.
+
+With no category declared, nothing in any calendar can be a meeting here --
+so \"no meetings are missing preparation\" was a sentence about the settings
+wearing the clothes of a sentence about the week.  `org-foresight-diagnose'
+has always said so, which is no help to the reader who has not thought to
+run it: they have just run the command that would have told them."
+  (org-foresight-test--with-org
+      (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n"
+              (org-foresight-test--stamp 1 "10:00" "11:00") "\n")
+    (let* ((said nil)
+           (say (lambda ()
+                  (setq said nil)
+                  (cl-letf (((symbol-function 'message)
+                             (lambda (fmt &rest args)
+                               (setq said (apply #'format fmt args)))))
+                    (org-foresight-prepare-meetings))
+                  said)))
+      ;; nothing declared: the answer is about the declaration
+      (let ((org-foresight-meeting-categories nil)
+            (org-foresight--signals-cache nil))
+        (should (string-match-p "meeting-categories" (funcall say))))
+      ;; declared, and nothing of the week left to prepare: the answer is
+      ;; about the week
+      (let ((org-foresight-meeting-categories '("meeting"))
+            (org-foresight--signals-cache nil))
+        (cl-letf (((symbol-function 'org-foresight-signals)
+                   (lambda (&rest _) nil)))
+          (should (equal "No meetings are missing preparation"
+                         (funcall say))))))))
+
+(ert-deftest org-foresight-test-the-weekend-counts-as-somewhere-to-put-it ()
+  "The hours a deadline could spill into include the days off.
+
+`:unclaimed-min' is one of the four ways out of a deadline that will not
+fit -- and the largest of them is usually the weekend, which is the first
+thing anybody looks at when a Friday will not hold the week.  Days with no
+working hours were skipped before any of this was asked, so those two days
+contributed nothing: not their working hours, which they have none of and
+should not have been credited with, and not their empty hours either.
+
+No special case was needed for the working figures.  A day off has no spare
+to give, so work promised to it cancels against that and the clipping leaves
+nothing -- which is why letting those days through changes `:hard-min' by
+not one minute, however much is promised to them."
+  (let ((day (org-foresight--day-start 0)))
+    (org-foresight-test--with-task-file
+        (concat "* NEXT the big thing\nDEADLINE: "
+                (format-time-string "<%Y-%m-%d %a>" (time-add day (days-to-time 6)))
+                "\n:PROPERTIES:\n:EFFORT: 40:00\n:END:\n"
+                ;; and something promised to one of the days off, which must
+                ;; not turn into working hours the deadline can spend
+                "* NEXT a weekend errand\nSCHEDULED: "
+                (format-time-string
+                 "<%Y-%m-%d %a>"
+                 (time-add day (days-to-time
+                                (if (memq (nth 6 (decode-time day))
+                                          '(1 2 3 4 5))
+                                    (- 6 (nth 6 (decode-time day)))
+                                  0))))
+                "\n:PROPERTIES:\n:EFFORT: 2:00\n:END:\n")
+      (let* ((org-foresight-work '(("09:00" . "17:30")))
+             (org-foresight-awake '("07:00" . "23:00"))
+             (org-foresight-workdays '(1 2 3 4 5))
+             (org-foresight--shape-cache nil)
+             (org-foresight--signals-cache nil)
+             (org-foresight-now (time-add day (* 3600 9)))
+             (window (number-sequence 0 6))
+             (off (seq-filter
+                   (lambda (i)
+                     (not (memq (nth 6 (decode-time
+                                        (time-add day (days-to-time i))))
+                                '(1 2 3 4 5))))
+                   window))
+             (entry (car (plist-get (org-foresight-landing nil nil nil 7)
+                                    :deadlines))))
+        ;; the week alone cannot hold it
+        (should (eq 'over (plist-get entry :verdict)))
+        ;; the days off are in the window, whole and unclaimed
+        (should (= 2 (length off)))
+        (should (= (+ 2130.0 (* (length off) 16 60))
+                   (plist-get entry :unclaimed-min)))
+        ;; and none of them is counted as working time, the two hours
+        ;; promised to one of them included
+        (should (= 2250.0 (plist-get entry :hard-min)))))))
+
+(ert-deftest org-foresight-test-a-day-that-declares-work-is-learned-from ()
+  "The sample is taken from days that were worked, and the day says which.
+
+A Saturday whose heading declares working hours is a working day in every
+other part of this package -- `org-foresight-day-shape' is where the
+declaration and the weekday default are combined, and everything else asks
+it.  This asked the weekday table directly, so the days somebody had to
+declare, which are exactly the unusual ones worth measuring, were the days
+it never looked at."
+  (let* ((day (org-foresight--day-start 0))
+         (dow (nth 6 (decode-time day)))
+         (sampled
+          (lambda (declaration)
+            (org-foresight-test--with-day
+                (concat "* 2026\n** 2026-09\n*** "
+                        (format-time-string "%Y-%m-%d %a" day)
+                        "\n:PROPERTIES:\n:FORESIGHT_WORK: " declaration
+                        "\n:END:\n")
+              (let ((org-foresight-day-file (car org-agenda-files))
+                    (org-foresight--shape-cache nil)
+                    (org-foresight-workdays (remq dow '(0 1 2 3 4 5 6)))
+                    (org-foresight-leak-cache-file
+                     (make-temp-file "org-foresight-leak" nil ".el"))
+                    (asked nil))
+                (cl-letf (((symbol-function 'org-foresight-observe-day-split)
+                           (lambda (offset &rest _)
+                             (push offset asked)
+                             (cons 30.0 20.0))))
+                  (ignore-errors (org-foresight-learn-leak 1)))
+                asked)))))
+    ;; declared working hours on a day the week calls free: measured
+    (should (equal '(0) (funcall sampled "09:00-17:00")))
+    ;; and a day declared free of work is not asked about, which is what
+    ;; keeps this from making a request per day of the window
+    (should-not (funcall sampled "none"))))
 
 (ert-deftest org-foresight-test-the-day-file-is-not-opened-to-be-asked ()
   "Asking what shape a day is must not cost a look at the disk.

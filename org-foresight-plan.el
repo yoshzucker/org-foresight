@@ -2429,7 +2429,18 @@ the orphan signal notice if the meeting is later cancelled."
   ;; the world from a few seconds ago may already have been acted on.
   (let ((found (cdr (assoc "Meetings without prep" (org-foresight-signals t)))))
     (if (null found)
-        (message "No meetings are missing preparation")
+        ;; Two different silences, and they were being reported as one.  With
+        ;; no category declared, nothing in the calendar can ever be a
+        ;; meeting here, so "none are missing preparation" is a sentence
+        ;; about the settings wearing the clothes of a sentence about the
+        ;; week -- and the reader it misleads is exactly the one who has not
+        ;; got as far as `org-foresight-diagnose'.
+        (message "%s"
+                 (if org-foresight-meeting-categories
+                     "No meetings are missing preparation"
+                   (concat "No meeting categories are declared, so nothing "
+                           "counts as a meeting; see "
+                           "`org-foresight-meeting-categories'")))
       (let ((n 0))
         (when (yes-or-no-p
                (format "Create prep + follow-up for %d meeting(s)? " (length found)))
