@@ -2905,6 +2905,15 @@ deadline it has nothing to do with."
   (let ((soft 0.0) (hard 0.0) (unclaimed 0.0))
     (dotimes (i (1+ last))
       (when-let ((cap (aref caps i)))
+        ;; Days with no working hours in them come through here too, and
+        ;; need no special case.  Hours nothing has claimed are hours
+        ;; nothing has claimed, whatever the day was meant for -- a Saturday
+        ;; is the clearest instance there is.  The working figures take care
+        ;; of themselves: a day off has no spare to give, so its promised
+        ;; work cancels against it and the clipping below leaves nothing.
+        ;; What does survive is work this unit has already put at an hour
+        ;; there, and hours somebody has already set aside for the very
+        ;; thing being asked about are hours it has.
         (let ((spare (or (plist-get cap :spare-min) 0.0))
               (committed (or (plist-get cap :committed-min) 0.0))
               (own 0.0) (own-timed 0.0))
@@ -3054,10 +3063,15 @@ read."
              (demand 0.0) (unestimated 0) (count 0)
              (rest units)
              out)
+        ;; Every day, including the ones with no working hours in them.
+        ;; What such a day may contribute is decided in
+        ;; `org-foresight--landing-window\=', which takes its unclaimed hours
+        ;; and none of its working figures -- skipped outright here, a
+        ;; weekend contributed nothing at all, and the largest way out of a
+        ;; deadline that will not fit was reported as no way out.
         (dotimes (i days)
           (let ((day (time-add today (days-to-time i))))
-            (aset caps i (and (org-foresight-work-intervals day)
-                              (org-foresight-capacity day scan now)))))
+            (aset caps i (org-foresight-capacity day scan now))))
         (while rest
           (let* ((day (plist-get (car rest) :due-day))
                  (here (seq-take-while

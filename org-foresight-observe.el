@@ -476,7 +476,17 @@ lets the day be planned at the length it really has."
       ;; scan starts at the same day, so one index reads both
       (let* ((offset (- days 1 i))
              (day (org-foresight--day-start offset)))
-        (when (memq (nth 6 (decode-time day)) org-foresight-workdays)
+        ;; What the day says, not what the week says.  A Saturday whose
+        ;; heading declares working hours is a working day, and its sample
+        ;; is as good as any -- asked of `org-foresight-workdays' alone it
+        ;; was dropped, while `org-foresight-day-shape', the one place the
+        ;; declaration and the default are combined, had the answer.
+        ;;
+        ;; Asked here at all only to save the request: a day with no
+        ;; working hours is one `org-foresight-observe-day-split' returns
+        ;; nil for anyway, and the cheapest of the requests this makes is
+        ;; the one it does not make.
+        (when (org-foresight-work-intervals day)
           (when-let ((split (org-foresight-observe-day-split
                              offset (aref ivs i) (aref busy i))))
             (push (car split) leaks)

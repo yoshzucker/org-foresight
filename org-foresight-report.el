@@ -484,7 +484,17 @@ the axis the correction now turns on and the one a reader can do something
 about.  That five-minute jobs run three times over while hour-long ones
 barely do is not a fact about the tool -- it is a fact about how small things
 get estimated, and it is actionable on the very next one."
-  (when-let* ((data (org-foresight--bias-data))
+  (when-let* ((data (or (org-foresight--bias-data)
+                        ;; Never learned at all.  Every other block of the
+                        ;; weekly review says so when it has nothing --
+                        ;; `(no clocked time)\=' -- and this one simply was
+                        ;; not there, badge and all, which reads as a page
+                        ;; that does not have such a block rather than one
+                        ;; waiting on a command nobody has run.
+                        (cl-return-from org-foresight-report-estimates
+                          (propertize
+                           "(not learned; M-x org-foresight-learn-bias)"
+                           'face 'org-table))))
               ;; A file written before there was a curve carries the
               ;; multipliers but not the tasks behind them, and there is no
               ;; honest way to draw the second from the first.  Saying so
