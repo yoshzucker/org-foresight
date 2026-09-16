@@ -316,7 +316,7 @@ Cached for `org-foresight-observe-cache-ttl' seconds, so the coverage metric
 (defun org-foresight-observe-coverage (clock)
   "Return today's clocked/leak coverage as a plist, or nil when AW is down.
 Reuses `org-foresight-observe-today' (a single cached fetch) and the
-:today-intervals of CLOCK, the plist from `org-foresight-clock-scan'.
+:day-intervals of CLOCK, the plist from `org-foresight-clock-scan'.
 Keys:
 :active-sec :clocked-sec  totals (seconds)
 :leak-sec :lost-sec  unclocked time, split by whether you were at the
@@ -346,7 +346,7 @@ Keys:
                  (afk (org-foresight--intervals-intersect
                        (org-foresight-observe--status-intervals afk-ev "afk") window))
                  (clocked (org-foresight--intervals-intersect
-                           (plist-get clock :today-intervals) window))
+                           (plist-get clock :day-intervals) window))
                  (ca (org-foresight--intervals-intersect clocked active))
                  (cf (org-foresight--intervals-intersect clocked afk))
                  (ua (org-foresight--intervals-subtract active clocked))

@@ -386,7 +386,7 @@ than asking for one."
             (lambda ()
               (let* ((todo (org-get-todo-state))
                      (done (org-entry-is-done-p))
-                     (title (org-get-heading t t t t))
+                     (title (org-foresight--entry-title))
                      (effort (org-entry-get (point) "EFFORT"))
                      (sched (org-get-scheduled-time (point)))
                      (dead (org-get-deadline-time (point)))
@@ -635,11 +635,13 @@ someone wrote down and walked away from."
   (and (null todo)
        (null stamps)
        (not (save-excursion (org-goto-first-child)))
-       ;; A timestamp written into the heading itself is an appointment.
-       (not (string-match-p org-ts-regexp-both (org-get-heading t t nil nil)))
+       ;; An inactive stamp in the heading is a note about when, which is a
+       ;; decision of a kind.  The active ones STAMPS already carries.
+       (not (string-match-p org-ts-regexp-inactive
+                            (org-get-heading t t nil nil)))
        ;; `*** 2026-08-11 Tuesday' and friends are structure, not capture.
        (not (string-match-p "\\`[0-9]\\{4\\}\\(-[0-9]\\{2\\}\\)\\{0,2\\}\\b"
-                            (org-get-heading t t t t)))
+                            (org-foresight--entry-title)))
        (not (string-match-p "CLOCK:" (org-foresight--entry-text)))
        (or (null org-foresight-undecided-files)
            (member (buffer-file-name) org-foresight-undecided-files))))
@@ -1444,6 +1446,28 @@ occupied time."
        (save-buffer)
        (point-marker)))))
 
+(defun org-foresight--book-travel-read ()
+  "Read which of today\='s derived journeys to write down.
+
+Asked only where the cursor is on nothing, as
+`org-foresight--clock-switch-read\=' is asked: the day derives the same legs
+wherever the reader happens to be standing, and a command that can only be
+pressed on one row is a command nobody can press from the buffer they were
+reading when the train turned out to be wrong.
+
+Returns what the agenda row carries, so both ways in answer the same shape."
+  (let* ((journeys (org-foresight--derived-journeys))
+         (choices (mapcar (lambda (j)
+                            (cons (format "%s  %s-%s"
+                                          (nth 0 j)
+                                          (format-time-string "%H:%M" (nth 2 j))
+                                          (format-time-string "%H:%M" (nth 3 j)))
+                                  (cdr j)))
+                          journeys)))
+    (unless choices
+      (user-error "No journey is derived for today"))
+    (cdr (assoc (completing-read "Which journey? " choices nil t) choices))))
+
 ;;;###autoload
 (defun org-foresight-book-travel ()
   "Write down the journey on this agenda row, so it stops being derived.
@@ -1464,9 +1488,8 @@ inheriting a neighbour\='s marker would quietly reschedule the wrong thing.
 One key meaning \"make this real\" is honest; one key meaning two different
 things depending on which row it is pressed on is not."
   (interactive)
-  (let ((journey (org-get-at-bol 'org-foresight-journey)))
-    (unless journey
-      (user-error "No derived journey on this line"))
+  (let ((journey (or (org-get-at-bol 'org-foresight-journey)
+                     (org-foresight--book-travel-read))))
     (pcase-let* ((`(,place ,start ,end) journey)
                  (mins (/ (float-time (time-subtract end start)) 60))
                  (title (read-string "Journey: " (format "\u2192 %s" place)))
@@ -1603,19 +1626,31 @@ from it are not recalled by the same kind of effort.
 
 CUTS are moments to divide a stretch at.  Without them a day with nothing
 clocked in it is one hole from breakfast to bedtime, and the answer to
-\"what was that?\" cannot be one thing."
-  (let ((least (* 60 org-foresight-clock-fill-minimum)))
+\"what was that?\" cannot be one thing.
+
+The threshold is applied to the stretches and the cuts are made inside
+what survives, in that order and not the other way about.  Cutting first
+manufactures short pieces out of long ones -- a meeting beginning two
+minutes after a clock stopped makes a two-minute piece -- and dropping
+those takes minutes out of the total.  Then the bar above the agenda
+reports time as unrecorded that this command will not offer to fill, and
+nothing in the tool can say where it went."
+  (let* ((least (* 60 org-foresight-clock-fill-minimum))
+         (worth (lambda (ivs)
+                  (seq-filter
+                   (lambda (iv)
+                     (>= (float-time (time-subtract (cdr iv) (car iv))) least))
+                   ivs))))
     (seq-sort-by
      (lambda (gap) (float-time (car (car gap)))) #'<
-     (seq-filter
-      (lambda (gap)
-        (>= (float-time (time-subtract (cdr (car gap)) (car (car gap)))) least))
-      (append (mapcar (lambda (iv) (cons iv 'unclocked))
-                      (org-foresight--intervals-split
-                       (plist-get behind :unclocked-ivs) cuts))
-              (mapcar (lambda (iv) (cons iv 'away))
-                      (org-foresight--intervals-split
-                       (plist-get behind :away-ivs) cuts)))))))
+     (append (mapcar (lambda (iv) (cons iv 'unclocked))
+                     (org-foresight--intervals-split
+                      (funcall worth (plist-get behind :unclocked-ivs))
+                      cuts least))
+             (mapcar (lambda (iv) (cons iv 'away))
+                     (org-foresight--intervals-split
+                      (funcall worth (plist-get behind :away-ivs))
+                      cuts least))))))
 
 (defun org-foresight--clock-gap-label (gap)
   "Return GAP as one line: when it ran, how long it was, and which kind."
@@ -1627,8 +1662,8 @@ clocked in it is one hole from breakfast to bedtime, and the answer to
              (/ (float-time (time-subtract (cdr iv) (car iv))) 60.0))
             (if (eq (cdr gap) 'away) "away" "at the keyboard"))))
 
-(defun org-foresight--clock-fill-candidates (clock &optional scan)
-  "Return (TITLE . MARKER) for the work today already knows about.
+(defun org-foresight--clock-fill-candidates (clock &optional scan day)
+  "Return (TITLE . MARKER) for the work DAY already knows about.
 
 Two sources, because they miss different things.  What has been clocked today
 is where an interrupted task is found: it is on the list already and only
@@ -1636,32 +1671,103 @@ wants its missing half.  The day's own entries are where a task that was
 never clocked at all is found -- the commoner case by far, and the one a list
 built from the clock alone can never offer.
 
+Three sources, then, because the first two miss the commonest thing of all:
+work that is simply open.  An hour goes on whatever was in hand, and what
+was in hand is often neither clocked today nor dated to today -- the task
+picked up because it was next, the one nobody ever gave a date.  Offered
+neither, the name typed at the prompt matched nothing and the hour was
+filed under a *second* heading with the same words as the first, which
+loses the connection between them for good.
+
+Followups are left out of that third source.  A WAIT is time somebody else
+is spending, and an hour of yours is not what it is waiting for.
+
 Neither is required.  A stretch that went on something nobody had written
 down is the whole reason the day has holes in it, and a prompt that refused
 to accept one would send its answer somewhere else."
-  (let* ((scan (or scan (org-foresight-scan 1 (org-foresight--day-start 0))))
-         (ledger (org-foresight-scan-day scan :ledger
-                                         (org-foresight--day-start 0)))
+  (let* ((day (or day (org-foresight--day-start 0)))
+         (scan (or scan (org-foresight-scan 1 day)))
+         (ledger (org-foresight-scan-day scan :ledger day))
          (out nil))
-    (dolist (task (plist-get clock :today-tasks))
+    (dolist (task (plist-get clock :day-tasks))
       (when-let ((marker (plist-get task :marker)))
         (push (cons (plist-get task :title) marker) out)))
     (dolist (entry ledger)
       (when-let ((title (plist-get entry :title)))
         (unless (assoc title out)
-          ;; A journey is offered by name and files nowhere.  Half of them have
-          ;; no entry behind them at all, and the half that do carry the marker
-          ;; of the meeting they are *for* -- clocking the drive onto the
-          ;; meeting would put the road inside the room, and the meeting would
-          ;; report an hour and a half of itself.
-          (let ((marker (unless (eq (plist-get entry :kind) 'travel)
+          ;; A *derived* journey is offered by name and files nowhere.  Half
+          ;; of them have no entry behind them at all, and the half that do
+          ;; carry the marker of the meeting they are *for* -- clocking the
+          ;; drive onto the meeting would put the road inside the room, and
+          ;; the meeting would report an hour and a half of itself.
+          ;;
+          ;; A journey somebody wrote down is the opposite case and was being
+          ;; treated as the same one.  It has a heading of its own, which is
+          ;; the one place the hour belongs; offered without it the name fell
+          ;; through to the fallback and a second heading was written under
+          ;; the same title, so the trip that had been settled once was on
+          ;; the day twice and neither copy held all of it.
+          (let ((marker (unless (and (eq (plist-get entry :kind) 'travel)
+                                     (not (plist-get entry :written)))
                           (plist-get entry :marker))))
             (when (or marker (eq (plist-get entry :kind) 'travel))
               (push (cons title marker) out))))))
+    ;; Last, so that the day's own work stays at the top of the list where
+    ;; it is likeliest to be the answer.
+    (dolist (rec (org-foresight-outline-records))
+      (let ((title (plist-get rec :title)))
+        (when (and title
+                   (markerp (plist-get rec :marker))
+                   (not (plist-get rec :done))
+                   (not (plist-get rec :parked))
+                   (not (member (plist-get rec :todo)
+                                org-foresight-followup-keywords))
+                   (not (assoc title out)))
+          (push (cons title (plist-get rec :marker)) out))))
     (nreverse out)))
 
-(defun org-foresight--clock-fill-journeys (&optional scan)
-  "Return (TITLE . PLACE) for the journeys today derives but nobody wrote down.
+(defun org-foresight--heading-named (title)
+  "Return a marker on any heading called TITLE, or nil.
+
+Asked only of a name the prompt did not offer, which after the three
+sources above means a heading that is done, parked, or waiting on somebody
+else.  Each of those is a perfectly ordinary thing to have spent an hour
+on -- the task finished this morning and never clocked, the one that came
+unstuck while you waited -- and writing a second heading with the same
+words would be the one outcome nobody wants.
+
+The first match: two headings may share a title, and there is nothing here
+to choose between them with.  The question that follows shows which one it
+found."
+  (seq-some (lambda (rec)
+              (and (equal (plist-get rec :title) title)
+                   (markerp (plist-get rec :marker))
+                   (plist-get rec :marker)))
+            (org-foresight-outline-records)))
+
+(defun org-foresight--derived-journeys (&optional scan day)
+  "Return (TITLE PLACE START END) for DAY\='s journeys nobody wrote down.
+
+One reading of what a derived journey is, for the commands that offer them
+and for the one that makes them real.  A written journey is not here: it is
+an entry already, with its own hours and its own heading, and offering it
+would be offering to write down what is written."
+  (let* ((day (or day (org-foresight--day-start 0)))
+         (scan (or scan (org-foresight-scan 1 day)))
+         (ledger (org-foresight-scan-day scan :ledger day))
+         out)
+    (dolist (entry ledger (nreverse out))
+      (when (and (eq (plist-get entry :kind) 'travel)
+                 (plist-get entry :place)
+                 (plist-get entry :title)
+                 (plist-get entry :start)
+                 (not (plist-get entry :written)))
+        (push (list (plist-get entry :title) (plist-get entry :place)
+                    (plist-get entry :start) (plist-get entry :end))
+              out)))))
+
+(defun org-foresight--clock-fill-journeys (&optional scan day)
+  "Return (TITLE . PLACE) for the journeys DAY derives but nobody wrote down.
 
 A journey named at the prompt has to be written down *as* a journey.  Filed as
 an ordinary entry it records the hour that was spent and leaves the derivation
@@ -1670,16 +1776,8 @@ hour is counted twice, the free time is short by it, and what would fit is
 answered against a trip already made.  Booked to its place, the derivation
 defers to it, which is the mechanism `org-foresight-book-travel\=' already
 uses."
-  (let* ((scan (or scan (org-foresight-scan 1 (org-foresight--day-start 0))))
-         (ledger (org-foresight-scan-day scan :ledger
-                                         (org-foresight--day-start 0)))
-         out)
-    (dolist (entry ledger (nreverse out))
-      (when (and (eq (plist-get entry :kind) 'travel)
-                 (plist-get entry :place)
-                 (plist-get entry :title)
-                 (not (plist-get entry :written)))
-        (push (cons (plist-get entry :title) (plist-get entry :place)) out)))))
+  (mapcar (lambda (j) (cons (nth 0 j) (nth 1 j)))
+          (org-foresight--derived-journeys scan day)))
 
 (defun org-foresight--clock-fill-parents ()
   "Return (TITLE . MARKER) for the open work a kind can be filed under.
@@ -1705,7 +1803,7 @@ and answering with it would file the hour under the wrong work."
                   (outline-next-heading)
                   (< (point) end))
         (when (and (= (org-current-level) (1+ level))
-                   (equal (org-get-heading t t t t) title))
+                   (equal (org-foresight--entry-title) title))
           (setq found (point-marker))))
       found)))
 
@@ -1790,8 +1888,8 @@ an interruption nobody recorded teaches the reserve that there are none."
          marker)))))
 
 ;;;###autoload
-(defun org-foresight-clock-fill ()
-  "Say what an unrecorded stretch of today was spent on.
+(defun org-foresight-clock-fill (&optional day)
+  "Say what an unrecorded stretch of DAY was spent on.
 
 Every day leaves holes in its own record: the interruption taken without
 stopping to start a timer, the hour the machine slept through, the task
@@ -1809,7 +1907,16 @@ collects nothing.
 
 Pick a stretch, name the work, and the clock line is written where it
 belongs: on the entry when the work is already in a file, in a new one under
-today when it is not.
+the day when it is not.
+
+DAY is the day under the cursor when run from an agenda line and today
+otherwise, as `org-foresight-shape-day' reads it.  A record is corrected the
+morning after at least as often as the evening of -- the clock nobody
+started yesterday is noticed today -- and a command that could only be
+pointed at today could only mend a mistake on the day it was made.  The
+watcher is the one thing that does not follow: it answers for today alone,
+so on any other day the keyboard going quiet is not among the cuts and a
+stretch that would have arrived as two arrives as one.
 
 The holes are the waking day\='s, not the working day\='s.  Work happens
 outside the hours set aside for it -- an evening that ran long, a Saturday
@@ -1825,18 +1932,26 @@ not: it is a plan for a task, as easily kept as broken.  Cut at the first
 two and an afternoon nobody clocked arrives as the few stretches it
 actually had; cut at none and it is one hole from lunch to bedtime, which
 no single answer fits."
-  (interactive)
-  (let* ((day (org-foresight--day-start 0))
-         (clock (org-foresight-clock-scan 7))
+  (interactive (list (org-foresight--day-at-point)))
+  (let* ((day (or day (org-foresight--day-start 0)))
+         (today (equal day (org-foresight--day-start 0)))
+         (clock (org-foresight-clock-scan 7 nil day))
          (scan (org-foresight-scan 1 day))
          (awake (plist-get (org-foresight-day-shape day) :awake))
          (span (and awake (list (cons (car awake) (cdr awake)))))
          (behind (org-foresight-behind
-                  day clock (org-foresight-observe-coverage clock) nil span))
+                  day clock
+                  ;; The watcher answers for today and for no other day, so
+                  ;; on any other the keyboard going quiet is not among the
+                  ;; cuts.  A stretch that would have been two arrives as
+                  ;; one, which is a coarser answer and not a wrong one.
+                  (and today (org-foresight-observe-coverage clock))
+                  nil span))
          (gaps (org-foresight--clock-gaps
                 behind (org-foresight--clock-cuts day scan))))
     (unless gaps
-      (user-error "Nothing today is unrecorded for longer than %d minutes"
+      (user-error "Nothing %s is unrecorded for longer than %d minutes"
+                  (downcase (org-foresight--plan-day-name day))
                   org-foresight-clock-fill-minimum))
     (let* ((choices (mapcar (lambda (gap)
                               (cons (org-foresight--clock-gap-label gap) gap))
@@ -1846,8 +1961,8 @@ no single answer fits."
                             choices)))
            (from (car (car gap)))
            (to (cdr (car gap)))
-           (known (org-foresight--clock-fill-candidates clock scan))
-           (journeys (org-foresight--clock-fill-journeys scan))
+           (known (org-foresight--clock-fill-candidates clock scan day))
+           (journeys (org-foresight--clock-fill-journeys scan day))
            ;; Kinds first.  They are the answer on the hours hardest to name,
            ;; which is exactly why those hours are the ones still unrecorded
            ;; at six o\'clock.  Then the journeys, gathered rather than left
@@ -1860,7 +1975,9 @@ no single answer fits."
                            (mapcar #'car journeys)
                            (seq-remove (lambda (name) (assoc name journeys))
                                        (mapcar #'car known)))))
-           (marker (cdr (assoc title known))))
+           (marker (cdr (assoc title known)))
+           ;; A name the list did not hold may still be a heading.
+           (elsewhere (unless marker (org-foresight--heading-named title))))
       (when (string-empty-p (string-trim title))
         (user-error "Nothing named, nothing written"))
       (cond
@@ -1880,6 +1997,14 @@ no single answer fits."
          from to)
         (setq org-foresight--shape-cache nil))
        (marker (org-foresight--file-clocked marker from to))
+       ;; Offered rather than assumed: a name can be typed meaning the thing
+       ;; that heading is about, and it can be typed meaning something else
+       ;; that happens to be called the same.  Only the person knows which,
+       ;; and the cost of guessing wrong is a duplicate nobody notices.
+       ((and elsewhere
+             (y-or-n-p (format "\"%s\" is already a heading; clock onto it? "
+                               title)))
+        (org-foresight--file-clocked elsewhere from to))
        (t (org-foresight--file-clocked-entry
            title from to
            ;; Asked only of a name that came from nowhere.  An answer the day
@@ -2039,7 +2164,7 @@ because a clock is a moment and midnight is not what anybody meant."
             (user-error "No time of day in that; a clock starts at a moment")))
         (org-with-point-at marker
           (org-back-to-heading t)
-          (setq title (org-get-heading t t t t)))
+          (setq title (org-foresight--entry-title)))
         (if (time-less-p (current-time) at)
             (let ((entry (list :at at :marker (copy-marker marker)
                                :title title :timer nil)))
@@ -2062,13 +2187,16 @@ because a clock is a moment and midnight is not what anybody meant."
 ;;;; Dividing a spell that was two things
 
 (defun org-foresight--clocked-spells (clock)
-  "Return today's clocked segments as plists (:title :marker :from :to).
+  "Return CLOCK's newest day of clocked segments, as plists.
+
+Each is (:title :marker :from :to).  Which day that is was decided when
+CLOCK was surveyed; this reads whatever it was asked about.
 
 One per segment rather than one per entry.  An hour clocked in two sittings
 is two things that can be corrected separately, and the sitting that was
 really something else is a sitting, not a total."
   (let (out)
-    (dolist (task (plist-get clock :today-tasks))
+    (dolist (task (plist-get clock :day-tasks))
       (when-let ((marker (plist-get task :marker)))
         (dolist (iv (plist-get task :intervals))
           (push (list :title (plist-get task :title) :marker marker
@@ -2163,8 +2291,8 @@ the spell being divided stays on screen while it is corrected."
     at))
 
 ;;;###autoload
-(defun org-foresight-clock-split ()
-  "Give part of a clocked spell to the work it actually was.
+(defun org-foresight-clock-split (&optional day)
+  "Give part of a clocked spell of DAY to the work it actually was.
 
 An hour goes down against one task and turns out to have been two: the call
 that came in the middle of it, twenty minutes of somebody else's problem, the
@@ -2179,12 +2307,19 @@ the day's total after this is the total it had before.
 `org-foresight-clock-fill\=' is the other half of keeping the record honest
 and cannot be asked these questions.  It is about the hours no clock covers,
 so it offers the holes and never asks for a time; this is about an hour a
-clock covers wrongly, so it offers the spells and must ask where to cut."
-  (interactive)
-  (let* ((clock (org-foresight-clock-scan 1))
+clock covers wrongly, so it offers the spells and must ask where to cut.
+
+DAY is the day under the cursor when run from an agenda line and today
+otherwise, for the reason `org-foresight-clock-fill' gives: an hour charged
+to the wrong task is noticed when the week is read, not while it is
+running."
+  (interactive (list (org-foresight--day-at-point)))
+  (let* ((day (or day (org-foresight--day-start 0)))
+         (clock (org-foresight-clock-scan 1 nil day))
          (spells (org-foresight--clocked-spells clock)))
     (unless spells
-      (user-error "Nothing is clocked today, so there is nothing to divide"))
+      (user-error "Nothing is clocked %s, so there is nothing to divide"
+                  (downcase (org-foresight--plan-day-name day))))
     (let* ((choices (mapcar (lambda (s)
                               (cons (org-foresight--clock-spell-label s) s))
                             spells))
@@ -2211,13 +2346,22 @@ clock covers wrongly, so it offers the spells and must ask where to cut."
            (kept (if (org-foresight--same-minute-p (car moved) from)
                      (cons at to)
                    (cons from at)))
-           (scan (org-foresight-scan 1 (org-foresight--day-start 0)))
-           (known (org-foresight--clock-fill-candidates clock scan))
-           (journeys (org-foresight--clock-fill-journeys scan))
+           (scan (org-foresight-scan 1 day))
+           (known (org-foresight--clock-fill-candidates clock scan day))
+           (journeys (org-foresight--clock-fill-journeys scan day))
+           ;; Journeys gathered ahead of the day's own entries, as
+           ;; `org-foresight-clock-fill' gathers them and for its reason: they
+           ;; are among those entries already, but behind everything clocked
+           ;; so far, and by the time an hour is being divided that is a long
+           ;; way down a list.
            (title (completing-read "And that part was? "
                                    (append org-foresight-clock-fill-kinds
-                                           (mapcar #'car known))))
-           (marker (cdr (assoc title known))))
+                                           (mapcar #'car journeys)
+                                           (seq-remove
+                                            (lambda (name) (assoc name journeys))
+                                            (mapcar #'car known)))))
+           (marker (cdr (assoc title known)))
+           (elsewhere (unless marker (org-foresight--heading-named title))))
       (when (string-empty-p (string-trim title))
         (user-error "Nothing named, nothing moved"))
       ;; The spell is shortened before the other half is written.  A failure
@@ -2242,6 +2386,10 @@ clock covers wrongly, so it offers the spells and must ask where to cut."
          (car moved) (cdr moved))
         (setq org-foresight--shape-cache nil))
        (marker (org-foresight--file-clocked marker (car moved) (cdr moved)))
+       ((and elsewhere
+             (y-or-n-p (format "\"%s\" is already a heading; clock onto it? "
+                               title)))
+        (org-foresight--file-clocked elsewhere (car moved) (cdr moved)))
        (t (org-foresight--file-clocked-entry
            title (car moved) (cdr moved)
            (and (not (assoc title known)) (y-or-n-p "Arrived unplanned? ")))))
@@ -2300,7 +2448,7 @@ there is no side of a date."
     (org-with-wide-buffer
      (goto-char marker)
      (org-back-to-heading t)
-     (let* ((title (org-get-heading t t t t))
+     (let* ((title (org-foresight--entry-title))
             (stamps (org-foresight--entry-timestamps))
             (el (seq-find #'org-foresight--ts-timed-p stamps)))
        (when el
@@ -2340,7 +2488,7 @@ them back to edit a property first."
     (let (title already)
       (org-with-point-at marker
         (org-back-to-heading t)
-        (setq title (org-get-heading t t t t)
+        (setq title (org-foresight--entry-title)
               already (org-entry-get (point) org-foresight-prep-property)))
       (cond
        (already (message "\"%s\" already has preparation" title))
@@ -2406,12 +2554,20 @@ the list that is real short of budget for it."
                  (not timed)
                  (not (org-foresight--todo-descendant-p))
                  (or (null sched)
-                     (= (org-foresight--day-of sched day) 0)))
+                     (= (org-foresight--day-of sched day) 0)
+                     ;; And a date that has gone, when the day being planned
+                     ;; is today -- the same fold the survey makes, or the
+                     ;; work is counted against the day by one and offered a
+                     ;; place by neither.  Only today: a plan for Thursday
+                     ;; has no business collecting what Wednesday dropped.
+                     (and (= 0 (org-foresight--day-of day
+                                                      (org-foresight--day-start 0)))
+                          (org-foresight--entry-schedule-gone-p))))
         (let* ((raw (org-foresight--entry-effort-minutes))
                (category (org-entry-get (point) "CATEGORY" t))
                (factor (org-foresight-bias-factor category raw)))
           (list :marker (point-marker)
-                :title (org-get-heading t t t t)
+                :title (org-foresight--entry-title)
                 ;; The slot is sized by what the work actually takes, not by
                 ;; what it was estimated at -- a plan built on estimates known
                 ;; to run over is a plan that is wrong before the day begins.
@@ -2589,9 +2745,25 @@ regardless would be a printed lie at the top of the buffer."
         (key-description keys)
       (format "M-x %s" command))))
 
+(defun org-foresight-plan--carried-note (candidate day)
+  "Return the note saying CANDIDATE was written for a day before DAY, or \"\".
+
+A day that has gone is folded onto today, so work promised for last Friday
+is here among today\='s -- see `org-foresight--entry-schedule-gone-p\='.  It
+is not today\='s in the same sense, and a list that cannot be told apart is
+a list that quietly rewrites when each thing was promised: the one that has
+been slipping for a fortnight looks exactly like the one accepted an hour
+ago, and they are not the same decision."
+  (let ((sched (plist-get candidate :scheduled)))
+    (if (and sched (< (org-foresight--day-of sched day) 0))
+        (format "for %s " (format-time-string "%-m/%-d" sched))
+      "")))
+
 (defun org-foresight-plan--refresh ()
   "Rebuild the review buffer from the pending proposals."
-  (setq tabulated-list-entries
+  (let* ((day (or org-foresight-plan--day (org-foresight--day-start 0)))
+         (ends (org-foresight-work-ends day)))
+    (setq tabulated-list-entries
         (append
          (mapcar
           (lambda (p)
@@ -2606,7 +2778,17 @@ regardless would be a printed lie at the top of the buffer."
                       44 0 ?\s)
                      ;; Say when a slot is longer than what was asked for, so
                      ;; a surprising length is explained where it appears.
-                     (concat (if (plist-get p :rejected) "skip" "")
+                     (concat (org-foresight-plan--carried-note p day)
+                             ;; Said where the row is, because a row that
+                             ;; takes the evening is the one a reader is
+                             ;; likeliest to want to decline -- and the only
+                             ;; thing that separates it from the rest is an
+                             ;; hour they would have to know the working day
+                             ;; by heart to spot.
+                             (if (and ends (not (time-less-p (plist-get p :start)
+                                                             ends)))
+                                 "after work " "")
+                             (if (plist-get p :rejected) "skip" "")
                              (if (plist-get p :estimated) "" " est?")
                              (let ((raw (plist-get p :estimate))
                                    (adj (plist-get p :effort)))
@@ -2623,8 +2805,9 @@ regardless would be a printed lie at the top of the buffer."
                         (replace-regexp-in-string "[\n\r]" " "
                                                   (plist-get (car s) :title))
                         44 0 ?\s)
-                       (cdr s))))
-          org-foresight-plan--skipped)))
+                       (concat (org-foresight-plan--carried-note (car s) day)
+                               (cdr s)))))
+          org-foresight-plan--skipped))))
   (tabulated-list-print t)
   ;; After the print, which erases: the foot belongs to the buffer rather
   ;; than to the list, and the list is what was just rebuilt.
@@ -2778,8 +2961,19 @@ nothing in it left to place."
   (let* ((day (or day (org-foresight--day-start 0)))
          (scan (org-foresight-scan 1 day))
          (cap (org-foresight-capacity day scan))
-         (free (plist-get cap :free))
-         (budget (- (plist-get cap :free-min) (plist-get cap :reserve-min))))
+         ;; Where the work would actually go: the working hours first, and
+         ;; only then the evening -- the same list, in the same order, that
+         ;; `:lands\=' and `:overflow-min\=' are read off.  Taking only the
+         ;; working hours made this command disagree with the line above it
+         ;; on the same page: the day reported that three hours would be
+         ;; finished by ten past seven and that none of it overflowed, and
+         ;; this refused to place a minute of it for want of budget.  An
+         ;; evening the arithmetic has already spent is an evening a plan may
+         ;; propose; whether to spend it is the reader\='s call, and `d\=' is
+         ;; how they decline.
+         (free (org-foresight--run-out-intervals day scan))
+         (budget (- (/ (org-foresight--intervals-seconds free) 60.0)
+                    (plist-get cap :reserve-min))))
     ;; Nil in every branch that proposes nothing, and said out loud in each.
     ;; `message\=' answers with the line it printed, so a branch that ended on
     ;; one would report a proposal it had not made.
@@ -2788,9 +2982,10 @@ nothing in it left to place."
       (message "%s is not a working day" (org-foresight--plan-day-name day))
       nil)
      ((<= budget 0)
-      (message "No headroom %s: %s free, %s reserved for interruptions"
+      (message "No time left %s: %s free, %s reserved for interruptions"
                (downcase (org-foresight--plan-day-name day))
-               (org-duration-from-minutes (plist-get cap :free-min))
+               (org-duration-from-minutes
+                (/ (org-foresight--intervals-seconds free) 60.0))
                (org-duration-from-minutes (plist-get cap :reserve-min)))
       nil)
      (t

@@ -917,10 +917,12 @@ SCHEDULED: <2026-08-10 Mon>
 (ert-deftest org-foresight-test-a-day-off-with-work-on-it-says-so ()
   "A day with no working hours still says what is dated to it.
 
-It has no capacity to divide and nothing to offer, so there are no bars and
-no suggestions -- but ten hours of work on a Saturday is exactly the kind of
-thing the block exists to notice, and it used to go silent on it.  A day off
-with nothing on it says nothing at all."
+It has no working span to divide and nothing to offer, so there is no work
+bar and no suggestion -- but ten hours of work on a Saturday is exactly the
+kind of thing the block exists to notice, and it used to go silent on it.
+The hours off are drawn, because on a day like this they are the whole of
+it, and nothing is filled in them here: the work is promised, not placed.
+A day off with nothing on it says nothing at all."
   (org-foresight-test--with-window
     ;; 2026-08-09 is a Sunday
     (org-foresight-test--with-org
@@ -939,7 +941,10 @@ SCHEDULED: <2026-08-09 Sun>
         (should (string-match-p "2:00 promised" line))
         ;; and where it would land if done, from the waking day
         (should (string-match-p "ends 10:00" line))
-        ;; no bars: there is no span to divide
+        ;; the hours off are drawn and nothing in them is spoken for: no
+        ;; work bar, because there is no working span to divide
+        (should (string-match-p "^ *Off " line))
+        (should-not (string-match-p "^ *Work +[0-9]" line))
         (should-not (string-match-p "█" line))
         ;; nothing marked, either -- a mark on every row says nothing, and
         ;; the fact is about the day
@@ -1922,6 +1927,307 @@ nothing keeps you there once the thing that took you there has finished."
       (should (member "travel 12:30-13:00" bands))   ; office → client, 30
       (should (member "travel 14:00-15:30" bands))))) ; client → home, 90
 
+(ert-deftest org-foresight-test-a-journey-already-written-is-clocked-where-it-is ()
+  "A journey somebody booked has a heading; the hour goes on that heading.
+
+`org-foresight-book-travel' exists so a trip can be settled once, and the
+whole of its value is that the day then has one journey rather than a
+derived one and a written one.  Offered at this prompt with its own marker
+thrown away, the name fell through to the fallback and a *second* heading
+was written under the same title -- the trip settled once was on the day
+twice, the clock on one copy and the hour on the other, and nothing on the
+page said which was which."
+  (let ((day (org-foresight--day-start 0)))
+    (org-foresight-test--with-task-file
+        (concat "* ONGO the work\n:LOGBOOK:\nCLOCK: "
+                (format-time-string "[%Y-%m-%d %a 09:00]" day) "--"
+                (format-time-string "[%Y-%m-%d %a 10:00]" day)
+                " =>  1:00\n:END:\n"
+                "* Drive home\n:PROPERTIES:\n:FORESIGHT_TRAVEL: home\n:END:\n"
+                (format-time-string "<%Y-%m-%d %a 17:00-18:00>\n" day))
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-awake '("07:00" . "23:00"))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight--shape-cache nil)
+            (org-foresight-now (time-add day (* 3600 19))))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ;; nothing here arrived from nowhere: the day knows this
+                  ;; journey, so it is never asked whether it was planned
+                  ((symbol-function 'y-or-n-p)
+                   (lambda (&rest _) (error "asked to judge a journey it knew")))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (if (string-prefix-p "Unrecorded" prompt)
+                         (car (car collection))
+                       (progn (should (member "Drive home" collection))
+                              "Drive home")))))
+          (org-foresight-clock-fill))
+        (let ((text (org-foresight-test--task-file-text)))
+          ;; one heading, not two
+          (should (= 1 (cl-count "* Drive home"
+                                 (split-string text "\n") :test #'equal)))
+          ;; and the hour is under it, after its stamp
+          (should (string-match-p
+                   (concat "\\* Drive home\n\\(?:.\\|\n\\)*"
+                           org-foresight-travel-property
+                           "\\(?:.\\|\n\\)*CLOCK:")
+                   text)))))))
+
+(ert-deftest org-foresight-test-yesterdays-record-can-still-be-mended ()
+  "The holes and the miscounted hours of another day are correctable too.
+
+A record is corrected the morning after at least as often as the evening of:
+the clock nobody started yesterday is noticed today, and the hour charged to
+the wrong task is noticed when the week is read.  Fixed to today, both
+commands could only mend a mistake on the day it was made -- which is the
+one day a person is least likely to be looking."
+  (let* ((today (org-foresight--day-start 0))
+         (yest (time-add today (days-to-time -1)))
+         (at (lambda (h) (format-time-string
+                          (format "[%%Y-%%m-%%d %%a %02d:00]" h) yest)))
+         offered)
+    ;; the hole
+    (org-foresight-test--with-task-file
+        (concat "* ONGO the work\n:LOGBOOK:\nCLOCK: "
+                (funcall at 9) "--" (funcall at 10) " =>  1:00\n:END:\n")
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-awake '("07:00" . "22:00"))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight--shape-cache nil)
+            (org-foresight-now (time-add today (* 3600 9))))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'y-or-n-p) (lambda (&rest _) nil))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (if (string-prefix-p "Unrecorded" prompt)
+                         (progn (setq offered (mapcar #'car collection))
+                                (car (car collection)))
+                       "the work"))))
+          (org-foresight-clock-fill yest))
+        ;; yesterday's waking day, not today's
+        (should (equal '("07:00-09:00  2:00  (at the keyboard)"
+                         "10:00-22:00  12:00  (at the keyboard)")
+                       offered))
+        ;; and the line is written under yesterday's date
+        (should (string-match-p
+                 (concat (regexp-quote (funcall at 7)) "--"
+                         (regexp-quote (funcall at 9)))
+                 (org-foresight-test--task-file-text)))))
+    ;; and the miscounted hour
+    (org-foresight-test--with-task-file
+        (concat "* ONGO alpha\n:LOGBOOK:\nCLOCK: "
+                (funcall at 9) "--" (funcall at 11) " =>  2:00\n:END:\n"
+                ;; beta is clocked yesterday too, so the day knows it and
+                ;; nothing is asked about where it came from
+                "* ONGO beta\n:LOGBOOK:\nCLOCK: "
+                (funcall at 13) "--" (funcall at 14) " =>  1:00\n:END:\n")
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight-clock-fill-kinds nil)
+            (org-foresight--shape-cache nil)
+            (org-foresight-now (time-add today (* 3600 9))))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'read-string) (lambda (&rest _) "10:00"))
+                  ;; nothing here comes from nowhere, and a stray `y-or-n-p'
+                  ;; in batch waits on a terminal nobody is at
+                  ((symbol-function 'y-or-n-p)
+                   (lambda (&rest _) (error "asked to judge a known entry")))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (cond
+                      ((string-prefix-p "Divide" prompt)
+                       (car (seq-find (lambda (c) (string-match-p "alpha" (car c)))
+                                      collection)))
+                      ((string-prefix-p "Which part" prompt)
+                       (car (nth 1 collection)))
+                      (t "beta")))))
+          (org-foresight-clock-split yest))
+        (let ((text (org-foresight-test--task-file-text)))
+          (should (string-match-p
+                   (concat (regexp-quote (funcall at 9)) "--"
+                           (regexp-quote (funcall at 10)))
+                   text))
+          (should (string-match-p
+                   (concat (regexp-quote (funcall at 10)) "--"
+                           (regexp-quote (funcall at 11)))
+                   text))
+          (should-not (string-match-p
+                       (concat (regexp-quote (funcall at 9)) "--"
+                               (regexp-quote (funcall at 11)))
+                       text)))))))
+
+(ert-deftest org-foresight-test-a-day-off-with-work-in-it-is-not-a-blank ()
+  "A Saturday with a client in it is the day most worth a word about.
+
+Only what was *promised* to a day off was counted, and a meeting is never
+promised: it is booked, which on a day with no working hours is borrowed
+from private time.  So that day drew nothing at all -- no bar, no verdict,
+no key -- while a Saturday holding half an hour of undated work drew a line.
+A genuinely free day still says nothing, which is the rule this was guarding
+and the only part of it that was right."
+  (let* ((day (org-foresight--day-start 0))
+         (dow (string-to-number (format-time-string "%w" day)))
+         (off (remq dow '(0 1 2 3 4 5 6)))
+         (block (lambda (text)
+                  (org-foresight-test--with-task-file text
+                    (let ((org-foresight-work '(("09:00" . "17:30")))
+                          (org-foresight-awake '("07:00" . "23:00"))
+                          (org-foresight-workdays off)
+                          (org-foresight--shape-cache nil))
+                      (let ((b (org-foresight-report-capacity-line
+                                day nil (time-add day (* 3600 10)))))
+                        (and b (substring-no-properties b))))))))
+    (let ((meeting (funcall block
+                            (concat "* Client visit\n:PROPERTIES:\n"
+                                    ":CATEGORY: meeting\n:END:\n"
+                                    (format-time-string
+                                     "<%Y-%m-%d %a 13:00-15:00>\n" day)))))
+      (should meeting)
+      (should (string-match-p "Not a working day" meeting))
+      (should (string-match-p "2:00 booked" meeting))
+      ;; the hours off are the whole of such a day, so the bar that draws
+      ;; them is the only picture of where the work sits in it
+      (should (string-match-p "Off" meeting))
+      (should (string-match-p "borrowed 2:00" meeting))
+      ;; nothing is promised, so nothing is said about when promises end
+      (should-not (string-match-p "ends" meeting)))
+    ;; a free day is still silent
+    (should-not (funcall block "* NEXT something with no date\n"))))
+
+(ert-deftest org-foresight-test-a-day-off-still-brings-you-home ()
+  "The errand on a Saturday ends and you go home, as it would on a Tuesday.
+
+Three legs were read as one thing -- the way in, the way back to the day's
+own place, and the way home -- and all three were refused where there were
+no working hours.  Only the first is about work.  Without the other two the
+day derived a journey to the clinic and none away from it, so every
+question about where the body was for the rest of the day answered
+\"still there\"."
+  (let* ((day (org-foresight--day-start 0))
+         (dow (string-to-number (format-time-string "%w" day)))
+         (read (lambda (workdays &optional at)
+                 (org-foresight-test--with-task-file
+                     (concat "* Dentist\n:PROPERTIES:\n:LOCATION: clinic\n:END:\n"
+                             (format-time-string "<%Y-%m-%d %a 11:00-12:00>\n" day))
+                   (let* ((org-foresight-work '(("09:00" . "17:30")))
+                          (org-foresight-awake '("07:00" . "23:00"))
+                          (org-foresight-workdays workdays)
+                          (org-foresight-places '((clinic . "clinic")))
+                          (org-foresight-home-place 'home)
+                          (org-foresight-travel-matrix '(((home . clinic) . 20)
+                                                         ((clinic . home) . 20)))
+                          (org-foresight--shape-cache nil)
+                          ;; Pinned, and never read from the wall clock: what
+                          ;; the day derives is a fact about the day.
+                          (at (or at (time-add day (* 3600 9))))
+                          (scan (cl-letf (((symbol-function 'current-time)
+                                           (lambda () at)))
+                                  (org-foresight-scan 1 day)))
+                          (ledger (org-foresight-scan-day scan :ledger day)))
+                     (list (seq-keep
+                            (lambda (e)
+                              (and (eq (plist-get e :kind) 'travel)
+                                   (format "%s %s-%s" (plist-get e :title)
+                                           (format-time-string
+                                            "%H:%M" (plist-get e :start))
+                                           (format-time-string
+                                            "%H:%M" (plist-get e :end)))))
+                            ledger)
+                           (org-foresight-place-at
+                            day (time-add day (* 3600 14)))))))))
+    (let ((rest (funcall read (remq dow '(0 1 2 3 4 5 6))))
+          (work (funcall read '(0 1 2 3 4 5 6))))
+      ;; both ways, at the same hours, on either kind of day
+      (should (equal '("→ clinic 10:40-11:00" "→ home 12:00-12:20")
+                     (nth 0 rest)))
+      (should (equal (nth 0 work) (nth 0 rest)))
+      ;; and the afternoon is spent at home, not in a waiting room
+      (should (eq 'home (nth 1 rest))))
+    ;; A day that is over, or has not begun, is the same day either way.  The
+    ;; closing time a journey home is pinned to has to come from the day --
+    ;; the working hours, or the waking day where there are none.  Taken from
+    ;; neither it is read off the wall clock, and then the legs a Saturday
+    ;; derives depend on what time it happens to be when somebody looks.
+    (let ((early (funcall read (remq dow '(0 1 2 3 4 5 6))
+                          (time-add day (* 3600 6))))
+          (late (funcall read (remq dow '(0 1 2 3 4 5 6))
+                         (time-add day (* 3600 22)))))
+      (should (equal (nth 0 early) (nth 0 late))))
+    ;; And a day off worked from somewhere else makes both legs back: to the
+    ;; day's own place, and then home when the day closes.  Which moment
+    ;; that is has to come from the day -- its working hours, or its waking
+    ;; span where it has none.  Taken from neither, the second leg is pinned
+    ;; to the wall clock and simply vanishes.
+    (org-foresight-test--with-task-file
+        (concat "* Dentist\n:PROPERTIES:\n:LOCATION: clinic\n:END:\n"
+                (format-time-string "<%Y-%m-%d %a 11:00-12:00>\n" day))
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-awake '("07:00" . "23:00"))
+            (org-foresight-workdays (remq dow '(0 1 2 3 4 5 6)))
+            (org-foresight-places '((clinic . "clinic")))
+            (org-foresight-home-place 'home)
+            (org-foresight-travel-matrix '(((home . clinic) . 20)
+                                           ((clinic . office) . 15)
+                                           ((office . home) . 40)))
+            (org-foresight--shape-cache nil))
+        (cl-letf (((symbol-function 'org-foresight-day-place)
+                   (lambda (_) 'office)))
+          (let ((ledger (org-foresight-scan-day (org-foresight-scan 1 day)
+                                                :ledger day)))
+            (should (equal '("→ clinic 10:40-11:00" "→ office 12:00-12:15"
+                             "→ home 22:20-23:00")
+                           (seq-keep
+                            (lambda (e)
+                              (and (eq (plist-get e :kind) 'travel)
+                                   (format "%s %s-%s" (plist-get e :title)
+                                           (format-time-string
+                                            "%H:%M" (plist-get e :start))
+                                           (format-time-string
+                                            "%H:%M" (plist-get e :end)))))
+                            ledger)))))))))
+
+(ert-deftest org-foresight-test-a-journey-can-be-booked-from-anywhere ()
+  "`org-foresight-book-travel' asks which journey when the cursor is on none.
+
+The day derives the same legs wherever the reader is standing, and the
+moment a derived leg is wrong -- the train you actually catch, the errand on
+the way -- is rarely the moment the cursor is on its row.  Refusing outright
+made the one command that can settle a journey reachable only from the row
+it was about."
+  (let ((day (org-foresight--day-start 0))
+        (asked nil))
+    (org-foresight-test--with-task-file
+        (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:LOCATION: office\n:END:\n"
+                (format-time-string "<%Y-%m-%d %a 13:00-14:00>\n" day))
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight-places '((office . "office")))
+            (org-foresight-home-place 'home)
+            (org-foresight-travel-matrix '(((home . office) . 30)
+                                           ((office . home) . 30)))
+            (org-foresight--shape-cache nil))
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (setq asked (mapcar #'car collection))
+                     (car (car collection))))
+                  ((symbol-function 'read-string)
+                   (lambda (_prompt &optional initial &rest _) initial))
+                  ((symbol-function 'org-read-date)
+                   (lambda (&rest args) (nth 4 args)))
+                  ((symbol-function 'org-agenda-redo) #'ignore))
+          (org-foresight-book-travel))
+        ;; it offered the day's derived legs, with their hours
+        (should (seq-find (lambda (c) (string-match-p "→ office  12:30-13:00" c))
+                          asked))
+        ;; and wrote the first one down as a journey
+        (let ((text (org-foresight-test--task-file-text)))
+          (should (string-match-p "\\* → office" text))
+          (should (string-match-p
+                   (concat org-foresight-travel-property ": office") text)))))))
+
 (ert-deftest org-foresight-test-a-clocked-journey-is-a-journey ()
   "A journey written down and then clocked, with no time on its stamp.
 
@@ -2344,10 +2650,10 @@ SCHEDULED: <2026-08-10 Mon 10:00>
         :total 900.0
         :days 7
         :byday (vector 100.0 200.0 0.0 150.0 200.0 150.0 100.0)
-        :today-rows '(("work" . 120.0) ("会議" . 45.0))
-        :today-total 165.0
-        :today-segments 6
-        :today-intervals nil)
+        :day-rows '(("work" . 120.0) ("会議" . 45.0))
+        :day-total 165.0
+        :day-segments 6
+        :day-intervals nil)
   "A clock plist shaped like `org-foresight-clock-scan' output.")
 
 (defmacro org-foresight-test--without-aw (&rest body)
@@ -2587,8 +2893,8 @@ the handful anybody could act on."
   "A day with nothing clocked must render a message, not crash or blank out."
   (org-foresight-test--without-aw
     (let ((empty (list :rows nil :total 0 :days 7 :byday (make-vector 7 0)
-                       :today-rows nil :today-total 0 :today-segments 0
-                       :today-intervals nil)))
+                       :day-rows nil :day-total 0 :day-segments 0
+                       :day-intervals nil)))
       (should (string-match-p "Clocked 0:00" (org-foresight-report-spent empty)))
       (should (string-match-p "no clocked time"
                               (org-foresight-report-week empty))))))
@@ -3297,8 +3603,8 @@ is a clock the block correctly ignores."
          (at (lambda (h m) (time-add day (seconds-to-time (* 60 (+ (* 60 h) m))))))
          (iv (cons (funcall at from-h from-m) (funcall at to-h to-m)))
          (mins (/ (float-time (time-subtract (cdr iv) (car iv))) 60.0)))
-    (list :today-intervals (list iv)
-          :today-tasks (list (list :title "the morning's work" :minutes mins
+    (list :day-intervals (list iv)
+          :day-tasks (list (list :title "the morning's work" :minutes mins
                                    :surge nil :intervals (list iv))))))
 
 (ert-deftest org-foresight-test-load-draws-todays-elapsed-half ()
@@ -4002,6 +4308,258 @@ key does is not a thing to be read off the line first.  Both step down."
                              (org-foresight-plan-drop))
                       :type 'user-error)))))
 
+(ert-deftest org-foresight-test-a-day-that-has-gone-is-still-todays-work ()
+  "Work scheduled for a day that has passed is folded onto today.
+
+Until it was, the entry was in none of the figures this package draws -- no
+capacity spent, no row in the ledger, nothing offered a time -- and Org's
+own agenda was the only view it survived in.  That is the worst place for
+it to be alone, because an entry with a date behind it cannot be given an
+hour today without being rescheduled by hand first: the work that never got
+planned was exactly the work nothing here could plan.
+
+A repeating stamp is the exception and has to be.  It names a next occasion
+of its own, on a real future date, and folding a missed one onto today
+would put the same work on the day twice."
+  (let* ((day (org-foresight--day-start 0))
+         (read (lambda (repeater)
+                 (org-foresight-test--with-task-file
+                     (concat "* NEXT the thing that slipped\nSCHEDULED: "
+                             (format-time-string
+                              (concat "<%Y-%m-%d %a" repeater ">")
+                              (time-add day (days-to-time -4)))
+                             "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
+                   (let ((org-foresight-work '(("09:00" . "17:30")))
+                         (org-foresight-workdays '(0 1 2 3 4 5 6))
+                         (org-foresight--shape-cache nil))
+                     (let ((scan (org-foresight-scan 1 day)))
+                       (list (org-foresight-scan-day scan :committed day)
+                             (org-foresight-scan-day scan :ledger day)
+                             (mapcar (lambda (c) (plist-get c :title))
+                                     (org-foresight--candidates day)))))))))
+    (pcase-let ((`(,committed ,ledger ,candidates) (funcall read "")))
+      ;; the hour is the day's, the row says so, and something can be done
+      ;; about it without touching the file first
+      (should (= 60.0 committed))
+      (should (equal '("the thing that slipped")
+                     (mapcar (lambda (r) (plist-get r :title)) ledger)))
+      (should (eq 'promised (plist-get (car ledger) :kind)))
+      ;; and the row remembers which day it was written for
+      (should (equal (format-time-string "%F" (time-add day (days-to-time -4)))
+                     (format-time-string "%F" (plist-get (car ledger) :carried))))
+      (should (equal '("the thing that slipped") candidates)))
+    ;; a `.+' restart repeater has no next occasion until the work is done,
+    ;; so the date written is the live one and it folds like any other
+    (pcase-let ((`(,committed _ ,candidates) (funcall read " .+3d")))
+      (should (= 60.0 committed))
+      (should (equal '("the thing that slipped") candidates)))
+    ;; a real repeater does not
+    (pcase-let ((`(,committed ,ledger ,candidates) (funcall read " +1w")))
+      (should (= 0.0 committed))
+      (should-not ledger)
+      (should-not candidates))
+    ;; And nothing is folded onto a day that already holds it.  An entry
+    ;; whose SCHEDULED has gone but which is written into today by a stamp of
+    ;; its own is placed already; folding it as well would charge the day for
+    ;; the interval *and* for the estimate, which is the one thing the survey
+    ;; promises never to do.
+    (org-foresight-test--with-task-file
+        (concat "* NEXT the thing that slipped
+SCHEDULED: "
+                (format-time-string "<%Y-%m-%d %a>" (time-add day (days-to-time -4)))
+                "
+:PROPERTIES:
+:EFFORT: 1:00
+:END:
+"
+                (format-time-string "<%Y-%m-%d %a 14:00-15:00>
+" day))
+      (let* ((org-foresight-work '(("09:00" . "17:30")))
+             (org-foresight-workdays '(0 1 2 3 4 5 6))
+             (org-foresight--shape-cache nil)
+             (scan (org-foresight-scan 1 day))
+             (ledger (org-foresight-scan-day scan :ledger day)))
+        (should (= 0.0 (org-foresight-scan-day scan :committed day)))
+        (should (= 1 (length ledger)))
+        (should (eq 'task (plist-get (car ledger) :kind)))
+        (should (= 1 (length (org-foresight-scan-day scan :busy day))))))))
+
+(ert-deftest org-foresight-test-carried-work-says-which-day-it-was-for ()
+  "The review buffer tells work promised for an earlier day from today's own.
+
+They are not the same decision.  The task that has been slipping for a
+fortnight and the one accepted an hour ago read identically otherwise, and a
+list that cannot tell them apart quietly rewrites when each was promised --
+in the one buffer whose whole purpose is deciding what today is going to be."
+  (let* ((day (org-foresight--day-start 0))
+         (was (time-add day (days-to-time -4))))
+    (org-foresight-test--with-task-file
+        (concat "* NEXT the thing that slipped\nSCHEDULED: "
+                (format-time-string "<%Y-%m-%d %a>" was)
+                "\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n"
+                "* NEXT the thing decided today\nSCHEDULED: "
+                (format-time-string "<%Y-%m-%d %a>" day)
+                "\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n")
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight--shape-cache nil)
+            (org-foresight-now (time-add day (* 3600 10))))
+        (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) b)))
+          (org-foresight-plan-fill day))
+        (with-current-buffer "*Foresight Plan*"
+          (let* ((lines (split-string (substring-no-properties (buffer-string))
+                                      "\n"))
+                 (row (lambda (name)
+                        (seq-find (lambda (l) (string-search name l)) lines)))
+                 (note (format "for %s" (format-time-string "%-m/%-d" was))))
+            (should (string-search note (funcall row "that slipped")))
+            (should-not (string-search note (funcall row "decided today")))))))))
+
+(ert-deftest org-foresight-test-an-hour-can-go-on-anything-that-is-open ()
+  "The prompt offers the work in hand, not only the work the day knew about.
+
+An hour goes on whatever was in front of you, and that is very often
+neither clocked today nor dated to today: the task picked up because it was
+next, the one nobody ever gave a date.  Offered neither, the name typed at
+the prompt matched nothing and the hour went to a *second* heading with the
+same words as the first -- which is the one outcome that cannot be undone by
+reading the file later, because both halves look right.
+
+What is waiting on somebody else is left out.  A WAIT is time they are
+spending, and it is not what an hour of yours went on."
+  (let ((day (org-foresight--day-start 0)))
+    (org-foresight-test--with-task-file
+        (concat "* ONGO clocked today\n:LOGBOOK:\nCLOCK: "
+                (format-time-string "[%Y-%m-%d %a 09:00]" day) "--"
+                (format-time-string "[%Y-%m-%d %a 10:00]" day)
+                " =>  1:00\n:END:\n"
+                "* NEXT dated today\nSCHEDULED: "
+                (format-time-string "<%Y-%m-%d %a>\n" day)
+                "* NEXT open but undated\n"
+                "* ONGO open and running\n"
+                "* WAIT waiting on somebody\n"
+                "* SDAY put down for now\n"
+                "* DONE already finished\n")
+      (let* ((org-todo-keywords
+              '((sequence "NEXT" "ONGO" "WAIT" "SDAY" "|" "DONE")))
+             (org-foresight-parked-keywords '("SDAY"))
+             (org-foresight-followup-keywords '("WAIT"))
+             (org-foresight-work '(("09:00" . "17:30")))
+             (org-foresight-workdays '(0 1 2 3 4 5 6))
+             (org-foresight--shape-cache nil)
+             (org-foresight--signals-cache nil)
+             (offered (mapcar #'car (org-foresight--clock-fill-candidates
+                                     (org-foresight-clock-scan 1)))))
+        ;; the day's own work first, then the rest of what is open
+        (should (equal '("clocked today" "dated today"
+                         "open but undated" "open and running")
+                       offered))
+        ;; and each of the three that are not yours to spend an hour on is
+        ;; still findable by name, so nothing has to be written twice
+        (dolist (name '("waiting on somebody" "put down for now"
+                        "already finished"))
+          (should-not (member name offered))
+          (should (markerp (org-foresight--heading-named name))))
+        (should-not (org-foresight--heading-named "never written anywhere"))))))
+
+(ert-deftest org-foresight-test-a-name-already-written-is-offered-its-heading ()
+  "Typing the name of a heading the list did not offer asks before writing.
+
+After the list widened, a name it does not hold is a heading that is done,
+parked, or waiting -- every one of them an ordinary thing to have spent an
+hour on, and every one of them a heading a second copy would quietly detach
+the hour from.  Asked rather than assumed: the same words can mean that
+heading or something else entirely, and only the person at the keyboard
+knows which."
+  (let ((day (org-foresight--day-start 0))
+        (asked nil))
+    (org-foresight-test--with-task-file
+        (concat "* ONGO the work\n:LOGBOOK:\nCLOCK: "
+                (format-time-string "[%Y-%m-%d %a 09:00]" day) "--"
+                (format-time-string "[%Y-%m-%d %a 10:00]" day)
+                " =>  1:00\n:END:\n"
+                "* DONE the thing finished this morning\n")
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-awake '("07:00" . "22:00"))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight--shape-cache nil)
+            (org-foresight--signals-cache nil)
+            (org-foresight-now (time-add day (* 3600 12))))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'y-or-n-p)
+                   (lambda (prompt) (push prompt asked) t))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (if (string-prefix-p "Unrecorded" prompt)
+                         (car (car (last collection)))
+                       "the thing finished this morning"))))
+          (org-foresight-clock-fill))
+        (let ((text (org-foresight-test--task-file-text)))
+          ;; it asked about that heading, and about nothing else
+          (should (= 1 (length asked)))
+          (should (string-match-p "already a heading" (car asked)))
+          ;; one heading, with the hour on it
+          (should (= 1 (cl-count "* DONE the thing finished this morning"
+                                 (split-string text "\n") :test #'equal)))
+          (should (string-match-p
+                   "\\* DONE the thing finished this morning\n\\(?:.\\|\n\\)*CLOCK:"
+                   text)))))))
+
+(ert-deftest org-foresight-test-the-evening-the-day-counted-can-be-planned ()
+  "What the capacity line spends, the plan may propose.
+
+The line above the agenda reads the hours past the end of work: it says when
+three hours of work would be finished and whether any of it overflows the
+day.  This command read only the working hours, so on the same page, about
+the same day, one half said the work would be done by the evening and the
+other refused to place a minute of it for want of budget.
+
+The working hours still come first -- they are what the hours are for -- and
+only what will not fit runs on past the end.  Those rows say so, because a
+row taking the evening is the one a reader is likeliest to decline, and `d'
+is how they do it."
+  (let ((day (org-foresight--day-start 0)))
+    (org-foresight-test--with-task-file
+        (apply #'concat
+               (mapcar (lambda (n)
+                         (concat "* NEXT task " n "\nSCHEDULED: "
+                                 (format-time-string "<%Y-%m-%d %a>\n" day)
+                                 ":PROPERTIES:\n:EFFORT: 1:00\n:END:\n"))
+                       '("one" "two" "three")))
+      (let* ((org-foresight-work '(("09:00" . "17:30")))
+             (org-foresight-awake '("07:00" . "23:00"))
+             (org-foresight-workdays '(0 1 2 3 4 5 6))
+             (org-foresight--shape-cache nil)
+             (org-foresight-now (time-add day (* 3600 16)))
+             (ends (org-foresight-work-ends day)))
+        ;; the day itself says the work runs past the end of work
+        (should (time-less-p ends (plist-get (org-foresight-capacity day)
+                                             :lands)))
+        (cl-letf (((symbol-function 'pop-to-buffer) (lambda (b &rest _) b)))
+          (org-foresight-plan-fill day))
+        (should (= 3 (length org-foresight-plan--placed)))
+        ;; the hour that is left of the working day is used first
+        (should (equal (format-time-string "%H:%M" org-foresight-now)
+                       (format-time-string
+                        "%H:%M" (plist-get (car org-foresight-plan--placed)
+                                           :start))))
+        ;; and the two that will not fit take the evening, marked
+        (let ((late (seq-filter (lambda (p)
+                                  (not (time-less-p (plist-get p :start) ends)))
+                                org-foresight-plan--placed)))
+          (should (= 2 (length late))))
+        (with-current-buffer "*Foresight Plan*"
+          (let ((lines (split-string (substring-no-properties (buffer-string))
+                                     "\n")))
+            (should (= 2 (length (seq-filter
+                                  (lambda (l) (string-search "after work" l))
+                                  lines))))
+            (should (seq-find (lambda (l)
+                                (and (string-search "task one" l)
+                                     (not (string-search "after work" l))))
+                              lines))))))))
+
 (ert-deftest org-foresight-test-the-review-says-what-it-is-holding ()
   "A buffer that holds a change until it is confirmed has to say so where
 the reader starts and where they stop -- org-capture's header line, and the
@@ -4628,8 +5186,8 @@ or the capacity and clock blocks would render empty and prove nothing."
            (clock (org-foresight-clock-scan 7)))
       (should (> (length (aref (plist-get scan :busy) 0)) 0))
       (should (> (aref (plist-get scan :committed) 0) 0))
-      (should (> (plist-get clock :today-total) 0))
-      (should (> (plist-get clock :total) (plist-get clock :today-total)))
+      (should (> (plist-get clock :day-total) 0))
+      (should (> (plist-get clock :total) (plist-get clock :day-total)))
       ;; the repeating meeting must reach the far end of the horizon
       (should (seq-some (lambda (i) (> (length (aref (plist-get scan :busy) i)) 0))
                         (number-sequence 7 13))))))
@@ -5188,7 +5746,7 @@ CLOCK: [@ 14:00]--[@ 14:20] =>  0:20
 :END:
 "
     (let* ((clock (org-foresight-clock-scan 7))
-           (tasks (plist-get clock :today-tasks))
+           (tasks (plist-get clock :day-tasks))
            (first (car tasks)))
       ;; two CLOCK lines, one task, both segments kept
       (should (= 2 (length (plist-get first :intervals))))
@@ -5202,7 +5760,7 @@ CLOCK: [@ 14:00]--[@ 14:20] =>  0:20
                                             tasks)))))
         (should (< (abs (- (org-foresight--intervals-seconds union)
                            (org-foresight--intervals-seconds
-                            (plist-get clock :today-intervals))))
+                            (plist-get clock :day-intervals))))
                    0.001))))))
 
 (ert-deftest org-foresight-test-today-tasks-know-what-arrived ()
@@ -5217,7 +5775,7 @@ clock -- asking afterwards would mean opening every one of them again."
        ":LOGBOOK:\nCLOCK: [@ 14:00]--[@ 14:40] =>  0:40\n:END:\n"
        "* NEXT Planned work\n:PROPERTIES:\n:CATEGORY: admin\n:END:\n"
        ":LOGBOOK:\nCLOCK: [@ 09:00]--[@ 10:00] =>  1:00\n:END:\n")
-    (let ((tasks (plist-get (org-foresight-clock-scan 7) :today-tasks)))
+    (let ((tasks (plist-get (org-foresight-clock-scan 7) :day-tasks)))
       (should (= 2 (length tasks)))
       (let ((arrived (seq-find (lambda (tk) (plist-get tk :surge)) tasks))
             (planned (seq-find (lambda (tk) (not (plist-get tk :surge))) tasks)))
@@ -5259,11 +5817,11 @@ CLOCK: [@ 14:00]--[@ 14:20] =>  0:20
       ;; today is the newest day, and the whole of it is today's
       (should (= 120.0 (aref (plist-get clock :byday) 6)))
       (should (equal '(("reporting" . 100.0) ("admin" . 20.0))
-                     (plist-get clock :today-rows)))
-      (should (= 120.0 (plist-get clock :today-total)))
-      (should (= 3 (plist-get clock :today-segments)))
-      (should (= 3 (length (plist-get clock :today-intervals))))
-      (should (= 2 (length (plist-get clock :today-tasks))))
+                     (plist-get clock :day-rows)))
+      (should (= 120.0 (plist-get clock :day-total)))
+      (should (= 3 (plist-get clock :day-segments)))
+      (should (= 3 (length (plist-get clock :day-intervals))))
+      (should (= 2 (length (plist-get clock :day-tasks))))
       (should (vectorp (plist-get clock :intervals-byday)))
       (should (= 3 (length (aref (plist-get clock :intervals-byday) 6)))))))
 
@@ -5281,7 +5839,7 @@ CLOCK: [@ 09:00]
     (let ((clock (org-foresight-clock-scan
                   7 (time-add (org-foresight--day-start 0)
                               (seconds-to-time (* 60 (+ (* 60 11) 30)))))))
-      (should (< (abs (- 150 (plist-get clock :today-total))) 0.001)))))
+      (should (< (abs (- 150 (plist-get clock :day-total))) 0.001)))))
 
 (ert-deftest org-foresight-test-today-tasks-are-per-entry ()
   "One drawer is one task however many CLOCK lines it holds, and it carries
@@ -5304,7 +5862,7 @@ CLOCK: [@ 13:00]--[@ 13:40] =>  0:40
 CLOCK: [@ 14:00]--[@ 14:20] =>  0:20
 :END:
 "
-    (let* ((tasks (plist-get (org-foresight-clock-scan 7) :today-tasks))
+    (let* ((tasks (plist-get (org-foresight-clock-scan 7) :day-tasks))
            (first (car tasks)))
       (should (= 2 (length tasks)))
       ;; two CLOCK lines, one task, minutes added up -- and sorted longest first
@@ -6067,6 +6625,51 @@ two-day one.  Org's own `org-agenda-current-date' is the answer."
         ;; ... and not by today's, which starts at 9:30
         (should-not (seq-find (lambda (l) (string-match-p "9:00-9:30" l)) section))))))
 
+(ert-deftest org-foresight-test-e2e-a-shortened-list-of-candidates-says-so ()
+  "A free hour names a few of the things that would fit it, and says how many
+it did not name.
+
+Three candidates and thirty are different answers -- the first means the day
+is nearly decided, the second that nothing is.  A list silently cut to three
+reads as the first whichever it was, which is the rule
+`org-foresight-report--name-run' already keeps for the line naming what can
+be given up.
+
+Asking for none is the other half.  `org-foresight-grid-suggest' offers it,
+the docstring promises it, and the grid was reading nil as \"no limit\" --
+so the setting that asks for a quiet grid produced the loudest one there
+is, every task that fits, on every gap of the day."
+  (org-foresight-test--with-agenda
+      (concat "* NEXT write the report\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 0:30\n:END:\n"
+              "* NEXT call the bank\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 0:25\n:END:\n"
+              "* NEXT read the contract\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 0:20\n:END:\n"
+              "* NEXT water the plants\nSCHEDULED: " (org-foresight-test--stamp 0)
+              "\n:PROPERTIES:\n:EFFORT: 0:15\n:END:\n")
+    (let* ((org-foresight-work '(("09:00" . "17:30")))
+           (org-foresight--shape-cache nil)
+           (named (lambda ()
+                    (seq-filter (lambda (l) (string-match-p "↳ NEXT" l))
+                                (org-foresight-test--agenda))))
+           (counted (lambda ()
+                      (seq-filter (lambda (l) (string-match-p "more fit here" l))
+                                  (org-foresight-test--agenda)))))
+      ;; four fit the day and three are named, so one is counted
+      (let ((org-foresight-grid-suggest 3))
+        (should (= 3 (length (funcall named))))
+        (should (seq-find (lambda (l) (string-search "+1 more fit here" l))
+                          (funcall counted))))
+      ;; name them all and there is nothing left to count
+      (let ((org-foresight-grid-suggest 10))
+        (should (= 4 (length (funcall named))))
+        (should-not (funcall counted)))
+      ;; name none and the grid is quiet -- including about how quiet it is
+      (let ((org-foresight-grid-suggest nil))
+        (should-not (funcall named))
+        (should-not (funcall counted))))))
+
 (ert-deftest org-foresight-test-e2e-a-gap-only-offers-what-it-can-hold ()
   "Work that named a place is offered in the hours spent there, and nowhere else.
 
@@ -6255,9 +6858,9 @@ names which clock segments count as work that arrived."
                          :surge (and (memq i surge-titles) t)
                          :intervals (list iv)))
                  ivs)))
-    (list (list :today-intervals (org-foresight--intervals-normalize
+    (list (list :day-intervals (org-foresight--intervals-normalize
                                   (copy-sequence ivs))
-                :today-tasks tasks)
+                :day-tasks tasks)
           (and afk-specs
                (list :afk-ivs (apply #'org-foresight-test--ivs afk-specs))))))
 
@@ -6403,7 +7006,27 @@ to say why."
       (should (equal '("10:30-12:00" "12:00-13:00" "13:00-14:00")
                      (mapcar (lambda (g) (car (org-foresight-test--hhmm
                                                (list (car g)))))
-                             (org-foresight--clock-gaps behind)))))))
+                             (org-foresight--clock-gaps behind)))))
+    ;; and it holds with the day cut up, which is how the command asks.  A
+    ;; cut two minutes after a clock stopped makes a two-minute piece; drop
+    ;; that and the two figures disagree by two minutes with nothing able to
+    ;; say which two.
+    (let* ((cuts (list (org-foresight-test--ts 10 32 10)
+                       (org-foresight-test--ts 11 0 10)
+                       (org-foresight-test--ts 13 58 10)))
+           (cut-gaps (org-foresight--clock-gaps behind cuts)))
+      (should (= (+ (plist-get behind :unclocked-min) (plist-get behind :away-min))
+                 (/ (org-foresight--intervals-seconds
+                     (org-foresight--intervals-normalize
+                      (mapcar #'car cut-gaps)))
+                    60.0)))
+      ;; the cut that divides is made, the two that would leave a sliver
+      ;; are not
+      (should (equal '("09:00-09:15" "10:30-11:00" "11:00-12:00"
+                       "12:00-13:00" "13:00-14:00")
+                     (mapcar (lambda (g) (car (org-foresight-test--hhmm
+                                               (list (car g)))))
+                             cut-gaps))))))
 
 (defmacro org-foresight-test--with-task-file (text &rest body)
   "Run BODY with TEXT written to a real file bound as the task file."
@@ -6461,7 +7084,7 @@ recorded nothing."
              (task (seq-find (lambda (task)
                                (equal (plist-get task :title)
                                       "a call from procurement"))
-                             (plist-get clock :today-tasks))))
+                             (plist-get clock :day-tasks))))
         (should task)
         (should (= 30.0 (plist-get task :minutes)))
         (should (plist-get task :surge))))))
@@ -6501,6 +7124,61 @@ PART is 0 for the earlier half and 1 for the later one."
          (org-foresight-clock-split))
        ,@body)))
 
+(ert-deftest org-foresight-test-dividing-a-spell-can-name-a-journey ()
+  "The half of an hour that was really the drive is filed as the drive.
+
+Two claims, and the commute clocked onto the task before it needs both.  It
+has to be filed as a journey -- an ordinary entry records the hour and
+leaves the derivation standing, so the day reserves the same trip again --
+and it has to be findable at the prompt.  The day\='s own entries carry it
+already, but behind everything clocked so far, which by the time an hour is
+being divided is a long way down a list; `org-foresight-clock-fill' gathers
+journeys to the front for exactly that reason and this command was not."
+  (let ((day (org-foresight--day-start 0))
+        offered)
+    (org-foresight-test--with-task-file
+        (concat "* ONGO alpha\n:LOGBOOK:\nCLOCK: "
+                (format-time-string "[%Y-%m-%d %a 12:00]" day) "--"
+                (format-time-string "[%Y-%m-%d %a 13:00]" day)
+                " =>  1:00\n:END:\n"
+                "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:LOCATION: office\n:END:\n"
+                (format-time-string "<%Y-%m-%d %a 13:00-14:00>\n" day))
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight-clock-fill-kinds nil)
+            (org-foresight-places '((office . "office")))
+            (org-foresight-home-place 'home)
+            (org-foresight-travel-matrix '(((home . office) . 30)
+                                           ((office . home) . 30)))
+            (org-foresight--shape-cache nil)
+            (org-foresight-now (time-add day (* 3600 15))))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'read-string) (lambda (&rest _) "12:30"))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (cond
+                      ((string-prefix-p "Divide" prompt) (car (car collection)))
+                      ((string-prefix-p "Which part" prompt)
+                       (car (nth 1 collection)))
+                      (t (setq offered collection)
+                         "→ office")))))
+          (org-foresight-clock-split))
+        (let ((text (org-foresight-test--task-file-text)))
+          ;; offered where it can be found: ahead of the day's own entries,
+          ;; not behind the task the drive was wrongly clocked onto
+          (should (member "→ office" offered))
+          (should (< (seq-position offered "→ office")
+                     (seq-position offered "alpha")))
+          ;; and it was written as a journey, not as a plain entry
+          (should (string-match-p
+                   (concat "\\* → office\n\\(?:.\\|\n\\)*"
+                           org-foresight-travel-property ": office")
+                   text))
+          (should (string-match-p "12:30\\]--\\[[^]]*13:00\\]" text))
+          ;; alpha keeps the half that was its own
+          (should (string-match-p "12:00\\]--\\[[^]]*12:30\\]" text)))))))
+
 (ert-deftest org-foresight-test-dividing-a-spell-moves-time-and-makes-none ()
   "The minutes change hands; the day is exactly as long as it was.
 
@@ -6511,7 +7189,7 @@ mistake being corrected, because both are invisible in a total."
   (let (before after)
     (org-foresight-test--divide 1
       (setq after (org-foresight-test--task-file-text))
-      (setq before (plist-get (org-foresight-clock-scan 1) :today-total)))
+      (setq before (plist-get (org-foresight-clock-scan 1) :day-total)))
     ;; alpha keeps the first half, beta gains the second, and beta's own
     ;; spell is untouched
     (should (string-match-p "09:00\\]--\\[[^]]*10:00\\]" after))
@@ -6785,6 +7463,34 @@ the cuts for itself would pass whatever the command did with either."
       (org-foresight-clock-fill))
     offered))
 
+(ert-deftest org-foresight-test-a-cut-that-would-make-a-sliver-is-not-made ()
+  "The pieces of a stretch add up to the stretch, cut or not -- and a piece
+too short to be worth offering is not made in the first place.  Cutting and
+then dropping the short pieces is how minutes go missing between the bar
+that measured them and the list that offers them."
+  (let ((a (org-foresight-test--ts 9 0))
+        (b (org-foresight-test--ts 9 2))
+        (c (org-foresight-test--ts 10 0))
+        (least (* 60 5)))
+    ;; two minutes in, with five as the least: not a cut
+    (should (equal (list (cons a c))
+                   (org-foresight--intervals-split (list (cons a c))
+                                                   (list b) least)))
+    ;; and two minutes from the end, likewise
+    (should (equal (list (cons a c))
+                   (org-foresight--intervals-split
+                    (list (cons a c))
+                    (list (org-foresight-test--ts 9 58)) least)))
+    ;; well inside, it is
+    (let ((mid (org-foresight-test--ts 9 30)))
+      (should (equal (list (cons a mid) (cons mid c))
+                     (org-foresight--intervals-split (list (cons a c))
+                                                     (list mid) least))))
+    ;; with no least asked for, every moment inside cuts
+    (should (equal (list (cons a b) (cons b c))
+                   (org-foresight--intervals-split (list (cons a c))
+                                                   (list b))))))
+
 (ert-deftest org-foresight-test-a-cut-on-the-edge-is-not-a-cut ()
   "Strictly inside, or the same stretch comes back as itself plus nothing:
 a moment that coincides with an end divides no time at all, and a zero-long
@@ -6815,6 +7521,49 @@ nothing happening in the afternoon, the afternoon is one stretch."
   (org-foresight-test--with-clocked-morning ""
     (should (equal '("06:50-09:15  2:25  (at the keyboard)"
                      "10:30-21:00  10:30  (at the keyboard)")
+                   (org-foresight-test--holes)))))
+
+(ert-deftest org-foresight-test-an-hour-in-the-heading-is-an-hour-in-the-day ()
+  "Where the stamp was written does not change what it says.
+
+`* Lunch <... 12:00-13:00>' is drawn by Org's own agenda like any other
+appointment, so a person who writes one has every reason to think the hour
+is claimed.  Read only from the body, the day would look full on the screen
+and measure empty underneath -- and the title is the title, not the title
+with the hour printed inside it a second time."
+  (let* ((day (org-foresight--day-start 0))
+         (stamp (format-time-string "<%Y-%m-%d %a 12:00-13:00>" day))
+         (read (lambda (text)
+                 (org-foresight-test--with-task-file text
+                   (let* ((org-foresight--shape-cache nil)
+                          (scan (org-foresight-scan 1 day)))
+                     (list (org-foresight-scan-day scan :busy day)
+                           (mapcar (lambda (r) (plist-get r :title))
+                                   (org-foresight-scan-day scan :ledger day))))))))
+    (let ((in-heading (funcall read (concat "* Lunch " stamp " :food:\n")))
+          (in-body (funcall read (concat "* Lunch\n" stamp "\n"))))
+      (should (equal in-heading in-body))
+      (should (equal '("Lunch") (nth 1 in-heading)))
+      (should (= 1 (length (nth 0 in-heading))))
+      (should (equal "12:00-13:00"
+                     (format "%s-%s"
+                             (format-time-string "%H:%M" (car (car (nth 0 in-heading))))
+                             (format-time-string "%H:%M" (cdr (car (nth 0 in-heading))))))))))
+
+(ert-deftest org-foresight-test-a-meeting-cuts-the-day-from-its-heading-too ()
+  "The same meeting, its hour written beside the title instead of beneath
+it, still divides the afternoon.  Everything downstream reads one function
+for when an entry happens, so a stamp it cannot see is a meeting that never
+happened -- no cut, no preparation, no hour spoken for."
+  (org-foresight-test--with-clocked-morning
+      (concat "* Weekly review "
+              (format-time-string "<%Y-%m-%d %a 14:00-15:00>"
+                                  (org-foresight--day-start 0))
+              "\n:PROPERTIES:\n:CATEGORY: meeting\n:END:\n")
+    (should (equal '("06:50-09:15  2:25  (at the keyboard)"
+                     "10:30-14:00  3:30  (at the keyboard)"
+                     "14:00-15:00  1:00  (at the keyboard)"
+                     "15:00-21:00  6:00  (at the keyboard)")
                    (org-foresight-test--holes)))))
 
 (ert-deftest org-foresight-test-a-meeting-cuts-the-day-and-a-plan-does-not ()
@@ -6948,9 +7697,9 @@ the working day.  Same word, same rule, opposite directions."
          (dentist (car (org-foresight-test--ivs '(10 0 11 0 10))))
          (real-work (car (org-foresight-test--ivs '(13 0 14 0 10))))
          (evening (car (org-foresight-test--ivs '(18 0 19 0 10))))
-         (clock (list :today-intervals (list dentist real-work evening)
-                      :today-private-intervals (list dentist evening)
-                      :today-tasks nil))
+         (clock (list :day-intervals (list dentist real-work evening)
+                      :day-private-intervals (list dentist evening)
+                      :day-tasks nil))
          (behind (org-foresight-behind day clock nil now)))
     ;; the hour at the dentist is lent out, not worked
     (should (= 60.0 (plist-get behind :borrowed-min)))
@@ -8057,8 +8806,8 @@ to read as \"nothing is watching\" rather than as \"you did nothing\"."
              (lambda (&rest _) nil)))
     (let* ((org-foresight-observe--cache nil)
            (clock (list :rows nil :total 0 :days 7 :byday (make-vector 7 0)
-                        :today-rows nil :today-total 0 :today-segments 0
-                        :today-intervals nil :today-tasks nil))
+                        :day-rows nil :day-total 0 :day-segments 0
+                        :day-intervals nil :day-tasks nil))
            (text (substring-no-properties (org-foresight-report-spent clock))))
       (should (string-match-p "ActivityWatch" text)))))
 
@@ -8141,7 +8890,7 @@ hour and a half of itself."
     (org-foresight-test--with-org
         (concat "* Standup\n:PROPERTIES:\n:CATEGORY: meeting\n:LOCATION: office\n:END:\n"
                 (org-foresight-test--stamp 0 "13:00" "14:00") "\n")
-      (let* ((clock (list :today-tasks nil))
+      (let* ((clock (list :day-tasks nil))
              (known (org-foresight--clock-fill-candidates clock))
              (journey (assoc "→ office" known)))
         ;; offered
