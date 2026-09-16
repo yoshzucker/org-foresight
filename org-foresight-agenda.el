@@ -477,18 +477,31 @@ the key you would have pressed anyway."
                               'face 'shadow)))
         "" (org-foresight-agenda--span start (plist-get b :end))
         'org-foresight-agenda-free nil nil)
-       (seq-keep
-        (lambda (e)
-          (org-foresight-agenda--item
-           (concat (org-foresight-report--grid-todo (plist-get e :marker))
-                   (or (plist-get e :title) "?")
-                   " "
-                   (org-foresight-report--effort-run e))
-           (or (plist-get e :category) "")
-           at 'shadow (plist-get e :marker) nil "↳"))
-        (if (natnump org-foresight-grid-suggest)
-            (seq-take fits org-foresight-grid-suggest)
-          fits))))))
+       (let* ((shown (and (natnump org-foresight-grid-suggest)
+                          (seq-take fits org-foresight-grid-suggest)))
+              (hidden (- (length fits) (length shown))))
+         (append
+          (seq-keep
+           (lambda (e)
+             (org-foresight-agenda--item
+              (concat (org-foresight-report--grid-todo (plist-get e :marker))
+                      (or (plist-get e :title) "?")
+                      " "
+                      (org-foresight-report--effort-run e))
+              (or (plist-get e :category) "")
+              at 'shadow (plist-get e :marker) nil "↳"))
+           shown)
+          ;; What did not fit is counted rather than dropped -- the rule
+          ;; `org-foresight-report--name-run' states and this list was not
+          ;; keeping: three things that fit the hour and thirty are
+          ;; different answers, and a list silently cut to three gives the
+          ;; first of them either way.  Nothing is counted where nothing was
+          ;; asked for: naming none is a request for a quiet grid, not for a
+          ;; row saying how quiet it is.
+          (when (and shown (> hidden 0))
+            (list (org-foresight-agenda--item
+                   (format "+%d more fit here" hidden)
+                   "" at 'shadow nil nil "↳")))))))))
 
 (defun org-foresight-agenda--gaps (bands cap ledger &optional day)
   "Return the rows for every free stretch among BANDS, given CAP and LEDGER.
@@ -1413,7 +1426,7 @@ Reset by any row that carries an entry and names it.")
   "Return the heading MARKER points at, or nil."
   (and (markerp marker) (marker-buffer marker)
        (ignore-errors
-         (org-with-point-at marker (org-get-heading t t t t)))))
+         (org-with-point-at marker (org-foresight--entry-title)))))
 
 (defun org-foresight-agenda--name-rows ()
   "Write on every row of this page which heading it was drawn from.

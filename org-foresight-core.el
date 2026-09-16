@@ -124,18 +124,31 @@ Returns a fresh, sorted, disjoint list; never mutates IVS."
         (if (time-less-p ae be) (setq a (cdr a)) (setq b (cdr b)))))
     (nreverse out)))
 
-(defun org-foresight--intervals-split (intervals times)
+(defun org-foresight--intervals-split (intervals times &optional least)
   "Cut INTERVALS at each of TIMES that falls strictly inside one.
 
 A stretch of unrecorded time is one stretch only until something really
 happened in the middle of it.  What counts as really happening is the
-caller\='s business; this is the arithmetic."
+caller\='s business; this is the arithmetic.
+
+LEAST, in seconds, is the shortest piece worth making.  A cut that would
+leave either side shorter than that is not made and the moment passes
+inside the stretch -- a meeting beginning two minutes after a clock
+stopped would otherwise leave those two minutes standing alone, which is
+a row nobody can answer and a row the caller is about to drop.  Nothing
+is ever dropped here: the pieces of a stretch add up to the stretch,
+whether it was cut once, twice or not at all."
   (let ((cuts (seq-sort #'time-less-p (copy-sequence times)))
         out)
     (dolist (iv intervals (nreverse out))
       (let ((start (car iv)))
         (dolist (at cuts)
-          (when (and (time-less-p start at) (time-less-p at (cdr iv)))
+          (when (and (time-less-p start at)
+                     (time-less-p at (cdr iv))
+                     (or (null least)
+                         (and (>= (float-time (time-subtract at start)) least)
+                              (>= (float-time (time-subtract (cdr iv) at))
+                                  least))))
             (push (cons start at) out)
             (setq start at)))
         (push (cons start (cdr iv)) out)))))
@@ -219,6 +232,24 @@ them rather than with the options of either."
   (let ((d (decode-time (current-time))))
     (encode-time 0 0 0 (- (nth 3 d) (or day-offset 0)) (nth 4 d) (nth 5 d))))
 
+(defun org-foresight--entry-title ()
+  "Return the heading at point as a title to show, without its timestamps.
+
+`org-get-heading' drops the keyword, the priority and the tags but keeps a
+stamp written into the heading line, and Org's own agenda does not print
+one: it draws `12:00-13:00 Lunch', with the hour in the time column where
+it belongs.  A row here reading `12:00-13:00  Lunch <2026-09-16 Wed
+12:00-13:00>' says the same thing twice and spends half of eighty columns
+doing it.
+
+Used for every title this package carries, including the ones it later
+compares against a heading to find it again -- one rule for reading a
+title, or the same heading answers to two different names."
+  (string-trim
+   (replace-regexp-in-string
+    "[ \t]\\{2,\\}" " "
+    (replace-regexp-in-string org-ts-regexp-both "" (org-get-heading t t t t)))))
+
 (defun org-foresight--clock-charge-task (table cat minutes iv &optional day)
   "Add MINUTES and the segment IV under CAT to TABLE for the entry point is in.
 
@@ -249,7 +280,7 @@ opening every one of them a second time."
       (puthash key
                (save-excursion
                  (goto-char head)
-                 (list :title (org-get-heading t t t t)
+                 (list :title (org-foresight--entry-title)
                        :category cat
                        :todo (org-get-todo-state)
                        :effort (org-foresight--duration-minutes
@@ -260,9 +291,9 @@ opening every one of them a second time."
                        :minutes minutes))
                table))))
 
-(defun org-foresight-clock-scan (days &optional now)
+(defun org-foresight-clock-scan (days &optional now day)
   "Scan `org-agenda-files' LOGBOOK CLOCK lines over the last DAYS days
-\(today inclusive) in one pass.  A running clock (no end timestamp) is
+\(DAY inclusive, today by default) in one pass.  A running clock (no end timestamp) is
 closed at NOW, the current time by default, so its elapsed-so-far time always
 counts -- every
 consumer built on this plist agrees on whether \"now\" is included, unlike
@@ -271,17 +302,23 @@ the three separate hand-rolled scans this replaces.  Return a plist:
 :total          whole-window total minutes
 :byday          DAYS-length vector of per-day minutes, index 0 = oldest
 :days           DAYS
-:today-rows     (CATEGORY . MINUTES) alist for today only, desc
-:today-total    today's total minutes
-:today-segments today's clock-segment count (fragmentation)
-:today-intervals  today's (START . END) time conses, every clock alike
-:today-private-intervals  the subset of them clocked against a private
+:day-rows     (CATEGORY . MINUTES) alist for DAY alone, desc
+:day-total    DAY's total minutes
+
+The `:day-\=' group is the newest day of the window rather than today as
+such.  A record is corrected the morning after as often as the evening of --
+the clock nobody started yesterday is noticed today -- and a survey that
+could only be taken of today was a correction that could only be made on the
+day the mistake was made.
+:day-segments DAY's clock-segment count (fragmentation)
+:day-intervals  DAY's (START . END) time conses, every clock alike
+:day-private-intervals  the subset of them clocked against a private
                 category.  A clock is a clock -- the watcher's leak and lost
                 are measured against all of them -- but only some of it is
                 work, and telling which is what stops an hour at the dentist
                 being reported as an hour of the day's work
-:today-tasks    plists (:title :category :todo :effort :marker :minutes
-                :intervals :surge) for every entry clocked today, desc by
+:day-tasks    plists (:title :category :todo :effort :marker :minutes
+                :intervals :surge) for every entry clocked on DAY, desc by
                 minutes.  EFFORT is the estimate in minutes or nil; MARKER
                 points at the heading, so a row built from one of these answers
                 to the agenda's commands; INTERVALS are the segments
@@ -295,25 +332,26 @@ the three separate hand-rolled scans this replaces.  Return a plist:
                   normalized; a segment is filed under the day it starts in,
                   matching how :byday attributes minutes.
 Each segment is attributed once to its heading's inherited CATEGORY, so
-:rows/:today-rows partition their window (minutes sum to :total/:today-total).
+:rows/:day-rows partition their window (minutes sum to :total/:day-total).
 The org hierarchy depth is irrelevant: CATEGORY is inherited, so a GTD
 project marked with `:CATEGORY:' at any level collects all descendant clocks."
-  (let* ((today0 (org-foresight--day-start 0))
-         (today1 (time-add today0 (days-to-time 1)))
-         (from (org-foresight--day-start (1- days)))
+  (let* ((day0 (if day (org-foresight--midnight day)
+                   (org-foresight--day-start 0)))
+         (day1 (time-add day0 (days-to-time 1)))
+         (from (time-subtract day0 (days-to-time (1- days))))
          (now (or now (current-time)))
          (table (make-hash-table :test 'equal))
-         (today-table (make-hash-table :test 'equal))
+         (day-table (make-hash-table :test 'equal))
          (byday (make-vector days 0))
          (rows-byday (make-vector days nil))
          (intervals-byday (make-vector days nil))
-         (total 0) (today-total 0) (today-segments 0)
-         ;; Per-entry totals for today, keyed on the heading itself so several
+         (total 0) (day-total 0) (day-segments 0)
+         ;; Per-entry totals for DAY, keyed on the heading itself so several
          ;; CLOCK lines in one drawer add up.  Gathered here rather than by a
          ;; second pass: the same LOGBOOK is already open under point, and the
          ;; heading's own data is one `org-back-to-heading' away.
-         (today-tasks (make-hash-table :test 'equal))
-         today-intervals today-private-intervals
+         (day-tasks (make-hash-table :test 'equal))
+         day-intervals day-private-intervals
          (re (concat "^[ \t]*" org-clock-string
                      "[ \t]*\\(\\[[^]\n]+\\]\\)\\(?:--\\(\\[[^]\n]+\\]\\)\\)?")))
     (dolist (file (org-agenda-files))
@@ -327,9 +365,9 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                   (e-str (match-string-no-properties 2))
                   (s (org-time-string-to-time s-str))
                   (e (if e-str (org-time-string-to-time e-str) now)))
-             (when (and (time-less-p s e) (time-less-p from e) (time-less-p s today1))
+             (when (and (time-less-p s e) (time-less-p from e) (time-less-p s day1))
                (let* ((cs (if (time-less-p s from) from s))
-                      (ce (if (time-less-p today1 e) today1 e))
+                      (ce (if (time-less-p day1 e) day1 e))
                       (dur (/ (float-time (time-subtract ce cs)) 60.0))
                       (cat (or (org-entry-get (point) org-foresight-clock-property t)
                                "?"))
@@ -350,42 +388,42 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                      (aset rows-byday idx
                            (cons (cons cat dur) (aref rows-byday idx)))))
                  (push (cons cs ce) (aref intervals-byday idx))
-                 ;; The portion of this segment (if any) inside today.
-                 (when (time-less-p today0 ce)
-                   (let ((ts (if (time-less-p cs today0) today0 cs)))
+                 ;; The portion of this segment (if any) inside DAY.
+                 (when (time-less-p day0 ce)
+                   (let ((ts (if (time-less-p cs day0) day0 cs)))
                      (when (time-less-p ts ce)
-                       (let ((today-dur (/ (float-time (time-subtract ce ts)) 60.0)))
-                         (setq today-total (+ today-total today-dur)
-                               today-segments (1+ today-segments))
-                         (puthash cat (+ today-dur (gethash cat today-table 0))
-                                  today-table)
-                         (push (cons ts ce) today-intervals)
+                       (let ((day-dur (/ (float-time (time-subtract ce ts)) 60.0)))
+                         (setq day-total (+ day-total day-dur)
+                               day-segments (1+ day-segments))
+                         (puthash cat (+ day-dur (gethash cat day-table 0))
+                                  day-table)
+                         (push (cons ts ce) day-intervals)
                          ;; Kept apart rather than dropped.  A clock running
                          ;; on a private entry is a clock running -- it is
                          ;; not leak, and the watcher's account must go on
                          ;; seeing it -- but it is not work, and the hours it
                          ;; covers are hours work lent out rather than spent.
                          (when (member cat org-foresight-private-categories)
-                           (push (cons ts ce) today-private-intervals))
+                           (push (cons ts ce) day-private-intervals))
                          (org-foresight--clock-charge-task
-                          today-tasks cat today-dur (cons ts ce)
-                          today0))))))))))))
+                          day-tasks cat day-dur (cons ts ce)
+                          day0))))))))))))
     (dotimes (i days)
       (aset intervals-byday i
             (org-foresight--intervals-normalize (aref intervals-byday i))))
-    (let (rows today-rows tasks)
+    (let (rows day-rows tasks)
       (maphash (lambda (k v) (push (cons k v) rows)) table)
-      (maphash (lambda (k v) (push (cons k v) today-rows)) today-table)
-      (maphash (lambda (_ v) (push v tasks)) today-tasks)
+      (maphash (lambda (k v) (push (cons k v) day-rows)) day-table)
+      (maphash (lambda (_ v) (push v tasks)) day-tasks)
       (list :rows (seq-sort-by #'cdr #'> rows)
             :total total :byday byday :days days
-            :today-rows (seq-sort-by #'cdr #'> today-rows)
-            :today-total today-total :today-segments today-segments
-            :today-intervals (nreverse today-intervals)
-            :today-private-intervals
+            :day-rows (seq-sort-by #'cdr #'> day-rows)
+            :day-total day-total :day-segments day-segments
+            :day-intervals (nreverse day-intervals)
+            :day-private-intervals
             (org-foresight--intervals-normalize
-             (nreverse today-private-intervals))
-            :today-tasks (seq-sort-by (lambda (e) (plist-get e :minutes)) #'> tasks)
+             (nreverse day-private-intervals))
+            :day-tasks (seq-sort-by (lambda (e) (plist-get e :minutes)) #'> tasks)
             :rows-byday rows-byday
             :intervals-byday intervals-byday))))
 
@@ -492,7 +530,7 @@ and the rest were being priced for nobody."
       (let ((cat (if facts (plist-get facts :category)
                    (org-entry-get (point) "CATEGORY" t))))
         (list :title (if facts (plist-get facts :title)
-                       (org-get-heading t t t t))
+                       (org-foresight--entry-title))
               :marker (point-marker)
               :level (org-current-level)
               :todo todo
@@ -882,6 +920,20 @@ so callers must not read a non-nil end as \"this has a duration\"; use
                           (nth 4 d) (+ (nth 5 d) n))))
     (_ (time-add time (days-to-time n)))))
 
+(defun org-foresight--ts-repeats-p (el)
+  "Non-nil when EL is a timestamp that stands for more than one occasion.
+
+A `.+\=' restart repeater is not one, for the reason
+`org-foresight--ts-occurrences\=' gives: its next date depends on when the
+work is actually finished, so there is no second occasion to be read off the
+stamp.  Neither is a repeater with no number to repeat by.
+
+One reading of the question, because two would disagree: what may be walked
+forward through a window is exactly what may not be folded onto today."
+  (let ((rtype (org-element-property :repeater-type el))
+        (rval (org-element-property :repeater-value el)))
+    (and rtype (not (eq rtype 'restart)) rval (>= rval 1))))
+
 (defun org-foresight--ts-occurrences (el from to)
   "Return (START . END) pairs for timestamp EL that touch \[FROM, TO).
 A repeater is expanded forward through the window.  A `.+' (restart) repeater
@@ -890,14 +942,13 @@ predicting occupancy from it would be invention rather than measurement."
   (let* ((start (org-foresight--ts-start el))
          (end (org-foresight--ts-end el))
          (span (float-time (time-subtract end start)))
-         (rtype (org-element-property :repeater-type el))
          (rval (org-element-property :repeater-value el))
          (runit (org-element-property :repeater-unit el))
          out)
     ;; An all-day or untimed stamp has END equal to START, so the window test
     ;; must accept a zero-length occurrence sitting exactly on FROM -- testing
     ;; `from < end' would silently drop every untimed entry on the first day.
-    (if (or (null rtype) (eq rtype 'restart) (null rval) (< rval 1))
+    (if (not (org-foresight--ts-repeats-p el))
         (when (and (time-less-p start to) (not (time-less-p end from)))
           (push (cons start end) out))
       ;; Jump straight to the first occurrence at or after FROM where the unit
@@ -924,11 +975,59 @@ predicting occupancy from it would be invention rather than measurement."
    (org-entry-get (point) "EFFORT")
    (org-foresight--duration-minutes org-foresight-default-effort 30.0)))
 
+(defun org-foresight--entry-scheduled ()
+  "Return the entry\='s SCHEDULED timestamp as a parsed element, or nil."
+  (save-excursion
+    (org-back-to-heading t)
+    (let ((meta-end (save-excursion (org-end-of-meta-data t) (point))))
+      (when (and (re-search-forward (concat "\\<" org-scheduled-string) meta-end t)
+                 (re-search-forward org-ts-regexp (line-end-position) t))
+        (goto-char (match-beginning 0))
+        (org-element-timestamp-parser)))))
+
+(defun org-foresight--entry-schedule-gone-p ()
+  "Non-nil when the entry at point is scheduled for a day that has passed.
+
+A date in the past is not a claim on the past.  It is a plan that failed,
+and the work it was made for is still to be done -- so the day it belongs
+to is today, and every figure this package draws has to answer for it.
+Left where it was written it is nowhere: no capacity spent, no row in the
+ledger, nothing offered a time, and the only view it survives in is Org\='s
+own agenda.  Which is worse than it sounds: a task that cannot be given an
+hour today cannot be given one at all without being rescheduled by hand
+first, so the hours that never got planned are exactly the hours nothing
+could plan.
+
+`org-foresight--project-units\=' has kept this rule for a deadline that has
+gone by from the start -- \"the work is real and takes hours that exist;
+its window is not\" -- and only SCHEDULED was left out of it.
+
+Nothing is claimed here but the date.  The work is folded onto today
+exactly as though it had been scheduled for today, so whatever a keyword, a
+place or an estimate means there, it means here.
+
+A repeating stamp is not folded.  It names a next occasion of its own and
+that occasion is a real future date; folding a missed one onto today would
+put the same work on the day twice."
+  (when-let ((el (org-foresight--entry-scheduled)))
+    (and (not (org-foresight--ts-repeats-p el))
+         (time-less-p (org-foresight--midnight (org-foresight--ts-start el))
+                      (org-foresight--day-start 0)))))
+
 (defun org-foresight--entry-timestamps ()
   "Return the parsed active timestamps that place the entry at point in time.
-That is the SCHEDULED stamp plus any plain active stamps in the entry's own
-body, stopping before the first child.  DEADLINE is deliberately excluded: a
-deadline says when work must be finished, not which stretch of a day it eats."
+That is any stamp written into the heading line itself, the SCHEDULED stamp,
+and any plain active stamps in the entry's own body, stopping before the
+first child.  DEADLINE is deliberately excluded: a deadline says when work
+must be finished, not which stretch of a day it eats.
+
+The heading line counts because Org counts it: `* Lunch <... 12:00-13:00>'
+is drawn in Org's own agenda like any other appointment, and writing the
+hour beside the title is an ordinary way to note one.  A stamp that is on
+the screen but not in the model is the worst of the two -- the day looks
+full and measures empty, so every figure built from here, from the capacity
+bar down to what is offered to fill, is short by the length of it and can
+say nothing about why."
   (let (out)
     (save-excursion
       (org-back-to-heading t)
@@ -941,10 +1040,15 @@ deadline says when work must be finished, not which stretch of a day it eats."
                              subtree-end))))
         (save-excursion
           (org-back-to-heading t)
-          (when (re-search-forward (concat "\\<" org-scheduled-string) meta-end t)
-            (when (re-search-forward org-ts-regexp (line-end-position) t)
+          (let ((eol (line-end-position)))
+            (while (re-search-forward org-ts-regexp eol t)
               (goto-char (match-beginning 0))
-              (push (org-element-timestamp-parser) out))))
+              (let ((el (org-element-timestamp-parser)))
+                (push el out)
+                (goto-char (max (1+ (point))
+                                (org-element-property :end el)))))))
+        (when-let ((sched (org-foresight--entry-scheduled)))
+          (push sched out))
         (goto-char meta-end)
         (while (re-search-forward org-ts-regexp body-limit t)
           (goto-char (match-beginning 0))
@@ -1108,8 +1212,17 @@ the calendar used to look like a day at home."
          ;; and without this the backward search happily puts the second
          ;; journey before the first.
          (since (car (car work)))
-         (opens (car (car work)))
-         (closes (cdr (car (last work))))
+         ;; When the day opens and closes for the purpose of placing a
+         ;; journey: the working hours where there are any, the waking day
+         ;; where there are none.  The fallback is the one
+         ;; `org-foresight-day-place-spans\=' already keeps for the same
+         ;; question, and without it a day off had no closing time to pin a
+         ;; journey home to -- so the errand\='s leg out was derived and the
+         ;; leg back was not, and every question about where the body was
+         ;; after a Saturday appointment answered "still there".
+         (awake (plist-get (org-foresight-day-shape day) :awake))
+         (opens (if work (car (car work)) (car awake)))
+         (closes (if work (cdr (car (last work))) (cdr awake)))
          out)
     (cl-labels
         ((plan (to pin)
@@ -1213,7 +1326,12 @@ the calendar used to look like a day at home."
       ;; getting back lands after the moment you would have to set off home
       ;; anyway, going back is a journey to nowhere, and the leg below takes
       ;; you straight home.
-      (when (and work (not (eq here base)))
+      ;; On any day, not only a working one: what took you out is over on a
+      ;; Saturday too, and the journey back is the same journey.  Only the
+      ;; leg *in* is about work -- there is nothing to go in for on a day
+      ;; with no hours in it -- and reading all three as one thing left the
+      ;; day off with a way there and no way back.
+      (when (not (eq here base))
         (let ((must-leave (time-subtract
                            closes
                            (* 60 (org-foresight--travel-minutes
@@ -1236,7 +1354,7 @@ the calendar used to look like a day at home."
       ;; pins the arrival on the way in.  The journey runs past the end of
       ;; the day and is counted as borrowed, because that is what it is: an
       ;; hour of the evening the day took without asking.
-      (when (and work (not (eq here org-foresight-home-place)))
+      (when (not (eq here org-foresight-home-place))
         (let* ((mins (org-foresight--travel-minutes here org-foresight-home-place))
                (held (and since
                           (time-less-p (time-subtract closes (* 60 mins)) since)
@@ -1651,6 +1769,10 @@ a done-type keyword such as DELEG drops out too."
          (now (or now (current-time)))
          (from0 (org-foresight--midnight from))
          (to (time-add from0 (days-to-time days)))
+         ;; Where today falls in this survey, which is where work whose date
+         ;; has gone is folded to.  Outside it -- a survey of a week ahead --
+         ;; nothing is folded: there is no today in it to fold onto.
+         (today-idx (org-foresight--day-of (org-foresight--day-start 0) from0))
          (busy (make-vector days nil))
          (committed (make-vector days 0.0))
          (surged (make-vector days 0.0))
@@ -1698,7 +1820,7 @@ a done-type keyword such as DELEG drops out too."
                        ;; difference decides how long an appointment lasts.
                        (effort-written (org-entry-get (point) "EFFORT"))
                        (clocked (org-foresight--entry-clocked-minutes now))
-                       (title (org-get-heading t t t t))
+                       (title (org-foresight--entry-title))
                        (marker (point-marker))
                        (location (org-entry-get (point) "LOCATION"))
                        ;; A journey somebody wrote down, and where it goes.
@@ -1716,7 +1838,10 @@ a done-type keyword such as DELEG drops out too."
                        (attention (org-foresight--entry-attention category))
                        ;; day index -> the kind of claim seen there, so one
                        ;; entry cannot be charged twice for the same day
-                       (seen (make-hash-table :test 'eql)))
+                       (seen (make-hash-table :test 'eql))
+                       ;; the day it was written for, when it was written for
+                       ;; a day that has gone and had to be folded onto today
+                       (carried nil))
                   ;; Work that arrived today is today\'s work, dated or not.
                   ;; An interruption is captured without a date -- there was
                   ;; no deciding where to put it -- and it would otherwise
@@ -1833,6 +1958,22 @@ a done-type keyword such as DELEG drops out too."
                                       :category category)
                                 (aref ledger idx))
                           (puthash idx 'timed seen)))))
+                  ;; A SCHEDULED date that has gone places the entry on no
+                  ;; day at all, so until it is folded the work is in none of
+                  ;; the figures here -- see
+                  ;; `org-foresight--entry-schedule-gone-p\=', which is the
+                  ;; rule and the reason.  Last, because it answers for an
+                  ;; entry nothing else could place: anything already seen on
+                  ;; any day of the window is placed, and a second claim would
+                  ;; be the same work counted twice.
+                  (when (and todo
+                             (zerop (hash-table-count seen))
+                             (>= today-idx 0)
+                             (< today-idx days)
+                             (org-foresight--entry-schedule-gone-p))
+                    (setq carried (org-foresight--ts-start
+                                   (org-foresight--entry-scheduled)))
+                    (puthash today-idx 'untimed seen))
                   ;; Charge untimed effort only where nothing timed was found.
                   ;; What capacity spends is what is *left*: the corrected
                   ;; estimate less the hours already in it.  All three figures
@@ -1850,6 +1991,13 @@ a done-type keyword such as DELEG drops out too."
                                              :clocked clocked
                                              :remaining left
                                              :arrived (eq idx arrived)
+                                             ;; The day it was written for,
+                                             ;; where that is not this one.
+                                             ;; A row the reader cannot tell
+                                             ;; from today\='s own work is a
+                                             ;; row that quietly rewrites
+                                             ;; when the work was promised.
+                                             :carried carried
                                              :start nil :end nil
                                              :place place :location location
                                              :category category)
@@ -3642,7 +3790,7 @@ one.
 
 On a day with a single unbroken stretch of work this is exactly the waking
 day from NOW, which is what it has always been."
-  (let* ((now (or now (current-time)))
+  (let* ((now (or now org-foresight-now (current-time)))
          (scan (or scan (org-foresight-scan 1 day)))
          (ends (org-foresight-work-ends day))
          (after (if ends (org-foresight--max-time now ends) now)))
@@ -3697,7 +3845,7 @@ about what the rest of the day will."
           (seq-keep (lambda (task)
                       (and (eq (and (plist-get task :surge) t) surge)
                            (copy-sequence (plist-get task :intervals))))
-                    (and clock (plist-get clock :today-tasks))))))
+                    (and clock (plist-get clock :day-tasks))))))
 
 (defun org-foresight-behind (day &optional clock coverage now span)
   "Return how the elapsed part of DAY's working hours was actually spent.
@@ -3780,13 +3928,13 @@ one a reader can see, where a nil would quietly draw the day at half length."
          (work (or span (org-foresight-work-intervals day)))
          (elapsed (org-foresight--intervals-elapsed work now))
          (all (org-foresight--intervals-normalize
-               (copy-sequence (and clock (plist-get clock :today-intervals)))))
+               (copy-sequence (and clock (plist-get clock :day-intervals)))))
          ;; A clock on a private entry covers the hour as surely as any
          ;; other, but it does not spend the hour on work.  Inside the
          ;; working day those hours are lent out, not worked; outside it they
          ;; are simply yours, and nothing here has anything to say about
          ;; them.
-         (priv (and clock (plist-get clock :today-private-intervals)))
+         (priv (and clock (plist-get clock :day-private-intervals)))
          (work-clock (org-foresight--intervals-subtract all priv))
          ;; Cut to the elapsed span first.  A clock may run before work
          ;; begins, through a declared break, or into the evening, and none of

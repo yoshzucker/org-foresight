@@ -293,10 +293,10 @@ against.  A spell is one unbroken run of it, and the longest is the honest
 answer to whether the day held together.  The comparison is with the last
 week\\'s daily average, which says whether today was ordinary; it is not the
 reserve, and must not be read as one."
-  (let* ((total (plist-get clock :today-total))
-         (segments (plist-get clock :today-segments))
+  (let* ((total (plist-get clock :day-total))
+         (segments (plist-get clock :day-segments))
          (longest (org-foresight-report--longest-spell
-                   (plist-get clock :today-intervals)))
+                   (plist-get clock :day-intervals)))
          (active (and aw (/ (plist-get aw :active) 60.0)))
          (avg7 (/ (plist-get clock :total) 7.0)))
     (concat
@@ -314,7 +314,7 @@ reserve, and must not be read as one."
 
 (defun org-foresight-report--spent-row (task)
   "Return the row for TASK, a plist from `org-foresight-clock-scan\\''s
-:today-tasks.
+:day-tasks.
 
 What was spent, against what was said.  A single notation throughout: the
 percentage of the estimate the work has consumed, where 100% is exactly on
@@ -368,7 +368,7 @@ in three places meant nobody could see the answer.  CLOCK is the plist from
 `org-foresight-clock-scan\\'."
   (let* ((aw (org-foresight-observe-today))
          (cov (and aw (org-foresight-observe-coverage clock)))
-         (tasks (plist-get clock :today-tasks)))
+         (tasks (plist-get clock :day-tasks)))
     (string-join
      (delq nil
            (list
@@ -1377,13 +1377,17 @@ have to say so."
          (gone (org-foresight-report--off-behind-bar cap behind per-column))
          (spent (if gone (string-width gone) 0))
          (off (org-foresight-report--off-bar cap spent)))
-    (when ahead
+    ;; Either bar is reason enough to draw.  A day with no working hours has
+    ;; no work bar to draw and every one of its hours in the other one, and
+    ;; requiring the first meant the second was never drawn there either.
+    (when (or ahead off)
       (string-join
        (delq nil
-             (list (org-foresight-report--work-key cap behind)
-                   (org-foresight-report--bar-line
-                    "Work" (plist-get cap :span-min)
-                    (org-foresight-report--join-at-now elapsed ahead))
+             (list (and ahead (org-foresight-report--work-key cap behind))
+                   (and ahead
+                        (org-foresight-report--bar-line
+                         "Work" (plist-get cap :span-min)
+                         (org-foresight-report--join-at-now elapsed ahead)))
                    (org-foresight-report--bar-line
                     "Off" (plist-get cap :off-min)
                     (org-foresight-report--join-at-now gone off))
@@ -1844,9 +1848,23 @@ the clock history, and this is called once per day drawn."
      ;; to offer: what is true is that the work exists and the day was not
      ;; meant for it.  A genuinely free day says nothing at all.
      ((null (plist-get cap :work))
-      (when (> (plist-get cap :committed-min) 0)
+      ;; Anything that was put on the day, whether it was promised to it or
+      ;; placed at an hour in it.  Only what is promised was counted before,
+      ;; and a meeting is never promised: it is booked, which on a day with
+      ;; no working hours is borrowed from private time.  So the one day
+      ;; most worth a word -- the Saturday with a client in it -- was the
+      ;; one day the block said nothing at all, not a bar, not a verdict,
+      ;; not a key.
+      (when (> (+ (plist-get cap :committed-min)
+                  (plist-get cap :borrowed-min))
+               0)
         (org-foresight-report--indent
          (concat (org-foresight-report--rest-day cap)
+                 ;; The hours off are the whole of a day like this, so the
+                 ;; bar that draws them is the only picture there is of
+                 ;; where the work sits in it.
+                 (when-let ((bars (org-foresight-report--bars cap behind)))
+                   (concat "\n" bars))
                  (org-foresight-report--verdict-extras scan)))))
      (t
       (org-foresight-report--indent
@@ -1870,11 +1888,26 @@ What is owed, and when doing it would finish.  Not what may still be promised
 observation that work is dated to it at all."
   (concat
    (propertize "Not a working day" 'face 'org-foresight-report-overcommitted)
-   (format " · %s promised"
-           (org-duration-from-minutes (plist-get cap :committed-min)))
-   (if-let ((lands (plist-get cap :lands)))
-       (format " · ends %s" (format-time-string "%H:%M" lands))
-     (propertize " · not today" 'face 'org-foresight-report-overcommitted))))
+   ;; Both, because they are different facts and a day off can hold either.
+   ;; An hour booked into a Saturday is already spent; an hour promised to
+   ;; it is still to be placed, and saying only one of them leaves the other
+   ;; kind of day looking empty.
+   (let ((booked (plist-get cap :borrowed-min))
+         (promised (plist-get cap :committed-min)))
+     (concat
+      (when (> booked 0)
+        (format " · %s booked" (org-duration-from-minutes booked)))
+      (when (or (> promised 0) (<= booked 0))
+        (format " · %s promised" (org-duration-from-minutes promised)))))
+   ;; When the promised work would finish, which is a fact about promised
+   ;; work: with none of it, the answer is now, and "ends 10:00" on a day
+   ;; holding a meeting at one o'clock is a sentence that reads as an answer
+   ;; and is not one.
+   (when (> (plist-get cap :committed-min) 0)
+     (if-let ((lands (plist-get cap :lands)))
+         (format " · ends %s" (format-time-string "%H:%M" lands))
+       (propertize " · not today"
+                   'face 'org-foresight-report-overcommitted)))))
 
 (defconst org-foresight-report--carried
   '(org-marker org-hd-marker org-agenda-type)
@@ -1991,8 +2024,10 @@ answers to \"can this move\"."
       ""))
 
 (defcustom org-foresight-grid-suggest 3
-  "How many candidates a free stretch names, or nil to name none."
-  :type '(choice (const :tag "none" nil) integer)
+  "How many candidates a free stretch names, or nil to name none.
+Whatever is not named is counted on a row of its own, so a shortened list
+says that it was shortened."
+  :type '(choice (const :tag "none" nil) natnum)
   :group 'org-foresight)
 
 (defcustom org-foresight-grid-frees 3
