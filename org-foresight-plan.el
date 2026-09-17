@@ -1466,7 +1466,9 @@ Returns what the agenda row carries, so both ways in answer the same shape."
                           journeys)))
     (unless choices
       (user-error "No journey is derived for today"))
-    (cdr (assoc (completing-read "Which journey? " choices nil t) choices))))
+    (cdr (assoc (completing-read "Which journey? "
+                                 (org-foresight--ordered choices) nil t)
+                choices))))
 
 ;;;###autoload
 (defun org-foresight-book-travel ()
@@ -1651,6 +1653,25 @@ nothing in the tool can say where it went."
                      (org-foresight--intervals-split
                       (funcall worth (plist-get behind :away-ivs))
                       cuts least))))))
+
+(defun org-foresight--ordered (candidates)
+  "Return a completion table offering CANDIDATES in the order given.
+
+The order is the answer on every prompt this package puts up: the holes of
+a day run from morning to night, the spells of it likewise, and the two
+halves of a divided spell are the first and the second.  Left to the
+frontend they are sorted by how recently each string was typed and then by
+how long it is, which is an order about the words rather than about the
+day -- and an order nobody can predict is one the eye has to read from the
+top every time.
+
+CANDIDATES is a list of strings, or an alist whose keys are the strings."
+  (let ((names (mapcar (lambda (c) (if (consp c) (car c) c)) candidates)))
+    (lambda (string pred action)
+      (if (eq action 'metadata)
+          '(metadata (display-sort-function . identity)
+                     (cycle-sort-function . identity))
+        (complete-with-action action names string pred)))))
 
 (defun org-foresight--clock-gap-label (gap)
   "Return GAP as one line: when it ran, how long it was, and which kind."
@@ -1956,8 +1977,9 @@ no single answer fits."
     (let* ((choices (mapcar (lambda (gap)
                               (cons (org-foresight--clock-gap-label gap) gap))
                             gaps))
-           (gap (cdr (assoc (completing-read "Unrecorded: " choices nil t nil
-                                             nil (car (car choices)))
+           (gap (cdr (assoc (completing-read "Unrecorded: "
+                                             (org-foresight--ordered choices)
+                                             nil t nil nil (car (car choices)))
                             choices)))
            (from (car (car gap)))
            (to (cdr (car gap)))
@@ -1971,10 +1993,11 @@ no single answer fits."
            ;; and by the evening that is a long way down.
            (title (completing-read
                    "What were you doing? "
-                   (append org-foresight-clock-fill-kinds
-                           (mapcar #'car journeys)
-                           (seq-remove (lambda (name) (assoc name journeys))
-                                       (mapcar #'car known)))))
+                   (org-foresight--ordered
+                    (append org-foresight-clock-fill-kinds
+                            (mapcar #'car journeys)
+                            (seq-remove (lambda (name) (assoc name journeys))
+                                        (mapcar #'car known))))))
            (marker (cdr (assoc title known)))
            ;; A name the list did not hold may still be a heading.
            (elsewhere (unless marker (org-foresight--heading-named title))))
@@ -2107,7 +2130,9 @@ meeting was about to start."
                                           (plist-get e :title))
                                   e))
                           org-foresight--clock-pending))
-         (entry (cdr (assoc (completing-read "Call off: " choices nil t)
+         (entry (cdr (assoc (completing-read "Call off: "
+                                             (org-foresight--ordered choices)
+                                             nil t)
                             choices))))
     (when entry
       (when (timerp (plist-get entry :timer))
@@ -2323,7 +2348,8 @@ running."
     (let* ((choices (mapcar (lambda (s)
                               (cons (org-foresight--clock-spell-label s) s))
                             spells))
-           (spell (cdr (assoc (completing-read "Divide which spell? " choices
+           (spell (cdr (assoc (completing-read "Divide which spell? "
+                                               (org-foresight--ordered choices)
                                                nil t nil nil (caar choices))
                               choices)))
            (from (plist-get spell :from))
@@ -2340,8 +2366,9 @@ running."
            ;; The second part is the default.  An interruption arrives during
            ;; the work and is often still going when the clock is finally
            ;; stopped, so the tail is the half that usually belongs elsewhere.
-           (moved (cdr (assoc (completing-read "Which part moves? " parts nil t
-                                               nil nil (car (nth 1 parts)))
+           (moved (cdr (assoc (completing-read "Which part moves? "
+                                               (org-foresight--ordered parts)
+                                               nil t nil nil (car (nth 1 parts)))
                               parts)))
            (kept (if (org-foresight--same-minute-p (car moved) from)
                      (cons at to)
@@ -2355,11 +2382,12 @@ running."
            ;; so far, and by the time an hour is being divided that is a long
            ;; way down a list.
            (title (completing-read "And that part was? "
-                                   (append org-foresight-clock-fill-kinds
-                                           (mapcar #'car journeys)
-                                           (seq-remove
-                                            (lambda (name) (assoc name journeys))
-                                            (mapcar #'car known)))))
+                                   (org-foresight--ordered
+                                    (append org-foresight-clock-fill-kinds
+                                            (mapcar #'car journeys)
+                                            (seq-remove
+                                             (lambda (name) (assoc name journeys))
+                                             (mapcar #'car known))))))
            (marker (cdr (assoc title known)))
            (elsewhere (unless marker (org-foresight--heading-named title))))
       (when (string-empty-p (string-trim title))

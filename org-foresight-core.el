@@ -2120,9 +2120,9 @@ say about a day that has gone, it says from the clock rather than from the
 plan -- and readers ask for the date they mean through
 `org-foresight-scan-day\=' regardless, so the anchor is a choice and not a
 thing anybody depends on."
-  (let ((files (org-foresight--scan-files)))
+  (let ((print (org-foresight--scan-fingerprint)))
     (or (and org-foresight--redraw-scan
-             (equal files (car org-foresight--redraw-scan))
+             (equal print (car org-foresight--redraw-scan))
              (cdr org-foresight--redraw-scan))
         (let ((scan (org-foresight-scan (max 1 org-foresight-horizon-days)
                                         (org-foresight--day-start 0) now)))
@@ -2130,25 +2130,58 @@ thing anybody depends on."
           ;; visiting, and a survey filed under the ticks from beforehand
           ;; would never match the ticks it is looked up with.
           (setq org-foresight--redraw-scan
-                (cons (org-foresight--scan-files) scan))
+                (cons (org-foresight--scan-fingerprint) scan))
           scan))))
 
-(defun org-foresight--scan-files ()
-  "Return the agenda files paired with how far each has been edited here.
+(defun org-foresight--scan-fingerprint ()
+  "Return everything a shared survey is only true of, so a reader can tell.
 
-`buffer-chars-modified-tick\=' of whatever visits the file, or nil where
-nothing does.  No file is opened to answer.  The names travel with the ticks
-because a different set of files is a different world, and two files can
-easily stand at the same tick.
+A survey may be handed to a second reader exactly while all of this holds:
 
-The second of the two things that bound a shared survey, and the one that
-catches an edit: a redraw that follows a write must not be answered out of
-the survey taken before it.  Settings are the other, and no fingerprint
-reaches those -- see `org-foresight-invalidate-scan\='."
-  (mapcar (lambda (f)
-            (let ((buf (find-buffer-visiting f)))
-              (cons f (and buf (buffer-chars-modified-tick buf)))))
-          (org-agenda-files)))
+  the files      their names, and `buffer-chars-modified-tick\=' of whatever
+                 visits each.  No file is opened to answer.  The names
+                 travel with the ticks because a different set of files is
+                 a different world, and two files can easily stand at the
+                 same tick
+  the settings   every option of this package, read off the obarray rather
+                 than listed here.  A list would be a second place to
+                 remember, and the option forgotten from it is the one that
+                 goes wrong quietly -- turn the estimate correction off and
+                 the same files answer differently
+  the estimates  when the learned curve was last written, which the ledger
+                 reads and no other part of this would notice
+  the moment     the minute it was taken in.  A survey closes a running
+                 clock at the moment it ran, and that moment goes stale
+
+Which is what lets a redraw that changes only the *view* -- turning the log
+on, or the clock report -- be answered out of the survey the last one took.
+Dropping it blindly instead was a walk of every heading in every file for a
+question whose answer had not moved: about three quarters of a second on an
+ordinary journal, paid again on every toggle.
+
+What is not here: a file edited by something other than this Emacs, which a
+fresh survey would not see either -- it reads the buffers -- and Org\='s own
+keywords, which nothing changes mid-session without more ceremony than
+this."
+  (list (mapcar (lambda (f)
+                  (let ((buf (find-buffer-visiting f)))
+                    (cons f (and buf (buffer-chars-modified-tick buf)))))
+                (org-agenda-files))
+        (let (out)
+          (mapatoms
+           (lambda (sym)
+             (when (and (boundp sym)
+                        (custom-variable-p sym)
+                        (string-prefix-p "org-foresight-" (symbol-name sym)))
+               (push (cons sym (symbol-value sym)) out))))
+          (sort out (lambda (a b)
+                      (string< (symbol-name (car a)) (symbol-name (car b))))))
+        ;; Not an option, and it decides what "now" means for the whole walk.
+        org-foresight-now
+        (and (file-readable-p org-foresight-bias-cache-file)
+             (file-attribute-modification-time
+              (file-attributes org-foresight-bias-cache-file)))
+        (floor (float-time) 60)))
 
 
 (defcustom org-foresight-day-places nil
