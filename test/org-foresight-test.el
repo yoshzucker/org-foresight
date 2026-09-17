@@ -1959,8 +1959,8 @@ page said which was which."
                   ((symbol-function 'completing-read)
                    (lambda (prompt collection &rest _)
                      (if (string-prefix-p "Unrecorded" prompt)
-                         (car (car collection))
-                       (progn (should (member "Drive home" collection))
+                         (car (org-foresight-test--offered collection))
+                       (progn (should (member "Drive home" (org-foresight-test--offered collection)))
                               "Drive home")))))
           (org-foresight-clock-fill))
         (let ((text (org-foresight-test--task-file-text)))
@@ -2002,8 +2002,8 @@ one day a person is least likely to be looking."
                   ((symbol-function 'completing-read)
                    (lambda (prompt collection &rest _)
                      (if (string-prefix-p "Unrecorded" prompt)
-                         (progn (setq offered (mapcar #'car collection))
-                                (car (car collection)))
+                         (progn (setq offered (org-foresight-test--offered collection))
+                                (car (org-foresight-test--offered collection)))
                        "the work"))))
           (org-foresight-clock-fill yest))
         ;; yesterday's waking day, not today's
@@ -2039,10 +2039,10 @@ one day a person is least likely to be looking."
                    (lambda (prompt collection &rest _)
                      (cond
                       ((string-prefix-p "Divide" prompt)
-                       (car (seq-find (lambda (c) (string-match-p "alpha" (car c)))
-                                      collection)))
+                       (seq-find (lambda (c) (string-match-p "alpha" c))
+                                 (org-foresight-test--offered collection)))
                       ((string-prefix-p "Which part" prompt)
-                       (car (nth 1 collection)))
+                       (nth 1 (org-foresight-test--offered collection)))
                       (t "beta")))))
           (org-foresight-clock-split yest))
         (let ((text (org-foresight-test--task-file-text)))
@@ -2211,8 +2211,8 @@ it was about."
             (org-foresight--shape-cache nil))
         (cl-letf (((symbol-function 'completing-read)
                    (lambda (_prompt collection &rest _)
-                     (setq asked (mapcar #'car collection))
-                     (car (car collection))))
+                     (setq asked (org-foresight-test--offered collection))
+                     (car (org-foresight-test--offered collection))))
                   ((symbol-function 'read-string)
                    (lambda (_prompt &optional initial &rest _) initial))
                   ((symbol-function 'org-read-date)
@@ -4519,7 +4519,7 @@ knows which."
                   ((symbol-function 'completing-read)
                    (lambda (prompt collection &rest _)
                      (if (string-prefix-p "Unrecorded" prompt)
-                         (car (car (last collection)))
+                         (car (last (org-foresight-test--offered collection)))
                        "the thing finished this morning"))))
           (org-foresight-clock-fill))
         (let ((text (org-foresight-test--task-file-text)))
@@ -7055,6 +7055,16 @@ to say why."
                                                (list (car g)))))
                              cut-gaps))))))
 
+(defun org-foresight-test--offered (collection)
+  "Return what COLLECTION offers, in the order it offers them.
+
+Through `all-completions\=' rather than by taking the list apart.  A prompt
+whose order is part of its answer has to hand `completing-read\=' a table
+and not a list -- a list cannot carry the metadata that says \"leave this
+order alone\" -- so a test that reads the argument as a list is testing the
+shape of the argument rather than what the reader is shown."
+  (all-completions "" collection))
+
 (defmacro org-foresight-test--with-task-file (text &rest body)
   "Run BODY with TEXT written to a real file bound as the task file."
   (declare (indent 1))
@@ -7143,10 +7153,10 @@ PART is 0 for the earlier half and 1 for the later one."
                   (lambda (prompt collection &rest _)
                     (cond
                      ((string-prefix-p "Divide" prompt)
-                      (car (seq-find (lambda (c) (string-match-p "alpha" (car c)))
-                                     collection)))
+                      (seq-find (lambda (c) (string-match-p "alpha" c))
+                                (org-foresight-test--offered collection)))
                      ((string-prefix-p "Which part" prompt)
-                      (car (nth ,part collection)))
+                      (nth ,part (org-foresight-test--offered collection)))
                      (t "beta")))))
          (org-foresight-clock-split))
        ,@body)))
@@ -7185,10 +7195,10 @@ journeys to the front for exactly that reason and this command was not."
                   ((symbol-function 'completing-read)
                    (lambda (prompt collection &rest _)
                      (cond
-                      ((string-prefix-p "Divide" prompt) (car (car collection)))
+                      ((string-prefix-p "Divide" prompt) (car (org-foresight-test--offered collection)))
                       ((string-prefix-p "Which part" prompt)
-                       (car (nth 1 collection)))
-                      (t (setq offered collection)
+                       (nth 1 (org-foresight-test--offered collection)))
+                      (t (setq offered (org-foresight-test--offered collection))
                          "→ office")))))
           (org-foresight-clock-split))
         (let ((text (org-foresight-test--task-file-text)))
@@ -7348,7 +7358,7 @@ nobody remembers by then."
                 (org-foresight-clock-switch)))
             (let ((timer (plist-get (car org-foresight--clock-pending) :timer)))
               (cl-letf (((symbol-function 'completing-read)
-                         (lambda (_p coll &rest _) (car (car coll)))))
+                         (lambda (_p coll &rest _) (car (org-foresight-test--offered coll)))))
                 (org-foresight-clock-switch t))
               (should-not org-foresight--clock-pending)
               (should-not (memq timer timer-list))))
@@ -7411,7 +7421,7 @@ which -- from the same list the other two clock commands offer."
             (cl-letf (((symbol-function 'completing-read)
                        (lambda (prompt collection &rest _)
                          (setq asked prompt
-                               offered (mapcar #'car collection))
+                               offered (org-foresight-test--offered collection))
                          ;; the second one, so taking whichever came first
                          ;; would not pass for having read the answer
                          "the meeting"))
@@ -7484,8 +7494,8 @@ the cuts for itself would pass whatever the command did with either."
     (cl-letf (((symbol-function 'completing-read)
                (lambda (prompt collection &rest _)
                  (if (string-prefix-p "Unrecorded" prompt)
-                     (progn (setq offered (mapcar #'car collection))
-                            (car (car collection)))
+                     (progn (setq offered (org-foresight-test--offered collection))
+                            (car (org-foresight-test--offered collection)))
                    "the work"))))
       (org-foresight-clock-fill))
     offered))
@@ -7628,6 +7638,51 @@ they are not one stretch to be answered at once."
                          "13:00-21:00  8:00  (at the keyboard)")
                        (org-foresight-test--holes)))))))
 
+(ert-deftest org-foresight-test-a-prompt-whose-order-is-the-answer-keeps-it ()
+  "The holes of a day are offered morning to night, and stay that way.
+
+Handing `completing-read' a list gives the frontend no way to be told
+anything, so it sorts by how recently each string was typed and then by how
+long it is.  Both are facts about the words.  The reader is choosing between
+times, and a list of times in an order that is not chronological has to be
+read from the top every time it appears."
+  (let* ((table (org-foresight--ordered '("09:00-10:30" "07:00-09:00"
+                                          "13:00-18:00")))
+         (md (completion-metadata "" table nil)))
+    (should (eq #'identity (cdr (assq 'display-sort-function md))))
+    (should (eq #'identity (cdr (assq 'cycle-sort-function md))))
+    ;; the order given, not a sorted one
+    (should (equal '("09:00-10:30" "07:00-09:00" "13:00-18:00")
+                   (all-completions "" table)))
+    ;; and an alist offers its keys, which is what the prompts hold
+    (should (equal '("second" "first")
+                   (all-completions ""
+                                    (org-foresight--ordered
+                                     '(("second" . 2) ("first" . 1)))))))
+  ;; and the command hands one over rather than a bare list
+  (let ((day (org-foresight--day-start 0))
+        (asked nil))
+    (org-foresight-test--with-task-file
+        (concat "* ONGO the work\n:LOGBOOK:\nCLOCK: "
+                (format-time-string "[%Y-%m-%d %a 09:00]" day) "--"
+                (format-time-string "[%Y-%m-%d %a 10:00]" day)
+                " =>  1:00\n:END:\n")
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-awake '("07:00" . "22:00"))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight--shape-cache nil)
+            (org-foresight-now (time-add day (* 3600 14))))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'y-or-n-p) (lambda (&rest _) nil))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (when (string-prefix-p "Unrecorded" prompt)
+                       (setq asked (completion-metadata "" collection nil)))
+                     (car (org-foresight-test--offered collection)))))
+          (org-foresight-clock-fill))
+        (should (eq #'identity (cdr (assq 'display-sort-function asked))))))))
+
 (ert-deftest org-foresight-test-clock-fill-asks-for-nothing-but-the-name ()
   "Choose a stretch, name the work: no hour is ever typed.
 
@@ -7654,7 +7709,7 @@ nothing -- which is why the holes were still there at six o'clock."
                    (push prompt asked)
                    (if (string-prefix-p "Unrecorded" prompt)
                        ;; the second hole, 10:30 onwards
-                       (car (nth 1 collection))
+                       (nth 1 (org-foresight-test--offered collection))
                      "the work"))))
         (org-foresight-clock-fill))
       ;; nothing was asked but which stretch and what it was
@@ -8073,20 +8128,30 @@ told it, and on a real journal that was a fifth of the redraw at a day\='s
 span and most of it at a week\='s.
 
 Both spans are checked because they fail differently: at a day\='s span the
-extra walk is the forward view\='s, and at a week\='s it is one per column."
+extra walk is the forward view\='s, and at a week\='s it is one per column.
+
+And a redraw that changes nothing walks nothing.  Turning the log on is a
+question about what Org draws, not about what the files hold, and the
+survey says what it is true of -- see `org-foresight--scan-fingerprint\=' --
+so the second build is answered out of the first."
   (org-foresight-test--with-agenda
       (concat "* NEXT something\nSCHEDULED: " (org-foresight-test--stamp 0)
               "\n:PROPERTIES:\n:EFFORT: 1:00\n:END:\n")
-    (dolist (span '(day week))
-      (let ((org-agenda-span span)
-            (walks 0))
-        (cl-letf* ((real (symbol-function 'org-foresight-scan))
-                   ((symbol-function 'org-foresight-scan)
-                    (lambda (&rest args)
-                      (setq walks (1+ walks))
-                      (apply real args))))
+    (let ((walks 0))
+      (cl-letf* ((real (symbol-function 'org-foresight-scan))
+                 ((symbol-function 'org-foresight-scan)
+                  (lambda (&rest args)
+                    (setq walks (1+ walks))
+                    (apply real args))))
+        (dolist (span '(day week))
+          (let ((org-agenda-span span))
+            (org-foresight-test--agenda)))
+        ;; one walk for the first build, and none for the second
+        (should (= 1 walks))
+        ;; an option moves and the next reader walks again
+        (let ((org-foresight-default-effort "0:45"))
           (org-foresight-test--agenda)
-          (should (= 1 walks)))))
+          (should (= 2 walks)))))
     ;; And the one walk reaches as far as the furthest reader needs, or the
     ;; saving is only that the forward view is answered out of buckets that
     ;; were never filled.
@@ -9054,7 +9119,7 @@ happened to match."
                  (lambda (prompt collection &rest _)
                    (if (string-prefix-p "Unrecorded" prompt)
                        "a gap"
-                     (setq offered collection)
+                     (setq offered (org-foresight-test--offered collection))
                      "comms")))
                 ((symbol-function 'org-foresight--clock-fill-kind-marker)
                  (lambda (kind) (list 'kind-marker kind)))
@@ -9118,7 +9183,7 @@ long way down a list.  Gathered, and each one only once."
                  (lambda (prompt collection &rest _)
                    (if (string-prefix-p "Unrecorded" prompt)
                        "a gap"
-                     (setq offered collection)
+                     (setq offered (org-foresight-test--offered collection))
                      "comms")))
                 ((symbol-function 'org-foresight--clock-fill-kind-marker)
                  (lambda (kind) (list 'kind-marker kind)))
@@ -9159,7 +9224,7 @@ to, so it is the thing to check."
                   ((symbol-function 'completing-read)
                    (lambda (prompt collection &rest _)
                      (if (string-prefix-p "Unrecorded" prompt)
-                         (car (car collection))
+                         (car (org-foresight-test--offered collection))
                        "→ office")))
                   ((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
           (org-foresight-clock-fill))

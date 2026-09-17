@@ -2634,17 +2634,13 @@ a signal and acting on it is not interrupted by the display jumping."
 ;; this file and adds its own hook at the front.
 (add-hook 'org-agenda-finalize-hook #'org-foresight-report-render t)
 
-;; Last, after everything that draws.  The survey the redraw shared is only
-;; true of the settings it was taken under, so it must not outlive the redraw
-;; and be handed to the next one -- which may be answering a different
-;; question about the same files.
-(add-hook 'org-agenda-finalize-hook #'org-foresight-invalidate-scan t)
-
-;; And first, before anything reads.  `org-agenda-prepare' runs at the head of
-;; every build, whether the buffer is new or being redrawn in place -- which
-;; `org-agenda-mode-hook' does not, since the mode is only entered once and a
-;; redraw of an existing agenda would have gone on reading the old survey.
-(advice-add 'org-agenda-prepare :before #'org-foresight-invalidate-scan)
+;; Nothing drops the survey at the edges of a build any more.
+;; `org-foresight--scan-fingerprint' says what one is true of -- the files,
+;; every option of this package, the learned curve and the minute -- so a
+;; redraw that changes only the view is answered out of the last one, and a
+;; redraw after anything that matters takes a fresh one on its own account.
+;; Dropping it blindly was a walk of every heading in every file for an
+;; answer that had not moved, paid again on every toggle of the log.
 
 ;; Everything that can change what a day costs.  The time commands are on the
 ;; list for the same reason as the rest: they edit the entry and leave the
