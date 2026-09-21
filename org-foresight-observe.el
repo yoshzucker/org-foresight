@@ -26,7 +26,13 @@
 ;;; Code:
 
 (require 'org-foresight-core)
-(require 'url)
+;; `url\=' is not here.  This file is loaded with the agenda -- it advises
+;; `org-agenda-redo\=' below -- and the whole URL library is a quarter of what
+;; that costs, for one synchronous GET that most agendas never make.  The one
+;; function that makes it asks for it.  `url-hexify-string\=' is autoloaded, so
+;; the formatting side needs nothing said about it.
+(declare-function url-retrieve-synchronously "url"
+                  (url &optional silent inhibit-cookies timeout))
 (require 'json)
 ;; `parse-iso8601-time-string' lives in parse-time, which nothing here pulls in
 ;; on its own -- it was only ever available because Org happened to have loaded
@@ -92,6 +98,7 @@ cheap, which is what makes it worth pressing."
 (defun org-foresight-observe--get-json (path)
   "GET PATH under `org-foresight-observe-url'.
 Return the parsed JSON, or nil when the server cannot be reached."
+  (require 'url)
   (condition-case nil
       (let ((buf (url-retrieve-synchronously
                   (concat org-foresight-observe-url path) t t
