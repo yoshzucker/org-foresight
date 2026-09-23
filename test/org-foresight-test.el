@@ -12813,3 +12813,146 @@ remembers the least about."
 (provide 'org-foresight-test)
 
 ;;; org-foresight-test.el ends here
+
+;;;; Nudging a clocked time from the row that shows it
+
+(defmacro org-foresight-test--on-clock-row (text &rest body)
+  "Build a day agenda over TEXT in log mode, stand on its clock row, run BODY.
+Point is left at the beginning of that row; `marker' is bound to the entry
+behind it."
+  (declare (indent 1))
+  `(org-foresight-test--with-day ,text
+     (let ((org-agenda-sticky nil)
+           (org-agenda-window-setup 'current-window)
+           (org-agenda-time-leading-zero t)
+           (org-agenda-start-with-log-mode '(closed clock state)))
+       (save-window-excursion
+         (org-agenda-list nil "2026-08-11" 'day)
+         (with-current-buffer org-agenda-buffer-name
+           (goto-char (point-min))
+           (while (and (not (eobp)) (not (equal (org-get-at-bol 'type) "clock")))
+             (forward-line 1))
+           (should-not (eobp))
+           (beginning-of-line)
+           (let ((marker (org-get-at-bol 'org-marker)))
+             (ignore marker)
+             ,@body))))))
+
+(defun org-foresight-test--clock-field-at (field)
+  "Return the position on this row carrying FIELD, or nil."
+  (save-excursion
+    (beginning-of-line)
+    (catch 'hit
+      (while (< (point) (line-end-position))
+        (when (equal (get-text-property (point) 'org-foresight-clock-field) field)
+          (throw 'hit (point)))
+        (forward-char 1))
+      nil)))
+
+(ert-deftest org-foresight-test-clock-row-says-which-half-is-which ()
+  "Each of the four numbers on a clocked row knows what it is."
+  (org-foresight-test--on-clock-row
+      "* TASK one\n  CLOCK: [2026-08-11 Tue 09:15]--[2026-08-11 Tue 10:45] =>  1:30\n"
+    (dolist (field '((in . hour) (in . minute) (out . hour) (out . minute)))
+      (should (org-foresight-test--clock-field-at field)))
+    ;; and they are in the order the row draws them
+    (should (< (org-foresight-test--clock-field-at '(in . hour))
+               (org-foresight-test--clock-field-at '(in . minute))
+               (org-foresight-test--clock-field-at '(out . hour))
+               (org-foresight-test--clock-field-at '(out . minute))))))
+
+(ert-deftest org-foresight-test-clock-row-unmarked-when-it-disagrees ()
+  "A range that is not the one the file holds is left alone.
+
+The marking is what lets a command edit the file from the page, so it has to
+be refused whenever the two could have parted -- otherwise a row drawn from
+something else would be edited as though it were this clock."
+  (org-foresight-test--on-clock-row
+      "* TASK one\n  CLOCK: [2026-08-11 Tue 09:15]--[2026-08-11 Tue 10:45] =>  1:30\n"
+    ;; Move the file out from under the row and mark again.
+    (org-with-point-at (org-get-at-bol 'org-marker)
+      (save-excursion
+        (beginning-of-line)
+        (when (search-forward "10:45" (line-end-position) t)
+          (replace-match "11:45"))))
+    (let ((inhibit-read-only t))
+      (remove-text-properties (line-beginning-position) (line-end-position)
+                              '(org-foresight-clock-field nil)))
+    (org-foresight-agenda--mark-clock-times)
+    (should-not (org-foresight-test--clock-field-at '(out . minute)))))
+
+(ert-deftest org-foresight-test-clock-nudge-moves-the-file-and-the-row ()
+  "Pushing the end of a spell moves the timestamp, the total and the row."
+  (org-foresight-test--on-clock-row
+      "* TASK one\n  CLOCK: [2026-08-11 Tue 09:15]--[2026-08-11 Tue 10:45] =>  1:30\n"
+    (goto-char (org-foresight-test--clock-field-at '(out . minute)))
+    (org-foresight-clock-later 5)
+    (should (string-match-p "09:15-10:50"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (should (string-match-p "(1:35)"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (org-with-point-at (org-get-at-bol 'org-marker)
+      (should (string-match-p "10:50\\]"
+                              (buffer-substring-no-properties
+                               (line-beginning-position) (line-end-position))))
+      (should (string-match-p "=>  1:35"
+                              (buffer-substring-no-properties
+                               (line-beginning-position) (line-end-position)))))))
+
+(ert-deftest org-foresight-test-clock-nudge-goes-back-as-well ()
+  "And the other way, on the hour of the start."
+  (org-foresight-test--on-clock-row
+      "* TASK one\n  CLOCK: [2026-08-11 Tue 09:15]--[2026-08-11 Tue 10:45] =>  1:30\n"
+    (goto-char (org-foresight-test--clock-field-at '(in . hour)))
+    (org-foresight-clock-earlier 1)
+    (should (string-match-p "08:15-10:45"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (should (string-match-p "(2:30)"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))))
+
+(ert-deftest org-foresight-test-clock-nudge-says-why-it-cannot ()
+  "Off a time, and off a clocked row, it names what would have to be true."
+  (org-foresight-test--on-clock-row
+      "* TASK one\n  CLOCK: [2026-08-11 Tue 09:15]--[2026-08-11 Tue 10:45] =>  1:30\n"
+    ;; on the row but not on a time
+    (goto-char (line-end-position))
+    (should-error (org-foresight-clock-later 1) :type 'user-error)
+    ;; on a row that carries no clock at all
+    (goto-char (point-min))
+    (should-error (org-foresight-clock-later 1) :type 'user-error)))
+
+(ert-deftest org-foresight-test-clock-nudge-leaves-the-row-its-width ()
+  "Whether the agenda pads the hour is its business, and not this package's.
+
+`org-agenda-time-leading-zero' decides it, and a redraw that wrote back a
+width of its own choosing would shift the rest of the row on whichever
+setting it disagreed with -- which is the class of coupling this was written
+to avoid.  Run here with the padding off, which is Org's default."
+  (org-foresight-test--with-day
+      "* TASK one\n  CLOCK: [2026-08-11 Tue 09:15]--[2026-08-11 Tue 10:45] =>  1:30\n"
+    (let ((org-agenda-sticky nil)
+          (org-agenda-window-setup 'current-window)
+          (org-agenda-time-leading-zero nil)
+          (org-agenda-start-with-log-mode '(closed clock state)))
+      (save-window-excursion
+        (org-agenda-list nil "2026-08-11" 'day)
+        (with-current-buffer org-agenda-buffer-name
+          (goto-char (point-min))
+          (while (and (not (eobp)) (not (equal (org-get-at-bol 'type) "clock")))
+            (forward-line 1))
+          (should-not (eobp))
+          (should (string-match-p "9:15-10:45"
+                                  (buffer-substring-no-properties
+                                   (line-beginning-position) (line-end-position))))
+          (let ((width (- (line-end-position) (line-beginning-position))))
+            (goto-char (org-foresight-test--clock-field-at '(out . minute)))
+            (org-foresight-clock-later 5)
+            (should (string-match-p "9:15-10:50"
+                                    (buffer-substring-no-properties
+                                     (line-beginning-position) (line-end-position))))
+            ;; the range is the same width, so nothing after it moved
+            (should (= width (- (line-end-position) (line-beginning-position))))))))))
