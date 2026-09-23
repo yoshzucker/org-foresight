@@ -1568,6 +1568,165 @@ would hand the next keystroke an entry nobody chose."
     (when (derived-mode-p 'org-agenda-mode)
       (org-foresight-agenda--watch-agenda))))
 
+;;;; Nudging a clocked time from the row that shows it
+
+;; Org draws a clocked spell as `HH:MM-HH:MM' on a row whose `org-marker'
+;; points at the CLOCK line it came from, and moving one of those two times
+;; by a minute is the commonest repair a day needs: the clock was started
+;; late, or stopped after the fact.  Doing it in the file means leaving the
+;; page, finding the entry, finding the line, and coming back.
+;;
+;; What makes it awkward from the page is knowing which of the two times
+;; point is on.  Read off the row that is a guess about layout -- how wide the
+;; category is, what the prefix put before the time, whether the hour carries
+;; a leading zero -- and a guess like that is wrong silently, on the day
+;; somebody changes a setting.  So it is not read off the row: at the moment
+;; of drawing, when the row and its CLOCK line are both in hand, the two
+;; halves are found in the row and *checked against the file*, and only then
+;; written down.  A row whose times do not match what the marker says is left
+;; unmarked, and the commands below decline to act on it.
+
+(defconst org-foresight-agenda--clock-range-re
+  "\\([0-9]\\{1,2\\}\\):\\([0-9]\\{2\\}\\)-\\([0-9]\\{1,2\\}\\):\\([0-9]\\{2\\}\\)"
+  "A clocked range as the agenda draws it, with the four fields apart.")
+
+(defun org-foresight-agenda--clock-line-times (marker)
+  "Return ((IN-H . IN-M) (OUT-H . OUT-M)) for the CLOCK line at MARKER.
+Nil when MARKER is not on a closed clock line."
+  (when (markerp marker)
+    (org-with-point-at marker
+      (save-excursion
+        (beginning-of-line)
+        (when (looking-at (concat "[ \t]*" org-clock-string
+                                  "[ \t]*\\[[^]\n]*?\\([0-9]\\{1,2\\}\\):\\([0-9]\\{2\\}\\)\\]"
+                                  "--\\[[^]\n]*?\\([0-9]\\{1,2\\}\\):\\([0-9]\\{2\\}\\)\\]"))
+          (list (cons (string-to-number (match-string 1))
+                      (string-to-number (match-string 2)))
+                (cons (string-to-number (match-string 3))
+                      (string-to-number (match-string 4)))))))))
+
+(defun org-foresight-agenda--mark-clock-times ()
+  "Say, on every clocked row of this page, which half of the range is which.
+
+Each of the four numbers gets `org-foresight-clock-field\\=', a cons of
+`in\\=' or `out\\=' with `hour\\=' or `minute\\='.  The range as a whole gets
+`org-foresight-clock-range\\=', so a command can put a new one in its place."
+  (when (derived-mode-p 'org-agenda-mode)
+    (let ((inhibit-read-only t))
+      (save-excursion
+        (goto-char (point-min))
+        (while (not (eobp))
+          (when (equal (org-get-at-bol 'type) "clock")
+            (when-let* ((times (org-foresight-agenda--clock-line-times
+                                (org-get-at-bol 'org-marker)))
+                        (bound (line-end-position)))
+              (save-excursion
+                (beginning-of-line)
+                (when (re-search-forward org-foresight-agenda--clock-range-re bound t)
+                  ;; Only if the row says what the file says.  A range drawn
+                  ;; from something else -- a heading that happens to hold one
+                  ;; -- must not be edited as though it were this clock.
+                  (when (equal times
+                               (list (cons (string-to-number (match-string 1))
+                                           (string-to-number (match-string 2)))
+                                     (cons (string-to-number (match-string 3))
+                                           (string-to-number (match-string 4)))))
+                    (put-text-property (match-beginning 0) (match-end 0)
+                                       'org-foresight-clock-range t)
+                    (cl-loop for group from 1 to 4
+                             for field in '((in . hour) (in . minute)
+                                            (out . hour) (out . minute))
+                             do (put-text-property (match-beginning group)
+                                                   (match-end group)
+                                                   'org-foresight-clock-field field)))))))
+          (forward-line 1))))))
+
+;; After the rows exist and after anything that appends more of them.
+(add-hook 'org-agenda-finalize-hook #'org-foresight-agenda--mark-clock-times 96)
+
+(defun org-foresight-agenda--redraw-clock-row (marker)
+  "Put the times the file now holds back onto the row under point."
+  (when-let* ((times (org-foresight-agenda--clock-line-times marker))
+              (inhibit-read-only t))
+    (save-excursion
+      (beginning-of-line)
+      (when (re-search-forward org-foresight-agenda--clock-range-re
+                               (line-end-position) t)
+        ;; Each number is written back at the width it was drawn at, rather
+        ;; than at a width of this package's choosing.  Whether the agenda
+        ;; pads an hour to two digits is `org-agenda-time-leading-zero\=', a
+        ;; display setting belonging to the page; a redraw that decided for
+        ;; itself would move the rest of the row on whichever setting it
+        ;; disagreed with.
+        (let* ((start (match-beginning 0))
+               (end (match-end 0))
+               (widths (mapcar (lambda (g) (- (match-end g) (match-beginning g)))
+                               '(1 2 3 4)))
+               (new (format "%s:%s-%s:%s"
+                            (format (format "%%0%dd" (nth 0 widths)) (caar times))
+                            (format (format "%%0%dd" (nth 1 widths)) (cdar times))
+                            (format (format "%%0%dd" (nth 2 widths)) (car (cadr times)))
+                            (format (format "%%0%dd" (nth 3 widths)) (cdr (cadr times))))))
+          (save-excursion
+            (goto-char start)
+            (delete-region start end)
+            (insert new))))
+      ;; And the total in parentheses, which the file has just recomputed.
+      (beginning-of-line)
+      (when (re-search-forward "(\\([0-9]+:[0-9]\\{2\\}\\))" (line-end-position) t)
+        (let ((minutes (- (+ (* 60 (car (cadr times))) (cdr (cadr times)))
+                          (+ (* 60 (caar times)) (cdar times)))))
+          (when (< minutes 0) (setq minutes (+ minutes 1440)))
+          (replace-match (format "%d:%02d" (/ minutes 60) (mod minutes 60))
+                         t t nil 1))))
+    (org-foresight-agenda--mark-clock-times)))
+
+(defun org-foresight-clock-nudge (n)
+  "Move the clocked time under point by N of whatever it is.
+
+Point decides which: the hour or the minute, of the start or the end of the
+spell drawn on this row.  The change is made in the file, where Org
+recomputes the total, and the row is put right without rebuilding the page."
+  (interactive "p")
+  (unless (derived-mode-p 'org-agenda-mode)
+    (user-error "Not an agenda"))
+  (let ((field (get-text-property (point) 'org-foresight-clock-field))
+        (marker (org-get-at-bol 'org-marker)))
+    (cond
+     ((null marker)
+      (user-error "No entry behind this row"))
+     ((null field)
+      (if (save-excursion (beginning-of-line)
+                          (text-property-any (point) (line-end-position)
+                                             'org-foresight-clock-range t))
+          (user-error "Put point on one of the two times on this row")
+        (user-error "This row carries no clocked spell; `v c' or `v L' shows the ones that do")))
+     (t
+      (org-with-remote-undo (marker-buffer marker)
+        (org-with-point-at marker
+          (save-excursion
+            (beginning-of-line)
+            (unless (re-search-forward org-ts-regexp-inactive (line-end-position) t)
+              (user-error "No timestamp on that clock line"))
+            (when (eq (car field) 'out)
+              (unless (re-search-forward org-ts-regexp-inactive (line-end-position) t)
+                (user-error "That clock is still running")))
+            (goto-char (match-beginning 0))
+            (org-timestamp-change n (cdr field) 'updown))))
+      (org-foresight-agenda--redraw-clock-row marker)))))
+
+;;;###autoload
+(defun org-foresight-clock-later (&optional arg)
+  "Move the clocked time under point forward by ARG of whatever it is."
+  (interactive "p")
+  (org-foresight-clock-nudge (or arg 1)))
+
+;;;###autoload
+(defun org-foresight-clock-earlier (&optional arg)
+  "Move the clocked time under point back by ARG of whatever it is."
+  (interactive "p")
+  (org-foresight-clock-nudge (- (or arg 1))))
+
 (provide 'org-foresight-agenda)
 
 ;;; org-foresight-agenda.el ends here
