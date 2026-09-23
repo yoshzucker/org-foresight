@@ -12882,11 +12882,17 @@ something else would be edited as though it were this clock."
     (should-not (org-foresight-test--clock-field-at '(out . minute)))))
 
 (ert-deftest org-foresight-test-clock-nudge-moves-the-file-and-the-row ()
-  "Pushing the end of a spell moves the timestamp, the total and the row."
+  "Pushing the end of a spell moves the timestamp, the total and the row.
+
+One press, one step: on a minute Org reads this the way it reads `S-up' and
+moves by `org-time-stamp-rounding-minutes', whatever number came with the
+key.  Pressed with a 1 here, so the five in the answer is the step and not
+the argument."
   (org-foresight-test--on-clock-row
       "* TASK one\n  CLOCK: [2026-08-11 Tue 09:15]--[2026-08-11 Tue 10:45] =>  1:30\n"
+    (should (equal '(0 5) org-time-stamp-rounding-minutes))
     (goto-char (org-foresight-test--clock-field-at '(out . minute)))
-    (org-foresight-clock-later 5)
+    (org-foresight-clock-later 1)
     (should (string-match-p "09:15-10:50"
                             (buffer-substring-no-properties
                              (line-beginning-position) (line-end-position))))
@@ -12956,3 +12962,83 @@ to avoid.  Run here with the padding off, which is Org's default."
                                      (line-beginning-position) (line-end-position))))
             ;; the range is the same width, so nothing after it moved
             (should (= width (- (line-end-position) (line-beginning-position))))))))))
+
+(defmacro org-foresight-test--on-gap-day (&rest body)
+  "Two clocked spells with half an hour between them, drawn in log mode.
+BODY runs in the agenda buffer, point at `point-min'."
+  (declare (indent 0))
+  `(org-foresight-test--with-day
+       (concat "* TASK one\n  CLOCK: [2026-08-11 Tue 09:00]--[2026-08-11 Tue 10:00] =>  1:00\n"
+               "* TASK two\n  CLOCK: [2026-08-11 Tue 10:30]--[2026-08-11 Tue 11:00] =>  0:30\n")
+     (let ((org-agenda-sticky nil)
+           (org-agenda-window-setup 'current-window)
+           (org-agenda-time-leading-zero t)
+           (org-agenda-start-with-log-mode '(closed clock state)))
+       (save-window-excursion
+         (org-agenda-list nil "2026-08-11" 'day)
+         (with-current-buffer org-agenda-buffer-name
+           (goto-char (point-min))
+           ,@body)))))
+
+(defun org-foresight-test--goto-clock-row (n)
+  "Put point at the beginning of the Nth clocked row, counting from one."
+  (goto-char (point-min))
+  (let ((seen 0))
+    (while (and (not (eobp)) (< seen n))
+      (when (equal (org-get-at-bol 'type) "clock") (setq seen (1+ seen)))
+      (unless (= seen n) (forward-line 1)))
+    (should (= seen n))
+    (beginning-of-line)))
+
+(ert-deftest org-foresight-test-clock-stretch-reaches-back ()
+  "On the start of a spell, it reaches back to where the one above ended."
+  (org-foresight-test--on-gap-day
+    (org-foresight-test--goto-clock-row 2)
+    (should (string-match-p "10:30-11:00"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (goto-char (org-foresight-test--clock-field-at '(in . minute)))
+    (org-foresight-clock-stretch)
+    (should (string-match-p "10:00-11:00"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (should (string-match-p "(1:00)"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    ;; the neighbour is untouched
+    (org-foresight-test--goto-clock-row 1)
+    (should (string-match-p "09:00-10:00"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))))
+
+(ert-deftest org-foresight-test-clock-stretch-reaches-forward ()
+  "On the end of a spell, it reaches forward to where the one below begins."
+  (org-foresight-test--on-gap-day
+    (org-foresight-test--goto-clock-row 1)
+    (goto-char (org-foresight-test--clock-field-at '(out . minute)))
+    (org-foresight-clock-stretch)
+    (should (string-match-p "09:00-10:30"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (should (string-match-p "(1:30)"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+    (org-foresight-test--goto-clock-row 2)
+    (should (string-match-p "10:30-11:00"
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))))
+
+(ert-deftest org-foresight-test-clock-stretch-declines-with-nothing-to-reach ()
+  "No row above, and no gap, are both said rather than done."
+  (org-foresight-test--on-gap-day
+    ;; the first row has nothing above it
+    (org-foresight-test--goto-clock-row 1)
+    (goto-char (org-foresight-test--clock-field-at '(in . minute)))
+    (should-error (org-foresight-clock-stretch) :type 'user-error)
+    ;; once the gap is closed there is nothing left to give
+    (org-foresight-test--goto-clock-row 1)
+    (goto-char (org-foresight-test--clock-field-at '(out . minute)))
+    (org-foresight-clock-stretch)
+    (org-foresight-test--goto-clock-row 2)
+    (goto-char (org-foresight-test--clock-field-at '(in . minute)))
+    (should-error (org-foresight-clock-stretch) :type 'user-error)))

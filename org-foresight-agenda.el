@@ -1686,7 +1686,12 @@ Each of the four numbers gets `org-foresight-clock-field\\=', a cons of
 
 Point decides which: the hour or the minute, of the start or the end of the
 spell drawn on this row.  The change is made in the file, where Org
-recomputes the total, and the row is put right without rebuilding the page."
+recomputes the total, and the row is put right without rebuilding the page.
+
+On a minute N says the direction and not the distance: Org reads this the
+way it reads `S-up\=' and moves one step of
+`org-time-stamp-rounding-minutes\=', five minutes as it comes.  An hour
+moves by N."
   (interactive "p")
   (unless (derived-mode-p 'org-agenda-mode)
     (user-error "Not an agenda"))
@@ -1714,6 +1719,76 @@ recomputes the total, and the row is put right without rebuilding the page."
             (goto-char (match-beginning 0))
             (org-timestamp-change n (cdr field) 'updown))))
       (org-foresight-agenda--redraw-clock-row marker)))))
+
+(defun org-foresight-agenda--clock-row-beside (direction)
+  "Return the times of the nearest clocked row DIRECTION of this one.
+DIRECTION is -1 for the row above and 1 for the row below.  Nil when there
+is none on this page."
+  (save-excursion
+    (let ((found nil))
+      (while (and (not found)
+                  (zerop (forward-line direction)))
+        (when (equal (org-get-at-bol 'type) "clock")
+          (setq found (org-foresight-agenda--clock-line-times
+                       (org-get-at-bol 'org-marker)))))
+      found)))
+
+;;;###autoload
+(defun org-foresight-clock-stretch ()
+  "Give the gap beside this spell to this spell.
+
+Point picks the side.  On the start, the spell reaches back to where the
+one above it ended; on the end, forward to where the one below it begins,
+or to now when nothing follows.  The other spell is not touched: what
+changes hands is the time between them, which belonged to neither.
+
+This is the opposite half of `org-foresight-clock-fill\\='.  That one gives
+a hole its own name, for the stretches that were a thing of their own; this
+one gives it to the work beside it, for the stretches that were the tail of
+what was already running and never clocked out."
+  (interactive)
+  (unless (derived-mode-p 'org-agenda-mode)
+    (user-error "Not an agenda"))
+  (let ((field (get-text-property (point) 'org-foresight-clock-field))
+        (marker (org-get-at-bol 'org-marker))
+        (mine (org-foresight-agenda--clock-line-times (org-get-at-bol 'org-marker))))
+    (unless (and field marker mine)
+      (user-error "Put point on one of the two times of a clocked row"))
+    (let* ((side (car field))
+           (neighbour (org-foresight-agenda--clock-row-beside
+                       (if (eq side 'in) -1 1)))
+           ;; The row above ended where this one should begin; the row below
+           ;; begins where this one should end.
+           (target (cond (neighbour (if (eq side 'in) (cadr neighbour) (car neighbour)))
+                         ((eq side 'out) (let ((now (decode-time)))
+                                           (cons (nth 2 now) (nth 1 now))))
+                         (t nil)))
+           (current (if (eq side 'in) (car mine) (cadr mine))))
+      (unless target
+        (user-error "Nothing above this row to reach back to"))
+      (let ((delta (- (+ (* 60 (car target)) (cdr target))
+                      (+ (* 60 (car current)) (cdr current)))))
+        (when (zerop delta)
+          (user-error "There is no gap on that side"))
+        (org-with-remote-undo (marker-buffer marker)
+          (org-with-point-at marker
+            (save-excursion
+              (beginning-of-line)
+              (unless (re-search-forward org-ts-regexp-inactive (line-end-position) t)
+                (user-error "No timestamp on that clock line"))
+              (when (eq side 'out)
+                (unless (re-search-forward org-ts-regexp-inactive (line-end-position) t)
+                  (user-error "That clock is still running")))
+              (goto-char (match-beginning 0))
+              ;; No UPDOWN here.  With it, Org reads the call as `S-up' and
+              ;; moves one rounding step whatever the number says -- right
+              ;; for a nudge and wrong for this, which has a time to arrive
+              ;; at and not a direction to go in.
+              (org-timestamp-change delta 'minute))))
+        (org-foresight-agenda--redraw-clock-row marker)
+        (message "%s by %d minute%s"
+                 (if (> delta 0) "Later" "Earlier")
+                 (abs delta) (if (= 1 (abs delta)) "" "s"))))))
 
 ;;;###autoload
 (defun org-foresight-clock-later (&optional arg)
