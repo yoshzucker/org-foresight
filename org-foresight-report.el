@@ -1837,6 +1837,32 @@ answer here at all, only a count -- see `org-foresight-landing'."
                                  worst (and fail t) unit)))
                   (concat "\n" out)))))))
 
+(defface org-foresight-report-dangling '((t :inherit warning))
+  "Face for the line naming clocks left open.")
+
+(defun org-foresight-report--dangling (behind)
+  "Return the line naming BEHIND\='s clocks left open, or nil when there are none.
+
+Drawn under the bars because the bars are what it qualifies: a clock left
+open is counted as running until now, so the hours since it was started
+come out clocked however they were spent.  Left unsaid, that is a day drawn
+as fully accounted for and nothing to make anybody look -- the reading this
+package can least afford, since every figure it learns from assumes the
+clock was told the truth."
+  (when-let* ((open (plist-get behind :dangling))
+              (text (org-foresight--dangling-text open)))
+    (propertize
+     (org-foresight-report--fit-terms
+      ;; Where the line is too wide it is the key that is dropped, not the
+      ;; fact: `org-foresight-clock-fill' names the key whenever it is run,
+      ;; and nothing else on the page says that the bars above are wrong.
+      (list (concat (upcase (substring text 0 1)) (substring text 1))
+            (concat " · " (org-foresight--dangling-key open)))
+      1
+      (- org-foresight-report-columns
+         (string-width org-foresight-report-margin)))
+     'face 'org-foresight-report-dangling)))
+
 (defun org-foresight-report-capacity-line (&optional day scan now behind)
   "Return DAY's capacity verdict as one line, or nil on a non-working day.
 This is the line that goes at the very top of the agenda: a number you should
@@ -1844,7 +1870,9 @@ not have to go looking for is a number you will not look at.
 
 BEHIND, when given, draws the hours DAY has already spent under the ones it
 has left.  Passed in rather than gathered here because gathering it reads
-the clock history, and this is called once per day drawn."
+the clock history, and this is called once per day drawn.  It also carries
+the clocks left open, which are named under the bars -- and on a day off
+with nothing else to say, are all there is to it."
   (let* ((day (or day (org-foresight--day-start 0)))
          (scan (or scan (org-foresight-scan 1 day)))
          (cap (org-foresight-capacity day scan now))
@@ -1865,17 +1893,24 @@ the clock history, and this is called once per day drawn."
       ;; most worth a word -- the Saturday with a client in it -- was the
       ;; one day the block said nothing at all, not a bar, not a verdict,
       ;; not a key.
-      (when (> (+ (plist-get cap :committed-min)
-                  (plist-get cap :borrowed-min))
-               0)
-        (org-foresight-report--indent
-         (concat (org-foresight-report--rest-day cap)
-                 ;; The hours off are the whole of a day like this, so the
-                 ;; bar that draws them is the only picture there is of
-                 ;; where the work sits in it.
-                 (when-let ((bars (org-foresight-report--bars cap behind)))
-                   (concat "\n" bars))
-                 (org-foresight-report--verdict-extras scan)))))
+      (let ((open (org-foresight-report--dangling behind)))
+        (cond
+         ((> (+ (plist-get cap :committed-min)
+                (plist-get cap :borrowed-min))
+             0)
+          (org-foresight-report--indent
+           (concat (org-foresight-report--rest-day cap)
+                   ;; The hours off are the whole of a day like this, so the
+                   ;; bar that draws them is the only picture there is of
+                   ;; where the work sits in it.
+                   (when-let ((bars (org-foresight-report--bars cap behind)))
+                     (concat "\n" bars))
+                   (when open (concat "\n" open))
+                   (org-foresight-report--verdict-extras scan))))
+         ;; A day off with nothing on it has nothing to report about itself,
+         ;; but a clock left open is not about the day: it is about the
+         ;; record, and it goes on being wrong on Saturday as well.
+         (open (org-foresight-report--indent open)))))
      (t
       (org-foresight-report--indent
        (concat (org-foresight-report--verdict cap)
@@ -1888,6 +1923,8 @@ the clock history, and this is called once per day drawn."
                  (concat "\n" frees))
                (when-let ((bars (org-foresight-report--bars cap behind)))
                  (concat "\n" bars))
+               (when-let ((open (org-foresight-report--dangling behind)))
+                 (concat "\n" open))
                (org-foresight-report--verdict-extras scan)))))))
 
 (defun org-foresight-report--rest-day (cap)

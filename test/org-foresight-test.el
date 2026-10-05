@@ -33,6 +33,10 @@
 ;; for it only when it is there.
 (defvar evil-state)
 
+;; Bound in the tests of clocks left open, to say which open line Org is
+;; running -- the one thing the file cannot say for itself.
+(defvar org-clock-marker)
+
 ;;;; Helpers
 
 (defun org-foresight-test--ts (h m &optional day)
@@ -1408,6 +1412,45 @@ SCHEDULED: %s
                 (org-foresight-test--ts 0 0 10) nil
                 (org-foresight-test--ts 6 0 10))))
         (should-not (string-match-p "signal" s))))))
+
+(ert-deftest org-foresight-test-the-capacity-block-names-clocks-left-open ()
+  "Under the bars, the clocks left open that the bars count as running.
+
+The bars are drawn from the clock, and a clock left open makes every hour
+since it started come out clocked.  The line goes where the bars are, on a
+working day and a day off alike -- it is about the record, not the day --
+and in the width every line of the block keeps."
+  (org-foresight-test--with-window
+    (org-foresight-test--with-org "* NEXT ordinary\n"
+      (let* ((now (org-foresight-test--ts 11 0 10))
+             (open (list (list :start (org-foresight-test--ts 16 0 3)
+                               :title "left behind")
+                         (list :start (org-foresight-test--ts 9 0 7)
+                               :title "and this")))
+             (behind (lambda (day)
+                       (append (list :dangling open)
+                               (org-foresight-behind day nil nil now))))
+             (monday (org-foresight-test--ts 0 0 10))
+             (sunday (org-foresight-test--ts 0 0 9)))
+        (dolist (day (list monday sunday))
+          (let ((s (org-foresight-report-capacity-line
+                    day nil now (funcall behind day))))
+            (should (string-match-p
+                     "2 clocks left open since 08-03 16:00 count as running" s))
+            (should (org-foresight-test--within-80 s))))
+        ;; one is said as one
+        (should (string-match-p
+                 "A clock left open since 08-03 16:00 counts as running"
+                 (org-foresight-report-capacity-line
+                  monday nil now
+                  (append (list :dangling (list (car open)))
+                          (org-foresight-behind monday nil nil now)))))
+        ;; and nothing open says nothing
+        (should-not (string-match-p
+                     "left open"
+                     (org-foresight-report-capacity-line
+                      monday nil now
+                      (org-foresight-behind monday nil nil now))))))))
 
 (ert-deftest org-foresight-test-signals-cache ()
   "The cache must serve repeats, and FORCE must go back to the files."
@@ -5868,6 +5911,50 @@ CLOCK: [@ 09:00]
                               (seconds-to-time (* 60 (+ (* 60 11) 30)))))))
       (should (< (abs (- 150 (plist-get clock :day-total))) 0.001)))))
 
+(ert-deftest org-foresight-test-a-clock-left-open-is-named-not-the-running-one ()
+  "Every open CLOCK line is counted, and those Org is not running are named.
+
+The file cannot tell a clock being run now from one Emacs was closed under
+weeks ago -- both are a line with no end -- and only Org knows which one it
+opened.  So both are counted, because the second may be running on another
+machine, and the ones Org is not running are listed, because a clock left
+open is every hour since it started, and the day it covers reads as fully
+accounted for when it is not."
+  (org-foresight-test--with-clocked
+      "* NEXT Forgotten
+:LOGBOOK:
+CLOCK: [@ 09:00]
+:END:
+* NEXT Running
+:LOGBOOK:
+CLOCK: [@ 10:00]
+:END:
+"
+    (let* ((now (time-add (org-foresight--day-start 0) (* 3600 11)))
+           (org-clock-marker
+            (with-current-buffer (find-file-noselect (car org-agenda-files))
+              (goto-char (point-min))
+              (re-search-forward "CLOCK: \\[[^]]*10:00\\]")
+              (point-marker)))
+           (clock (org-foresight-clock-scan 7 now)))
+      ;; both counted as running, two hours and one
+      (should (< (abs (- 180 (plist-get clock :day-total))) 0.001))
+      ;; and only the one Org is not running is named
+      (should (equal '("Forgotten")
+                     (mapcar (lambda (d) (plist-get d :title))
+                             (plist-get clock :dangling))))
+      ;; with nothing running, both are, oldest first
+      (let ((org-clock-marker (make-marker)))
+        (should (equal '("Forgotten" "Running")
+                       (mapcar (lambda (d) (plist-get d :title))
+                               (plist-get (org-foresight-clock-scan 7 now)
+                                          :dangling)))))
+      ;; and what measures the day carries them to whatever draws it
+      (should (equal (plist-get clock :dangling)
+                     (plist-get (org-foresight-behind
+                                 (org-foresight--day-start 0) clock nil now)
+                                :dangling))))))
+
 (ert-deftest org-foresight-test-today-tasks-are-per-entry ()
   "One drawer is one task however many CLOCK lines it holds, and it carries
 enough of the heading to be acted on."
@@ -7720,6 +7807,63 @@ nothing -- which is why the holes were still there at six o'clock."
       (let ((text (org-foresight-test--task-file-text)))
         (should (= 2 (org-foresight-test--count "CLOCK: " text)))
         (should (string-match-p "10:30\\]--\\[[^]]*14:00\\]" text))))))
+
+(ert-deftest org-foresight-test-clock-fill-names-a-clock-left-open ()
+  "A day a clock was left open on says so, rather than that it is full.
+
+A clock with no end is counted as running until now, so from the minute it
+was started the day is clocked however it was spent, and there is nothing
+for the command to offer.  Saying only that is how one clock left open on a
+Thursday goes on emptying every day after it for weeks: the message reads
+as a record well kept.  The one useful thing to say is where the hole
+starts and what closes it.
+
+Yesterday rather than today, so the clock is closed at a NOW that has
+already passed every hour asked about, whatever the hour the suite runs at."
+  (let* ((yesterday (org-foresight--day-start 1))
+         (stamp (lambda (h)
+                  (format-time-string "[%Y-%m-%d %a %H:%M]"
+                                      (time-add yesterday (* 3600 h))))))
+    ;; started before the waking day did, so all of it is covered
+    (org-foresight-test--with-task-file
+        (concat "* ONGO left behind\n:LOGBOOK:\nCLOCK: " (funcall stamp 6)
+                "\n:END:\n")
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-awake '("07:00" . "22:00"))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight--shape-cache nil)
+            (org-clock-marker (make-marker)))
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil)))
+          (let ((err (should-error (org-foresight-clock-fill yesterday)
+                                   :type 'user-error)))
+            (should (string-match-p "left open on left behind since"
+                                    (cadr err)))
+            ;; and names the way out, whatever key it is on
+            (should (string-match-p "org-resolve-clocks resolves it"
+                                    (cadr err)))))))
+    ;; started part-way through: what came before it is offered, and the
+    ;; prompt says the list stops short
+    (org-foresight-test--with-task-file
+        (concat "* ONGO left behind\n:LOGBOOK:\nCLOCK: " (funcall stamp 15)
+                "\n:END:\n")
+      (let ((org-foresight-work '(("09:00" . "17:30")))
+            (org-foresight-awake '("07:00" . "22:00"))
+            (org-foresight-workdays '(0 1 2 3 4 5 6))
+            (org-foresight--shape-cache nil)
+            (org-clock-marker (make-marker))
+            asked offered)
+        (cl-letf (((symbol-function 'org-foresight-observe--get-json)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'completing-read)
+                   (lambda (prompt collection &rest _)
+                     (setq asked prompt
+                           offered (org-foresight-test--offered collection))
+                     (signal 'quit nil))))
+          (condition-case nil (org-foresight-clock-fill yesterday) (quit nil)))
+        (should (string-match-p "a clock left open" asked))
+        (should (equal '("07:00-15:00")
+                       (mapcar (lambda (s) (substring s 0 11)) offered)))))))
 
 (ert-deftest org-foresight-test-a-clock-outside-the-hours-is-named ()
   "A clock that ran through the lunch break is reported, not swallowed.
