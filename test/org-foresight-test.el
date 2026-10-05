@@ -2798,9 +2798,11 @@ CLOCK: [2026-08-30 Sun 09:00]--[2026-08-30 Sun 10:00] =>  1:00
 :END:
 "
     (should (equal "CATEGORY" org-foresight-clock-property))
-    (let ((rows (plist-get (org-foresight-clock-scan
-                            30 (encode-time 0 0 12 30 8 2026))
-                           :rows)))
+    (let* ((now (encode-time 0 0 12 30 8 2026))
+           ;; The day as well as the hour.  Without it the window is the
+           ;; thirty days before today, and the clock above falls out of it
+           ;; the moment September is over.
+           (rows (plist-get (org-foresight-clock-scan 30 now now) :rows)))
       (should (assoc "comms" rows)))))
 
 (ert-deftest org-foresight-test-clock-scan-can-group-by-another-property ()
@@ -2818,9 +2820,8 @@ CLOCK: [2026-08-30 Sun 09:00]--[2026-08-30 Sun 10:00] =>  1:00
 :END:
 "
     (let* ((org-foresight-clock-property "CONVECT_AREA")
-           (rows (plist-get (org-foresight-clock-scan
-                             30 (encode-time 0 0 12 30 8 2026))
-                            :rows)))
+           (now (encode-time 0 0 12 30 8 2026))
+           (rows (plist-get (org-foresight-clock-scan 30 now now) :rows)))
       (should (assoc "work.people" rows))
       (should-not (assoc "comms" rows)))))
 
@@ -2842,9 +2843,8 @@ CLOCK: [2026-08-30 Sun 13:00]--[2026-08-30 Sun 15:00] =>  2:00
 :END:
 "
     (let* ((org-foresight-clock-property "CONVECT_AREA")
-           (rows (plist-get (org-foresight-clock-scan
-                             30 (encode-time 0 0 23 30 8 2026))
-                            :rows)))
+           (now (encode-time 0 0 23 30 8 2026))
+           (rows (plist-get (org-foresight-clock-scan 30 now now) :rows)))
       (should (equal 60.0 (cdr (assoc "work.dev" rows))))
       (should (equal 120.0 (cdr (assoc "?" rows)))))))
 
@@ -10332,8 +10332,11 @@ often than it appears to."
         ;; two days, two intervals each
         (should (= 4 (seq-count (lambda (c) (= c ?┌)) spine)))
         (should (= 4 (seq-count (lambda (c) (= c ?└)) spine)))
-        ;; and no date header wears one
-        (should (equal " " (org-foresight-test--shown-at "August\\|September")))
+        ;; and no date header wears one -- found by the weekday it opens
+        ;; with, which every header has, and not by a month, which the days
+        ;; drawn have only until it is over
+        (should (equal " " (org-foresight-test--shown-at
+                            "^\\(Monday\\|Tuesday\\|Wednesday\\|Thursday\\|Friday\\|Saturday\\|Sunday\\)")))
         (ignore lines)))))
 
 (ert-deftest org-foresight-test-spine-can-be-turned-off ()
