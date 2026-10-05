@@ -322,15 +322,26 @@ the record has been wrong.  The rest is for `org-resolve-clocks\=' to show
 
 NAMED gives a lone clock its entry as well, for a caller with the room: one
 is the case where the name is the answer, being either the task still
-running on another machine or the one that was forgotten."
+running on another machine or the one that was forgotten.
+
+The start is dated against `org-foresight-now\=', and the year is given only
+when it is not this one."
   (when dangling
     (let* ((oldest (plist-get (car dangling) :start))
+           (now (or org-foresight-now (current-time)))
            ;; Numbers rather than names: a month name is the locale's to
            ;; spell, and it spells it in the language of the system.
            (since (format-time-string
-                   (if (time-less-p oldest (org-foresight--day-start 0))
-                       "%m-%d %H:%M"
+                   (cond
+                    ((not (time-less-p oldest (org-foresight--midnight now)))
                      "%H:%M")
+                    ;; A month and a day are read as the last time they
+                    ;; came round, so a clock left open since last August
+                    ;; would read as one left open a week ago -- the answer
+                    ;; wrong by a year on the one question this is for.
+                    ((/= (nth 5 (decode-time oldest)) (nth 5 (decode-time now)))
+                     "%Y-%m-%d %H:%M")
+                    (t "%m-%d %H:%M"))
                    oldest)))
       (cond
        ((cdr dangling)
