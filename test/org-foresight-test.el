@@ -1423,6 +1423,8 @@ and in the width every line of the block keeps."
   (org-foresight-test--with-window
     (org-foresight-test--with-org "* NEXT ordinary\n"
       (let* ((now (org-foresight-test--ts 11 0 10))
+             ;; what the start is dated against, so 08-03 stays this year's
+             (org-foresight-now now)
              (open (list (list :start (org-foresight-test--ts 16 0 3)
                                :title "left behind")
                          (list :start (org-foresight-test--ts 9 0 7)
@@ -1451,6 +1453,28 @@ and in the width every line of the block keeps."
                      (org-foresight-report-capacity-line
                       monday nil now
                       (org-foresight-behind monday nil nil now))))))))
+
+(ert-deftest org-foresight-test-a-clock-left-open-in-another-year-says-the-year ()
+  "The start of a clock left open is dated as far as it needs to be.
+
+A month and a day are read as the last time they came round, so a clock
+left open since last August, given as `08-03', reads as one left open a week
+ago -- and how far back the record has been wrong is the one thing the date
+is there to say.  So the year is given when it is not this one, the month and
+day when it is, and today only the hour."
+  (let ((org-foresight-now (org-foresight-test--ts 11 0 10))
+        (since (lambda (time)
+                 (org-foresight--dangling-text (list (list :start time))))))
+    (should (string-match-p "since 2025-08-03 16:00"
+                            (funcall since (encode-time 0 0 16 3 8 2025))))
+    ;; a year turned is a year, however few days ago it turned
+    (let ((org-foresight-now (encode-time 0 0 11 5 1 2026)))
+      (should (string-match-p "since 2025-12-30 16:00"
+                              (funcall since (encode-time 0 0 16 30 12 2025)))))
+    (should (string-match-p "since 08-03 16:00"
+                            (funcall since (org-foresight-test--ts 16 0 3))))
+    (should (string-match-p "since 09:00"
+                            (funcall since (org-foresight-test--ts 9 0 10))))))
 
 (ert-deftest org-foresight-test-signals-cache ()
   "The cache must serve repeats, and FORCE must go back to the files."
