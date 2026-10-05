@@ -1969,17 +1969,35 @@ no single answer fits."
                   (and today (org-foresight-observe-coverage clock))
                   nil span))
          (gaps (org-foresight--clock-gaps
-                behind (org-foresight--clock-cuts day scan))))
+                behind (org-foresight--clock-cuts day scan)))
+         ;; A clock left open is counted as running until now, so every
+         ;; hour after it starts is one this command can never offer.  Said
+         ;; whenever there is one, and not only when nothing is left: the
+         ;; holes before it are real and worth filling, but the list is
+         ;; short by everything since, and a short list reads as a full day.
+         (open (plist-get behind :dangling)))
     (unless gaps
-      (user-error "Nothing %s is unrecorded for longer than %d minutes"
-                  (downcase (org-foresight--plan-day-name day))
-                  org-foresight-clock-fill-minimum))
+      (if open
+          (user-error "Nothing %s is unrecorded: %s (%s)"
+                      (downcase (org-foresight--plan-day-name day))
+                      (org-foresight--dangling-text open t)
+                      (org-foresight--dangling-key open))
+        (user-error "Nothing %s is unrecorded for longer than %d minutes"
+                    (downcase (org-foresight--plan-day-name day))
+                    org-foresight-clock-fill-minimum)))
     (let* ((choices (mapcar (lambda (gap)
                               (cons (org-foresight--clock-gap-label gap) gap))
                             gaps))
-           (gap (cdr (assoc (completing-read "Unrecorded: "
-                                             (org-foresight--ordered choices)
-                                             nil t nil nil (car (car choices)))
+           (gap (cdr (assoc (completing-read
+                             (if open
+                                 (format "Unrecorded (%s left open, %s): "
+                                         (if (cdr open)
+                                             (format "%d clocks" (length open))
+                                           "a clock")
+                                         (org-foresight--dangling-key open))
+                               "Unrecorded: ")
+                             (org-foresight--ordered choices)
+                             nil t nil nil (car (car choices)))
                             choices)))
            (from (car (car gap)))
            (to (cdr (car gap)))

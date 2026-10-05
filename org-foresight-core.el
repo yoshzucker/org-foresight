@@ -47,6 +47,9 @@
 ;; they are one product of the pass that also produces the signals, and the
 ;; pass belongs where the signals are.  See `org-foresight-outline-records'.
 (declare-function org-foresight-outline-records "org-foresight-plan" (&optional force))
+;; Where Org keeps the clock it is running.  Read, never set, and only once
+;; org-clock is loaded: before that nothing can be running.
+(defvar org-clock-marker)
 
 (defvar org-foresight-now nil
   "The moment the day is being read at, or nil for the present one.
@@ -291,6 +294,63 @@ opening every one of them a second time."
                        :minutes minutes))
                table))))
 
+(defun org-foresight--clock-running-here-p ()
+  "Non-nil when the CLOCK line at point is the clock Org is running.
+
+The file cannot tell.  A CLOCK line with no end reads the same whether
+somebody is at the task this minute or Emacs was closed under it three weeks
+ago, and only Org knows which: `org-clock-marker\=' sits on the one line it
+opened.  Every other open line is what `org-resolve-clocks\=' calls dangling
+-- a session that ended without clocking out, or a second clock started
+where the first could not be seen to stop it."
+  (and (boundp 'org-clock-marker)
+       (markerp org-clock-marker)
+       (eq (marker-buffer org-clock-marker)
+           (or (buffer-base-buffer) (current-buffer)))
+       (<= (line-beginning-position) org-clock-marker (line-end-position))))
+
+(defun org-foresight--dangling-text (dangling &optional named)
+  "Say what DANGLING, a clock survey\='s `:dangling\=', does to the record.
+
+A clause rather than a sentence, so the caller decides what it follows and
+what follows it.  Nil when DANGLING is empty.
+
+The oldest start is given and not every one: what it answers is how far back
+the record has been wrong.  The rest is for `org-resolve-clocks\=' to show
+-- it visits each open line in turn and asks how it ended -- and
+`org-foresight--dangling-key\=' names the key it is on.
+
+NAMED gives a lone clock its entry as well, for a caller with the room: one
+is the case where the name is the answer, being either the task still
+running on another machine or the one that was forgotten."
+  (when dangling
+    (let* ((oldest (plist-get (car dangling) :start))
+           ;; Numbers rather than names: a month name is the locale's to
+           ;; spell, and it spells it in the language of the system.
+           (since (format-time-string
+                   (if (time-less-p oldest (org-foresight--day-start 0))
+                       "%m-%d %H:%M"
+                     "%H:%M")
+                   oldest)))
+      (cond
+       ((cdr dangling)
+        (format "%d clocks left open since %s count as running"
+                (length dangling) since))
+       ((and named (plist-get (car dangling) :title))
+        (format "a clock left open on %s since %s counts as running"
+                (plist-get (car dangling) :title) since))
+       (t (format "a clock left open since %s counts as running" since))))))
+
+(defun org-foresight--dangling-key (dangling)
+  "Say how DANGLING\='s clocks are closed, as a clause: the key and its object.
+
+`org-resolve-clocks\=' and not anything of this package\='s.  Org already asks
+the one question that closes a clock -- when it really stopped -- and an
+answer only somebody who was there can give is not one to guess at here."
+  (format "%s resolves %s"
+          (substitute-command-keys "\\[org-resolve-clocks]")
+          (if (cdr dangling) "them" "it")))
+
 (defun org-foresight-clock-scan (days &optional now day)
   "Scan `org-agenda-files' LOGBOOK CLOCK lines over the last DAYS days
 \(DAY inclusive, today by default) in one pass.  A running clock (no end timestamp) is
@@ -331,6 +391,14 @@ day the mistake was made.
 :intervals-byday  DAYS-length vector of (START . END) lists, index 0 = oldest,
                   normalized; a segment is filed under the day it starts in,
                   matching how :byday attributes minutes.
+:dangling       plists (:start :title), oldest first, for the open CLOCK
+                lines counted above that are not the clock Org is running
+                (`org-foresight--clock-running-here-p\=').  Counted all the
+                same: a clock running in another Emacs looks exactly like
+                this, and the file is the only witness either way.  Named so
+                that what they cost can be said -- one left open three weeks
+                ago is every hour since, and a record that says every hour is
+                accounted for has stopped being something to ask
 Each segment is attributed once to its heading's inherited CATEGORY, so
 :rows/:day-rows partition their window (minutes sum to :total/:day-total).
 The org hierarchy depth is irrelevant: CATEGORY is inherited, so a GTD
@@ -351,7 +419,7 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
          ;; second pass: the same LOGBOOK is already open under point, and the
          ;; heading's own data is one `org-back-to-heading' away.
          (day-tasks (make-hash-table :test 'equal))
-         day-intervals day-private-intervals
+         day-intervals day-private-intervals dangling
          (re (concat "^[ \t]*" org-clock-string
                      "[ \t]*\\(\\[[^]\n]+\\]\\)\\(?:--\\(\\[[^]\n]+\\]\\)\\)?")))
     (dolist (file (org-agenda-files))
@@ -373,6 +441,13 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                                "?"))
                       (idx (min (1- days)
                                 (floor (/ (float-time (time-subtract cs from)) 86400)))))
+                 (unless (or e-str (org-foresight--clock-running-here-p))
+                   (push (list :start s
+                               :title (save-excursion
+                                        (and (ignore-errors
+                                               (org-back-to-heading t) t)
+                                             (org-foresight--entry-title))))
+                         dangling))
                  (setq total (+ total dur))
                  (puthash cat (+ dur (gethash cat table 0)) table)
                  (aset byday idx (+ dur (aref byday idx)))
@@ -425,7 +500,9 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
              (nreverse day-private-intervals))
             :day-tasks (seq-sort-by (lambda (e) (plist-get e :minutes)) #'> tasks)
             :rows-byday rows-byday
-            :intervals-byday intervals-byday))))
+            :intervals-byday intervals-byday
+            :dangling (seq-sort-by (lambda (d) (float-time (plist-get d :start)))
+                                   #'< dangling)))))
 
 ;;;; Project scan
 ;; The outline axis.  The day scan asks when work is dated; this asks how the
@@ -3946,6 +4023,11 @@ Five segments, which divide the elapsed working span exactly:
                   for; these say *which* stretches did, which is what
                   `org-foresight-clock-fill\=' needs in order to ask about
                   them one at a time instead of making somebody type hours
+  :dangling       CLOCK\='s own `:dangling\=', passed through: the open
+                  clocks the segments above counted as running that Org is
+                  not running.  Carried here because this is what they
+                  falsify -- every segment but the clock reads smaller by
+                  them -- so whatever draws these figures can say so
 
 The derivation has to run in this order, and each step earns its place:
 
@@ -4024,7 +4106,8 @@ one a reader can see, where a nil would quietly draw the day at half length."
           :measured (and afk t)
           :elapsed elapsed
           :unclocked-ivs unclocked
-          :away-ivs away)))
+          :away-ivs away
+          :dangling (and clock (plist-get clock :dangling)))))
 
 (defun org-foresight-capacity (day &optional scan now)
   "Return a plist describing how much of DAY may still be promised.
