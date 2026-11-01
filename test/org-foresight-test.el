@@ -310,6 +310,34 @@ SCHEDULED: <2026-08-10 Mon>
       (should (equal (org-foresight-test--busy-on scan 0) '("11:00-12:00")))
       (should (= (aref (plist-get scan :committed) 0) 0.0)))))
 
+(ert-deftest org-foresight-test-one-entry-can-be-asked-what-it-claims ()
+  "The same rule, asked of the entry rather than of the day it lands on.
+What an entry claims is read without the survey around it, so a claim that
+comes out wrong can be traced to the one heading that made it."
+  (org-foresight-test--with-org
+      "* NEXT review with the team
+SCHEDULED: <2026-08-10 Mon>
+:PROPERTIES:
+:EFFORT:   2:00
+:END:
+<2026-08-10 Mon 11:00>--<2026-08-10 Mon 12:00>
+"
+    (with-current-buffer (find-file-noselect (car org-agenda-files))
+      (goto-char (point-min))
+      (let* ((from0 (org-foresight-test--ts 0 0))
+             (survey (org-foresight--entry-survey
+                      from0 (time-add from0 (days-to-time 1)) 1 -1
+                      (org-foresight-test--ts 9 0)))
+             (claims (plist-get survey :claims)))
+        (should-not (plist-get survey :surged))
+        (should (= 1 (length claims)))
+        (pcase-let ((`(,idx ,row ,busy) (car claims)))
+          (should (= 0 idx))
+          (should (eq 'task (plist-get row :kind)))
+          (should (equal "review with the team" (plist-get row :title)))
+          (should (equal (org-foresight-test--hhmm (list busy))
+                         '("11:00-12:00"))))))))
+
 (ert-deftest org-foresight-test-scan-skips-done ()
   "Finished work makes no claim on the future -- including done-type DELEG."
   (org-foresight-test--with-org
