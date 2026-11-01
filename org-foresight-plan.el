@@ -375,202 +375,200 @@ than asking for one."
          here elsewhere records
          meetings procrastinated unplannable followups outside-work
          orphan-candidates undecided in-flight unreadable untimed-travel)
-    (dolist (file (org-agenda-files))
-      (when (file-exists-p file)
-        (with-current-buffer (find-file-noselect file)
-          (org-with-wide-buffer
-           ;; The TODO-keyworded headings still open above the point, deepest
-           ;; first.  Per file: containment never crosses one.
-           (let (stack)
-           (org-map-entries
-            (lambda ()
-              (let* ((todo (org-get-todo-state))
-                     (done (org-entry-is-done-p))
-                     (title (org-foresight--entry-title))
-                     (effort (org-entry-get (point) "EFFORT"))
-                     (sched (org-get-scheduled-time (point)))
-                     (dead (org-get-deadline-time (point)))
-                     (cat (org-entry-get (point) "CATEGORY" t))
-                     (stamps (unless done (org-foresight--entry-timestamps))))
-                ;; The shape of the outline, read off the same visit as the
-                ;; signals below -- two questions about one heading, where
-                ;; the walk is the expensive part.
-                ;;
-                ;; The rule the stack encodes has two halves and one line
-                ;; does both: the stack is popped by level for *every*
-                ;; heading, and only TODO-keyworded headings are ever pushed.
-                ;; Popping unconditionally is what closes the subtree a
-                ;; keyword-less heading ends -- without it the next heading
-                ;; would find a stale ancestor from a sibling tree on top and
-                ;; adopt it, wrongly and silently.  Never pushing it is what
-                ;; makes it transparent, so a TODO grandchild under a
-                ;; keyword-less child still finds its TODO grandparent.  A
-                ;; grouping heading is a hole in the outline for the purpose
-                ;; of asking who owns what, and a wall for the purpose of
-                ;; asking where a subtree ends.
-                (let ((level (org-current-level)))
-                  (while (and stack (>= (car (car stack)) level))
-                    (pop stack))
-                  (when-let ((rec (org-foresight--project-record
-                                   (list :todo todo :done done
-                                         :title title :category cat))))
-                    (when-let ((parent (cdr (car stack))))
-                      (plist-put parent :has-todo-child t)
-                      (when-let ((d (plist-get rec :deadline)))
-                        (plist-put parent :child-deadlines
-                                   (cons d (plist-get parent :child-deadlines))))
-                      (plist-put rec :todo-parent parent))
-                    (push (cons level rec) stack)
-                    (push rec records)))
-                (when-let ((uid (org-entry-get (point) "UID")))
-                  (puthash uid t uids))
-                ;; (a) A meeting nobody has budgeted around.
-                (when (and (not done)
-                           org-foresight-meeting-categories
-                           (member cat org-foresight-meeting-categories)
-                           (null (org-entry-get (point) org-foresight-prep-property))
-                           (org-foresight--entry-has-future-time-p stamps now))
-                  (push (org-foresight--finding
-                         title
-                         (format "needs %s + %s"
-                                 org-foresight-meeting-prep
-                                 org-foresight-meeting-follow))
-                        meetings))
-                ;; A journey written down that no day can place.  Between
-                ;; them a stamp and a clock are the only two ways an entry
-                ;; says when it happened; with neither, the derivation goes
-                ;; on believing you never left the house and draws the next
-                ;; leg from there.  It used to do that in silence, which is
-                ;; the part worth fixing -- a rule nobody can see broken is
-                ;; a rule nobody can follow.
-                (when (and (not done)
-                           org-foresight-travel-property
-                           (org-entry-get (point) org-foresight-travel-property)
-                           (not (seq-find #'org-foresight--ts-timed-p stamps))
-                           (not (org-foresight--entry-clocked-p)))
-                  (push (org-foresight--finding
-                         title "no time and no clock, so no day can place it")
-                        untimed-travel))
-                ;; (f) Work already parked outside the hours being defended.
-                ;; Excluded: private commitments, because dinner at seven is
-                ;; not work that escaped the day; and anything belonging to
-                ;; somebody else, because a child's fixture is not overtime.
-                ;; A board that says otherwise is telling its reader off for
-                ;; having a life.
-                (when-let ((occ (and stamps
-                                     (not (member cat
-                                                  org-foresight-private-categories))
-                                     (eq (org-foresight--entry-attention cat)
-                                         'blocking)
-                                     (org-foresight--outside-work-hours
-                                      stamps now horizon))))
-                  (push (org-foresight--finding
-                         title
-                         ;; The group heading already says these are outside
-                         ;; the working hours; the note only has to say when.
-                         (format "%s %s–%s"
-                                 (format-time-string "%a %m-%d" (car occ))
-                                 (format-time-string "%H:%M" (car occ))
-                                 (format-time-string "%H:%M" (cdr occ))))
-                        outside-work))
-                ;; (g) An estimate Org itself cannot read.  This one is
-                ;; not about the plan at all -- it is about the tool: the
-                ;; agenda calls `org-duration-to-minutes' on every EFFORT it
-                ;; is asked to display, and that function signals rather than
-                ;; shrugging.  So a single "2h" or "soon" takes down the
-                ;; whole of `C-c a a' with a message naming neither the file
-                ;; nor the heading.  This board is built by walking the files
-                ;; and so still works when the agenda does not, which makes it
-                ;; the one place that can say which heading to go and fix.
-                (when (and effort (null (org-foresight--duration-minutes effort)))
-                  (push (org-foresight--finding
-                         title (format "%S is not a duration Org can read"
-                                       effort))
-                        unreadable))
-                ;; (h) Work the place decides.  Most work goes anywhere, so
-                ;; what lands here is the little that does not: a thing to
-                ;; pick up, a conversation that would go wrong in writing.
-                ;; Being here is the scarce part, and the question at the door
-                ;; is what only being here can settle.
-                (when (and todo (not done))
-                  (let ((place (org-foresight--entry-place)))
-                    (cond
-                     ;; Every place the day is at, not the one it is worked
-                     ;; from.  A day based at home with an appointment at the
-                     ;; office is a day the office errands can be run on, and
-                     ;; asking only for the base both hid them here and called
-                     ;; them impossible below -- one mistake, read twice.
-                     ((and place (memq place places))
-                      (push (list :title title :marker (point-marker)
-                                  :place place :deadline dead
-                                  :people (org-foresight--entry-people))
-                            here))
-                     ;; The mirror image: work put on today that today cannot
-                     ;; do.  A home day with an office errand on it is a plan
-                     ;; that will not survive contact with the morning.
-                     ((and place sched
-                           (= 0 (org-foresight--day-of sched today)))
-                      (push (org-foresight--finding
-                             title
-                             ;; Where today is actually being worked from is
-                             ;; the same answer on every row of this
-                             ;; section, and the section it is read under
-                             ;; has already given it once.  Repeating it
-                             ;; here cost more columns than the note has --
-                             ;; three places and the place needed was cut
-                             ;; off the end of the line.
-                             (format "needs %s · not there today"
-                                     (truncate-string-to-width
-                                      (format "%s" place) 13 nil nil t)))
-                            elsewhere)))))
-                ;; (b) A decision that keeps not being made.
-                (when (and todo (not done))
-                  (let ((n (org-foresight--reschedule-count)))
-                    (when (>= n org-foresight-procrastination-threshold)
-                      (push (org-foresight--finding
-                             title (format "rescheduled %d times" n))
-                            procrastinated))))
-                ;; (c) A deadline that cannot be planned for.
-                ;;
-                ;; Leaves only.  A project heading carries no EFFORT because
-                ;; its estimate is its children's -- asking one for its own
-                ;; would be asking for the same hours twice -- so a signal
-                ;; that read a missing EFFORT there fired on every properly
-                ;; decomposed tree in the file.  Naming correct work as a
-                ;; problem is how a board teaches people to stop reading it.
-                (when (and todo (not done) dead (null effort)
-                           (time-less-p dead horizon)
-                           (not (org-foresight-project-p)))
-                  (push (org-foresight--finding
-                         title
-                         (format "due %s, no estimate"
-                                 (format-time-string "%m-%d" dead)))
-                        unplannable))
-                ;; (d) Work with someone else that has gone quiet.
-                (when (and todo
-                           (member todo org-foresight-followup-keywords)
-                           sched (time-less-p sched today))
-                  (push (org-foresight--finding
-                         title
-                         (format "check-in was %s"
-                                 (format-time-string "%m-%d" sched)))
-                        followups))
-                ;; (e) Prep for something that may have been cancelled.
-                (when-let ((ref (org-entry-get
-                                 (point) org-foresight-meeting-uid-property)))
-                  (unless done
-                    (push (cons ref (org-foresight--finding
-                                     title "meeting no longer in the calendar"))
-                          orphan-candidates)))
-                ;; (f) Work that has been started but not finished.
-                (when (and todo (member todo org-foresight-wip-keywords))
-                  (push (org-foresight--finding title "in flight") in-flight))
-                ;; (g) Something captured that was never decided about.
-                (when (and org-foresight-undecided-enabled
-                           (org-foresight--undecided-p todo stamps))
-                  (push (org-foresight--finding title "captured, not decided")
-                        undecided))))
-            nil nil))))))
+    (org-foresight--each-agenda-file
+     (lambda ()
+       ;; The TODO-keyworded headings still open above the point, deepest
+       ;; first.  Per file: containment never crosses one.
+       (let (stack)
+         (org-map-entries
+          (lambda ()
+            (let* ((todo (org-get-todo-state))
+                   (done (org-entry-is-done-p))
+                   (title (org-foresight--entry-title))
+                   (effort (org-entry-get (point) "EFFORT"))
+                   (sched (org-get-scheduled-time (point)))
+                   (dead (org-get-deadline-time (point)))
+                   (cat (org-entry-get (point) "CATEGORY" t))
+                   (stamps (unless done (org-foresight--entry-timestamps))))
+              ;; The shape of the outline, read off the same visit as the
+              ;; signals below -- two questions about one heading, where
+              ;; the walk is the expensive part.
+              ;;
+              ;; The rule the stack encodes has two halves and one line
+              ;; does both: the stack is popped by level for *every*
+              ;; heading, and only TODO-keyworded headings are ever pushed.
+              ;; Popping unconditionally is what closes the subtree a
+              ;; keyword-less heading ends -- without it the next heading
+              ;; would find a stale ancestor from a sibling tree on top and
+              ;; adopt it, wrongly and silently.  Never pushing it is what
+              ;; makes it transparent, so a TODO grandchild under a
+              ;; keyword-less child still finds its TODO grandparent.  A
+              ;; grouping heading is a hole in the outline for the purpose
+              ;; of asking who owns what, and a wall for the purpose of
+              ;; asking where a subtree ends.
+              (let ((level (org-current-level)))
+                (while (and stack (>= (car (car stack)) level))
+                  (pop stack))
+                (when-let ((rec (org-foresight--project-record
+                                 (list :todo todo :done done
+                                       :title title :category cat))))
+                  (when-let ((parent (cdr (car stack))))
+                    (plist-put parent :has-todo-child t)
+                    (when-let ((d (plist-get rec :deadline)))
+                      (plist-put parent :child-deadlines
+                                 (cons d (plist-get parent :child-deadlines))))
+                    (plist-put rec :todo-parent parent))
+                  (push (cons level rec) stack)
+                  (push rec records)))
+              (when-let ((uid (org-entry-get (point) "UID")))
+                (puthash uid t uids))
+              ;; (a) A meeting nobody has budgeted around.
+              (when (and (not done)
+                         org-foresight-meeting-categories
+                         (member cat org-foresight-meeting-categories)
+                         (null (org-entry-get (point) org-foresight-prep-property))
+                         (org-foresight--entry-has-future-time-p stamps now))
+                (push (org-foresight--finding
+                       title
+                       (format "needs %s + %s"
+                               org-foresight-meeting-prep
+                               org-foresight-meeting-follow))
+                      meetings))
+              ;; A journey written down that no day can place.  Between
+              ;; them a stamp and a clock are the only two ways an entry
+              ;; says when it happened; with neither, the derivation goes
+              ;; on believing you never left the house and draws the next
+              ;; leg from there.  It used to do that in silence, which is
+              ;; the part worth fixing -- a rule nobody can see broken is
+              ;; a rule nobody can follow.
+              (when (and (not done)
+                         org-foresight-travel-property
+                         (org-entry-get (point) org-foresight-travel-property)
+                         (not (seq-find #'org-foresight--ts-timed-p stamps))
+                         (not (org-foresight--entry-clocked-p)))
+                (push (org-foresight--finding
+                       title "no time and no clock, so no day can place it")
+                      untimed-travel))
+              ;; (f) Work already parked outside the hours being defended.
+              ;; Excluded: private commitments, because dinner at seven is
+              ;; not work that escaped the day; and anything belonging to
+              ;; somebody else, because a child's fixture is not overtime.
+              ;; A board that says otherwise is telling its reader off for
+              ;; having a life.
+              (when-let ((occ (and stamps
+                                   (not (member cat
+                                                org-foresight-private-categories))
+                                   (eq (org-foresight--entry-attention cat)
+                                       'blocking)
+                                   (org-foresight--outside-work-hours
+                                    stamps now horizon))))
+                (push (org-foresight--finding
+                       title
+                       ;; The group heading already says these are outside
+                       ;; the working hours; the note only has to say when.
+                       (format "%s %s–%s"
+                               (format-time-string "%a %m-%d" (car occ))
+                               (format-time-string "%H:%M" (car occ))
+                               (format-time-string "%H:%M" (cdr occ))))
+                      outside-work))
+              ;; (g) An estimate Org itself cannot read.  This one is
+              ;; not about the plan at all -- it is about the tool: the
+              ;; agenda calls `org-duration-to-minutes' on every EFFORT it
+              ;; is asked to display, and that function signals rather than
+              ;; shrugging.  So a single "2h" or "soon" takes down the
+              ;; whole of `C-c a a' with a message naming neither the file
+              ;; nor the heading.  This board is built by walking the files
+              ;; and so still works when the agenda does not, which makes it
+              ;; the one place that can say which heading to go and fix.
+              (when (and effort (null (org-foresight--duration-minutes effort)))
+                (push (org-foresight--finding
+                       title (format "%S is not a duration Org can read"
+                                     effort))
+                      unreadable))
+              ;; (h) Work the place decides.  Most work goes anywhere, so
+              ;; what lands here is the little that does not: a thing to
+              ;; pick up, a conversation that would go wrong in writing.
+              ;; Being here is the scarce part, and the question at the door
+              ;; is what only being here can settle.
+              (when (and todo (not done))
+                (let ((place (org-foresight--entry-place)))
+                  (cond
+                   ;; Every place the day is at, not the one it is worked
+                   ;; from.  A day based at home with an appointment at the
+                   ;; office is a day the office errands can be run on, and
+                   ;; asking only for the base both hid them here and called
+                   ;; them impossible below -- one mistake, read twice.
+                   ((and place (memq place places))
+                    (push (list :title title :marker (point-marker)
+                                :place place :deadline dead
+                                :people (org-foresight--entry-people))
+                          here))
+                   ;; The mirror image: work put on today that today cannot
+                   ;; do.  A home day with an office errand on it is a plan
+                   ;; that will not survive contact with the morning.
+                   ((and place sched
+                         (= 0 (org-foresight--day-of sched today)))
+                    (push (org-foresight--finding
+                           title
+                           ;; Where today is actually being worked from is
+                           ;; the same answer on every row of this
+                           ;; section, and the section it is read under
+                           ;; has already given it once.  Repeating it
+                           ;; here cost more columns than the note has --
+                           ;; three places and the place needed was cut
+                           ;; off the end of the line.
+                           (format "needs %s · not there today"
+                                   (truncate-string-to-width
+                                    (format "%s" place) 13 nil nil t)))
+                          elsewhere)))))
+              ;; (b) A decision that keeps not being made.
+              (when (and todo (not done))
+                (let ((n (org-foresight--reschedule-count)))
+                  (when (>= n org-foresight-procrastination-threshold)
+                    (push (org-foresight--finding
+                           title (format "rescheduled %d times" n))
+                          procrastinated))))
+              ;; (c) A deadline that cannot be planned for.
+              ;;
+              ;; Leaves only.  A project heading carries no EFFORT because
+              ;; its estimate is its children's -- asking one for its own
+              ;; would be asking for the same hours twice -- so a signal
+              ;; that read a missing EFFORT there fired on every properly
+              ;; decomposed tree in the file.  Naming correct work as a
+              ;; problem is how a board teaches people to stop reading it.
+              (when (and todo (not done) dead (null effort)
+                         (time-less-p dead horizon)
+                         (not (org-foresight-project-p)))
+                (push (org-foresight--finding
+                       title
+                       (format "due %s, no estimate"
+                               (format-time-string "%m-%d" dead)))
+                      unplannable))
+              ;; (d) Work with someone else that has gone quiet.
+              (when (and todo
+                         (member todo org-foresight-followup-keywords)
+                         sched (time-less-p sched today))
+                (push (org-foresight--finding
+                       title
+                       (format "check-in was %s"
+                               (format-time-string "%m-%d" sched)))
+                      followups))
+              ;; (e) Prep for something that may have been cancelled.
+              (when-let ((ref (org-entry-get
+                               (point) org-foresight-meeting-uid-property)))
+                (unless done
+                  (push (cons ref (org-foresight--finding
+                                   title "meeting no longer in the calendar"))
+                        orphan-candidates)))
+              ;; (f) Work that has been started but not finished.
+              (when (and todo (member todo org-foresight-wip-keywords))
+                (push (org-foresight--finding title "in flight") in-flight))
+              ;; (g) Something captured that was never decided about.
+              (when (and org-foresight-undecided-enabled
+                         (org-foresight--undecided-p todo stamps))
+                (push (org-foresight--finding title "captured, not decided")
+                      undecided))))
+          nil nil))))
     ;; Orphans can only be judged once every UID in the agenda has been seen.
     (let ((orphans (seq-keep (lambda (c)
                                (unless (gethash (car c) uids) (cdr c)))
@@ -583,47 +581,47 @@ than asking for one."
                        ;; from its children, so nothing before the end of the
                        ;; walk could have said which headings are projects.
                        (nreverse records))))
-       (list
-       :here (org-foresight--here-sort (nreverse here))
-       :headings headings
-       ;; Kept beside the rows it decided, so the section that shows them can
-       ;; head itself without a second scan of every file for an answer this
-       ;; pass already had.
-       :places places
-       :signals
-       (seq-filter
-       #'cdr
-       (append
-        (list (cons "Impossible (travel clashes with a meeting)"
-                   (org-foresight--clash-findings scan))
-             (cons "Meetings without prep" (nreverse meetings))
-             (cons "Journey that cannot be placed"
-                   (nreverse untimed-travel))
-             (cons "Unreadable estimate (breaks the agenda itself)"
-                   (nreverse unreadable))
-             (cons "Outside work hours (invisible to capacity)"
-                   (nreverse outside-work))
-             (cons "Won't fit today" (plist-get fit :today))
-             (cons "Too big for one sitting (needs breaking up)"
-                   (plist-get fit :oversized))
-             (cons "Unplannable (deadline, no estimate)" (nreverse unplannable))
-             (cons "Gone quiet (follow-up overdue)" (nreverse followups))
-             (cons "Kept moving (not really NEXT)" (nreverse procrastinated))
-             (cons "Too much in flight"
-                   (if (> (length in-flight) org-foresight-wip-limit)
-                       (nreverse in-flight)
-                     nil))
-             (cons "Borrowed from private time" (org-foresight--borrow-findings scan))
-             (cons "Leaking (unclocked work)" (org-foresight--leak-findings))
-             (cons "Cannot be done from here" (nreverse elsewhere))
-             (cons "Undecided (captured, not decided)" (nreverse undecided))
-             (cons "Nothing to do next"
-                   (org-foresight--stalled-findings headings))
-             (cons "Orphaned prep" orphans))
-        ;; And whatever else has been contributed.  After the ones found
-        ;; here, and it makes no difference where: the groups are drawn in
-        ;; the order of their kinds, not of who found what.
-        (org-foresight--contributed-signals scan))))))))
+	(list
+	 :here (org-foresight--here-sort (nreverse here))
+	 :headings headings
+	 ;; Kept beside the rows it decided, so the section that shows them can
+	 ;; head itself without a second scan of every file for an answer this
+	 ;; pass already had.
+	 :places places
+	 :signals
+	 (seq-filter
+	  #'cdr
+	  (append
+           (list (cons "Impossible (travel clashes with a meeting)"
+                       (org-foresight--clash-findings scan))
+		 (cons "Meetings without prep" (nreverse meetings))
+		 (cons "Journey that cannot be placed"
+                       (nreverse untimed-travel))
+		 (cons "Unreadable estimate (breaks the agenda itself)"
+                       (nreverse unreadable))
+		 (cons "Outside work hours (invisible to capacity)"
+                       (nreverse outside-work))
+		 (cons "Won't fit today" (plist-get fit :today))
+		 (cons "Too big for one sitting (needs breaking up)"
+                       (plist-get fit :oversized))
+		 (cons "Unplannable (deadline, no estimate)" (nreverse unplannable))
+		 (cons "Gone quiet (follow-up overdue)" (nreverse followups))
+		 (cons "Kept moving (not really NEXT)" (nreverse procrastinated))
+		 (cons "Too much in flight"
+                       (if (> (length in-flight) org-foresight-wip-limit)
+			   (nreverse in-flight)
+			 nil))
+		 (cons "Borrowed from private time" (org-foresight--borrow-findings scan))
+		 (cons "Leaking (unclocked work)" (org-foresight--leak-findings))
+		 (cons "Cannot be done from here" (nreverse elsewhere))
+		 (cons "Undecided (captured, not decided)" (nreverse undecided))
+		 (cons "Nothing to do next"
+                       (org-foresight--stalled-findings headings))
+		 (cons "Orphaned prep" orphans))
+           ;; And whatever else has been contributed.  After the ones found
+           ;; here, and it makes no difference where: the groups are drawn in
+           ;; the order of their kinds, not of who found what.
+           (org-foresight--contributed-signals scan))))))))
 
 (defun org-foresight--undecided-p (todo stamps)
   "Non-nil when the entry at point was captured but never decided about.
@@ -2639,15 +2637,10 @@ the list that is real short of budget for it."
 (defun org-foresight--candidates (day)
   "Return the placement candidates for DAY, most pressing first."
   (let (out)
-    (dolist (file (org-agenda-files))
-      (when (file-exists-p file)
-        (with-current-buffer (find-file-noselect file)
-          (org-with-wide-buffer
-           (org-map-entries
-            (lambda ()
-              (when-let ((c (org-foresight--candidate-at-point day)))
-                (push c out)))
-            nil nil)))))
+    (org-foresight--each-agenda-entry
+     (lambda ()
+       (when-let ((c (org-foresight--candidate-at-point day)))
+         (push c out))))
     (sort (nreverse out) #'org-foresight--candidate<)))
 
 (defun org-foresight--candidate< (a b)

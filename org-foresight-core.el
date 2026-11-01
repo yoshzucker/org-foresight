@@ -179,6 +179,30 @@ whether it was cut once, twice or not at all."
     (dolist (iv ivs sum)
       (setq sum (+ sum (float-time (time-subtract (cdr iv) (car iv))))))))
 
+;;;; Walking the agenda files
+;; Every survey in the package reads the same corpus the same way: each file
+;; of `org-agenda-files' that exists, visited, and widened so that a buffer
+;; somebody has narrowed cannot hide part of it.  Said once here, so that a
+;; walk cannot quietly differ from the others in which files it reads.
+
+(defun org-foresight--each-agenda-file (fn)
+  "Call FN with no arguments in each existing file of `org-agenda-files'.
+The buffer is current and widened while FN runs.  A file that is listed but
+missing is skipped rather than visited, which would make an empty buffer."
+  (dolist (file (org-agenda-files))
+    (when (file-exists-p file)
+      (with-current-buffer (find-file-noselect file)
+        (org-with-wide-buffer
+         (goto-char (point-min))
+         (funcall fn))))))
+
+(defun org-foresight--each-agenda-entry (fn)
+  "Call FN with no arguments at every heading of `org-agenda-files'.
+See `org-foresight--each-agenda-file' for which files, and
+`org-map-entries' for where point is while FN runs."
+  (org-foresight--each-agenda-file
+   (lambda () (org-map-entries fn nil nil))))
+
 ;;;; Clock scan
 
 (defcustom org-foresight-parked-keywords nil
@@ -415,7 +439,7 @@ Each segment is attributed once to its heading's inherited CATEGORY, so
 The org hierarchy depth is irrelevant: CATEGORY is inherited, so a GTD
 project marked with `:CATEGORY:' at any level collects all descendant clocks."
   (let* ((day0 (if day (org-foresight--midnight day)
-                   (org-foresight--day-start 0)))
+                 (org-foresight--day-start 0)))
          (day1 (time-add day0 (days-to-time 1)))
          (from (time-subtract day0 (days-to-time (1- days))))
          (now (or now (current-time)))
@@ -433,67 +457,65 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
          day-intervals day-private-intervals dangling
          (re (concat "^[ \t]*" org-clock-string
                      "[ \t]*\\(\\[[^]\n]+\\]\\)\\(?:--\\(\\[[^]\n]+\\]\\)\\)?")))
-    (dolist (file (org-agenda-files))
-      (with-current-buffer (find-file-noselect file)
-        (org-with-wide-buffer
-         (goto-char (point-min))
-         (while (re-search-forward re nil t)
-           ;; Read both groups before converting: `org-time-string-to-time'
-           ;; runs `string-match' internally and would clobber match data.
-           (let* ((s-str (match-string-no-properties 1))
-                  (e-str (match-string-no-properties 2))
-                  (s (org-time-string-to-time s-str))
-                  (e (if e-str (org-time-string-to-time e-str) now)))
-             (when (and (time-less-p s e) (time-less-p from e) (time-less-p s day1))
-               (let* ((cs (if (time-less-p s from) from s))
-                      (ce (if (time-less-p day1 e) day1 e))
-                      (dur (/ (float-time (time-subtract ce cs)) 60.0))
-                      (cat (or (org-entry-get (point) org-foresight-clock-property t)
-                               "?"))
-                      (idx (min (1- days)
-                                (floor (/ (float-time (time-subtract cs from)) 86400)))))
-                 (unless (or e-str (org-foresight--clock-running-here-p))
-                   (push (list :start s
-                               :title (save-excursion
-                                        (and (ignore-errors
-                                               (org-back-to-heading t) t)
-                                             (org-foresight--entry-title))))
-                         dangling))
-                 (setq total (+ total dur))
-                 (puthash cat (+ dur (gethash cat table 0)) table)
-                 (aset byday idx (+ dur (aref byday idx)))
-                 ;; The same minutes as `byday', kept apart by category.  A
-                 ;; week's total for an area says how much; a week's days say
-                 ;; whether it was every day or one of them, and those are
-                 ;; different facts about the same hours.  Charged from the
-                 ;; same `idx' as `byday', so the two can never disagree
-                 ;; about which day a segment belongs to.
-                 (let ((cell (assoc cat (aref rows-byday idx))))
-                   (if cell
-                       (setcdr cell (+ dur (cdr cell)))
-                     (aset rows-byday idx
-                           (cons (cons cat dur) (aref rows-byday idx)))))
-                 (push (cons cs ce) (aref intervals-byday idx))
-                 ;; The portion of this segment (if any) inside DAY.
-                 (when (time-less-p day0 ce)
-                   (let ((ts (if (time-less-p cs day0) day0 cs)))
-                     (when (time-less-p ts ce)
-                       (let ((day-dur (/ (float-time (time-subtract ce ts)) 60.0)))
-                         (setq day-total (+ day-total day-dur)
-                               day-segments (1+ day-segments))
-                         (puthash cat (+ day-dur (gethash cat day-table 0))
-                                  day-table)
-                         (push (cons ts ce) day-intervals)
-                         ;; Kept apart rather than dropped.  A clock running
-                         ;; on a private entry is a clock running -- it is
-                         ;; not leak, and the watcher's account must go on
-                         ;; seeing it -- but it is not work, and the hours it
-                         ;; covers are hours work lent out rather than spent.
-                         (when (member cat org-foresight-private-categories)
-                           (push (cons ts ce) day-private-intervals))
-                         (org-foresight--clock-charge-task
-                          day-tasks cat day-dur (cons ts ce)
-                          day0))))))))))))
+    (org-foresight--each-agenda-file
+     (lambda ()
+       (while (re-search-forward re nil t)
+         ;; Read both groups before converting: `org-time-string-to-time'
+         ;; runs `string-match' internally and would clobber match data.
+         (let* ((s-str (match-string-no-properties 1))
+                (e-str (match-string-no-properties 2))
+                (s (org-time-string-to-time s-str))
+                (e (if e-str (org-time-string-to-time e-str) now)))
+           (when (and (time-less-p s e) (time-less-p from e) (time-less-p s day1))
+             (let* ((cs (if (time-less-p s from) from s))
+                    (ce (if (time-less-p day1 e) day1 e))
+                    (dur (/ (float-time (time-subtract ce cs)) 60.0))
+                    (cat (or (org-entry-get (point) org-foresight-clock-property t)
+                             "?"))
+                    (idx (min (1- days)
+                              (floor (/ (float-time (time-subtract cs from)) 86400)))))
+               (unless (or e-str (org-foresight--clock-running-here-p))
+                 (push (list :start s
+                             :title (save-excursion
+                                      (and (ignore-errors
+                                             (org-back-to-heading t) t)
+                                           (org-foresight--entry-title))))
+                       dangling))
+               (setq total (+ total dur))
+               (puthash cat (+ dur (gethash cat table 0)) table)
+               (aset byday idx (+ dur (aref byday idx)))
+               ;; The same minutes as `byday', kept apart by category.  A
+               ;; week's total for an area says how much; a week's days say
+               ;; whether it was every day or one of them, and those are
+               ;; different facts about the same hours.  Charged from the
+               ;; same `idx' as `byday', so the two can never disagree
+               ;; about which day a segment belongs to.
+               (let ((cell (assoc cat (aref rows-byday idx))))
+                 (if cell
+                     (setcdr cell (+ dur (cdr cell)))
+                   (aset rows-byday idx
+                         (cons (cons cat dur) (aref rows-byday idx)))))
+               (push (cons cs ce) (aref intervals-byday idx))
+               ;; The portion of this segment (if any) inside DAY.
+               (when (time-less-p day0 ce)
+                 (let ((ts (if (time-less-p cs day0) day0 cs)))
+                   (when (time-less-p ts ce)
+                     (let ((day-dur (/ (float-time (time-subtract ce ts)) 60.0)))
+                       (setq day-total (+ day-total day-dur)
+                             day-segments (1+ day-segments))
+                       (puthash cat (+ day-dur (gethash cat day-table 0))
+                                day-table)
+                       (push (cons ts ce) day-intervals)
+                       ;; Kept apart rather than dropped.  A clock running
+                       ;; on a private entry is a clock running -- it is
+                       ;; not leak, and the watcher's account must go on
+                       ;; seeing it -- but it is not work, and the hours it
+                       ;; covers are hours work lent out rather than spent.
+                       (when (member cat org-foresight-private-categories)
+                         (push (cons ts ce) day-private-intervals))
+                       (org-foresight--clock-charge-task
+                        day-tasks cat day-dur (cons ts ce)
+                        day0)))))))))))
     (dotimes (i days)
       (aset intervals-byday i
             (org-foresight--intervals-normalize (aref intervals-byday i))))
@@ -520,13 +542,12 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
 ;; work is shaped -- which headings are projects, which are the tasks inside
 ;; them, and which deadline each task is really working towards.
 ;;
-;; A third walk of the agenda files, and the reason it cannot ride on either
-;; of the other two: the day scan buckets by day and keeps nothing about
-;; entries dated outside its horizon, while undated work under a deadline is
-;; precisely what this has to see; the clock scan is a regexp sweep of
-;; LOGBOOKs and never looks at a heading.  A shared `--walk-entries' that both
-;; this and the signals walk consume would put the count back to two, and is
-;; the next move here -- after the classification is known to be right.
+;; It cannot ride on either of the other surveys here: the day scan buckets by
+;; day and keeps nothing about entries dated outside its horizon, while undated
+;; work under a deadline is precisely what this has to see; the clock scan is a
+;; regexp sweep of LOGBOOKs and never looks at a heading.  The records it is
+;; built from are read off the signals walk instead -- see
+;; `org-foresight-outline-records'.
 
 (defun org-foresight--entry-deadline ()
   "Return when the entry at point is next due, or nil.
@@ -1870,228 +1891,223 @@ a done-type keyword such as DELEG drops out too."
          ;; once per entry and carried into its ledger row, so a reader can
          ;; be told which of the day's work landed on it.
          arrived)
-    (dolist (file (org-agenda-files))
-      (when (file-exists-p file)
-        (with-current-buffer (find-file-noselect file)
-          (org-with-wide-buffer
-           (org-map-entries
-            (lambda ()
-              ;; Arriving work spends its day\'s reserve whether or not it is
-              ;; finished: the reserve is capacity held for it, and once it
-              ;; has landed the capacity is spoken for either way.  Read
-              ;; before the done check, which the rest of the scan makes --
-              ;; an interruption dealt with by lunch is still the reason the
-              ;; afternoon has less in it.
-              (setq arrived
-                    (when-let* ((_ (org-entry-get (point)
-                                                  org-foresight-surge-property t))
-                                (arrival (org-foresight--entry-arrival))
-                                (i (org-foresight--day-of arrival from0))
-                                ((<= 0 i))
-                                ((< i days))
-                                ((org-foresight--entry-surge-p arrival)))
-                      (aset surged i
-                            (+ (aref surged i)
-                               (if (org-entry-is-done-p)
-                                   (org-foresight--entry-clocked-minutes now)
-                                 (org-foresight--entry-remaining-minutes now))))
-                      i))
-              ;; Parked beside done: neither is work the day has to hold, and
-              ;; the difference between them is only whether it may come back.
-              (unless (or (org-entry-is-done-p)
-                          (org-foresight--parked-p (org-get-todo-state)))
-                (let* ((todo (org-get-todo-state))
-                       (effort (org-foresight--entry-effort-minutes))
-                       ;; Whether one was actually written.  The reader above
-                       ;; answers with the default when none was, so it cannot
-                       ;; tell an estimate from the absence of one -- and the
-                       ;; difference decides how long an appointment lasts.
-                       (effort-written (org-entry-get (point) "EFFORT"))
-                       (clocked (org-foresight--entry-clocked-minutes now))
-                       (title (org-foresight--entry-title))
-                       (marker (point-marker))
-                       (location (org-entry-get (point) "LOCATION"))
-                       ;; A journey somebody wrote down, and where it goes.
-                       ;; Read before the place, because it *is* the place:
-                       ;; this entry does not happen somewhere, it is the
-                       ;; getting there.
-                       (booked-travel
-                        (and org-foresight-travel-property
-                             (org-entry-get (point)
-                                            org-foresight-travel-property)))
-                       (place (if booked-travel
-                                  (intern booked-travel)
-                                (org-foresight--entry-place)))
-                       (category (org-entry-get (point) "CATEGORY" t))
-                       (attention (org-foresight--entry-attention category))
-                       ;; day index -> the kind of claim seen there, so one
-                       ;; entry cannot be charged twice for the same day
-                       (seen (make-hash-table :test 'eql))
-                       ;; the day it was written for, when it was written for
-                       ;; a day that has gone and had to be folded onto today
-                       (carried nil))
-                  ;; Work that arrived today is today\'s work, dated or not.
-                  ;; An interruption is captured without a date -- there was
-                  ;; no deciding where to put it -- and it would otherwise
-                  ;; land on no day at all: spending the reserve held for it
-                  ;; while never being counted as the thing that spent it.
-                  ;; Charged to the day it arrived, through the same path an
-                  ;; undated SCHEDULED takes.
-                  ;;
-                  ;; Work, though: a keyword is what says the day still owes
-                  ;; it.  `org-foresight--file-clocked-entry\' writes the hour
-                  ;; that has already gone without one, and says why -- "a
-                  ;; keyword would put it back on the list of things to do,
-                  ;; and the day would then carry it twice".  Reading the
-                  ;; surge mark alone put it back anyway, and an hour nobody
-                  ;; owes was offered into every gap for the rest of the day.
-                  ;; The reserve is not read from here (`surged\' above is),
-                  ;; so nothing it teaches is lost.
-                  (when-let* (todo
-                              ((org-foresight--entry-surge-p))
-                              (arrival (org-foresight--entry-arrival))
-                              (idx (org-foresight--day-of arrival from0))
-                              ((<= 0 idx))
-                              ((< idx days)))
-                    (puthash idx 'untimed seen))
-                  (dolist (el (org-foresight--entry-timestamps))
-                    (dolist (occ (org-foresight--ts-occurrences el from0 to))
-                      (let ((idx (org-foresight--day-of (car occ) from0)))
-                        (when (and (>= idx 0) (< idx days))
-                          (cond
-                           ((org-foresight--ts-timed-p el)
-                            ;; How long it runs, in falling order of how
-                            ;; directly it was said: the stamp's own range, an
-                            ;; EFFORT somebody wrote, and only then the
-                            ;; default.  Reading EFFORT for a TODO alone was
-                            ;; the same estimate being honoured or ignored
-                            ;; depending on a keyword that says nothing about
-                            ;; how long anything takes -- an appointment at
-                            ;; 16:00 estimated at 0:45 came out an hour long.
-                            (let ((end (if (org-foresight--ts-has-span-p el)
-                                           (cdr occ)
-                                         (time-add (car occ)
-                                                   (* 60 (if (or todo effort-written)
-                                                             effort
-                                                           org-foresight-default-event-duration))))))
-                              ;; Somebody else's commitment takes none of your
-                              ;; day, so it never reaches `busy'.  It is still
-                              ;; worth knowing: it is why the house is empty.
-                              (unless (eq attention 'informational)
-                                (push (cons (car occ) end) (aref busy idx)))
-                              (push (list :kind (cond (booked-travel 'travel)
-                                                      (todo 'task)
-                                                      (t 'meeting))
-                                          ;; Org draws this row itself.  The
-                                          ;; grid must not draw it a second
-                                          ;; time under a name it invented.
-                                          :written (and booked-travel t)
-                                          :title title :marker marker
-                                          ;; Where the stamp itself is, which
-                                          ;; is what the agenda's own time
-                                          ;; commands edit -- see
-                                          ;; `org-agenda-date-later'.
-                                          :stamp (copy-marker
-                                                  (org-element-property
-                                                   :begin el))
-                                          :attention attention
-                                          :effort (/ (float-time
-                                                      (time-subtract end (car occ)))
-                                                     60.0)
-                                          :start (car occ) :end end
-                                          :place place :location location
-                                          :category category)
-                                    (aref ledger idx))
-                              (unless (eq attention 'informational)
-                                (puthash idx 'timed seen))))
-                           (todo
-                            (unless (gethash idx seen)
-                              (puthash idx 'untimed seen)))
-                           (t
-                            (push title (aref allday idx))
-                            (push (list :kind 'allday :title title :marker marker
-                                        :effort 0.0 :start nil :end nil
-                                        :place place :location location
-                                        :category category)
-                                  (aref ledger idx))))))))
-                  ;; A journey somebody wrote down and then clocked.  Its
-                  ;; hours are on the entry rather than in a stamp, and until
-                  ;; they were read a written journey without a time range
-                  ;; fell out of the day in silence: the derivation went on
-                  ;; thinking you were still at home, and drew the next leg
-                  ;; from there.  Clocking the trip is the ordinary way to
-                  ;; record one, so it is the ordinary way to declare one.
-                  ;;
-                  ;; Skipped on a day that already placed this entry by its
-                  ;; stamp -- that is the same journey, said twice.
-                  (when booked-travel
-                    (dolist (iv (org-foresight--entry-clock-intervals
-                                 from0 to now))
-                      (let ((idx (org-foresight--day-of (car iv) from0)))
-                        (when (and (>= idx 0) (< idx days)
-                                   (not (eq (gethash idx seen) 'timed)))
-                          (push (cons (car iv) (cdr iv)) (aref busy idx))
-                          (push (list :kind 'travel
-                                      ;; Org draws the row itself, as it does
-                                      ;; for any written journey.
-                                      :written t
-                                      :title title :marker marker
-                                      :attention attention
-                                      :effort (/ (float-time
-                                                  (time-subtract (cdr iv)
-                                                                 (car iv)))
-                                                 60.0)
-                                      :start (car iv) :end (cdr iv)
+    (org-foresight--each-agenda-entry
+     (lambda ()
+       ;; Arriving work spends its day\'s reserve whether or not it is
+       ;; finished: the reserve is capacity held for it, and once it
+       ;; has landed the capacity is spoken for either way.  Read
+       ;; before the done check, which the rest of the scan makes --
+       ;; an interruption dealt with by lunch is still the reason the
+       ;; afternoon has less in it.
+       (setq arrived
+             (when-let* ((_ (org-entry-get (point)
+                                           org-foresight-surge-property t))
+                         (arrival (org-foresight--entry-arrival))
+                         (i (org-foresight--day-of arrival from0))
+                         ((<= 0 i))
+                         ((< i days))
+                         ((org-foresight--entry-surge-p arrival)))
+               (aset surged i
+                     (+ (aref surged i)
+                        (if (org-entry-is-done-p)
+                            (org-foresight--entry-clocked-minutes now)
+                          (org-foresight--entry-remaining-minutes now))))
+               i))
+       ;; Parked beside done: neither is work the day has to hold, and
+       ;; the difference between them is only whether it may come back.
+       (unless (or (org-entry-is-done-p)
+                   (org-foresight--parked-p (org-get-todo-state)))
+         (let* ((todo (org-get-todo-state))
+                (effort (org-foresight--entry-effort-minutes))
+                ;; Whether one was actually written.  The reader above
+                ;; answers with the default when none was, so it cannot
+                ;; tell an estimate from the absence of one -- and the
+                ;; difference decides how long an appointment lasts.
+                (effort-written (org-entry-get (point) "EFFORT"))
+                (clocked (org-foresight--entry-clocked-minutes now))
+                (title (org-foresight--entry-title))
+                (marker (point-marker))
+                (location (org-entry-get (point) "LOCATION"))
+                ;; A journey somebody wrote down, and where it goes.
+                ;; Read before the place, because it *is* the place:
+                ;; this entry does not happen somewhere, it is the
+                ;; getting there.
+                (booked-travel
+                 (and org-foresight-travel-property
+                      (org-entry-get (point)
+                                     org-foresight-travel-property)))
+                (place (if booked-travel
+                           (intern booked-travel)
+                         (org-foresight--entry-place)))
+                (category (org-entry-get (point) "CATEGORY" t))
+                (attention (org-foresight--entry-attention category))
+                ;; day index -> the kind of claim seen there, so one
+                ;; entry cannot be charged twice for the same day
+                (seen (make-hash-table :test 'eql))
+                ;; the day it was written for, when it was written for
+                ;; a day that has gone and had to be folded onto today
+                (carried nil))
+           ;; Work that arrived today is today\'s work, dated or not.
+           ;; An interruption is captured without a date -- there was
+           ;; no deciding where to put it -- and it would otherwise
+           ;; land on no day at all: spending the reserve held for it
+           ;; while never being counted as the thing that spent it.
+           ;; Charged to the day it arrived, through the same path an
+           ;; undated SCHEDULED takes.
+           ;;
+           ;; Work, though: a keyword is what says the day still owes
+           ;; it.  `org-foresight--file-clocked-entry\' writes the hour
+           ;; that has already gone without one, and says why -- "a
+           ;; keyword would put it back on the list of things to do,
+           ;; and the day would then carry it twice".  Reading the
+           ;; surge mark alone put it back anyway, and an hour nobody
+           ;; owes was offered into every gap for the rest of the day.
+           ;; The reserve is not read from here (`surged\' above is),
+           ;; so nothing it teaches is lost.
+           (when-let* (todo
+                       ((org-foresight--entry-surge-p))
+                       (arrival (org-foresight--entry-arrival))
+                       (idx (org-foresight--day-of arrival from0))
+                       ((<= 0 idx))
+                       ((< idx days)))
+             (puthash idx 'untimed seen))
+           (dolist (el (org-foresight--entry-timestamps))
+             (dolist (occ (org-foresight--ts-occurrences el from0 to))
+               (let ((idx (org-foresight--day-of (car occ) from0)))
+                 (when (and (>= idx 0) (< idx days))
+                   (cond
+                    ((org-foresight--ts-timed-p el)
+                     ;; How long it runs, in falling order of how
+                     ;; directly it was said: the stamp's own range, an
+                     ;; EFFORT somebody wrote, and only then the
+                     ;; default.  Reading EFFORT for a TODO alone was
+                     ;; the same estimate being honoured or ignored
+                     ;; depending on a keyword that says nothing about
+                     ;; how long anything takes -- an appointment at
+                     ;; 16:00 estimated at 0:45 came out an hour long.
+                     (let ((end (if (org-foresight--ts-has-span-p el)
+                                    (cdr occ)
+                                  (time-add (car occ)
+                                            (* 60 (if (or todo effort-written)
+                                                      effort
+                                                    org-foresight-default-event-duration))))))
+                       ;; Somebody else's commitment takes none of your
+                       ;; day, so it never reaches `busy'.  It is still
+                       ;; worth knowing: it is why the house is empty.
+                       (unless (eq attention 'informational)
+                         (push (cons (car occ) end) (aref busy idx)))
+                       (push (list :kind (cond (booked-travel 'travel)
+                                               (todo 'task)
+                                               (t 'meeting))
+                                   ;; Org draws this row itself.  The
+                                   ;; grid must not draw it a second
+                                   ;; time under a name it invented.
+                                   :written (and booked-travel t)
+                                   :title title :marker marker
+                                   ;; Where the stamp itself is, which
+                                   ;; is what the agenda's own time
+                                   ;; commands edit -- see
+                                   ;; `org-agenda-date-later'.
+                                   :stamp (copy-marker
+                                           (org-element-property
+                                            :begin el))
+                                   :attention attention
+                                   :effort (/ (float-time
+                                               (time-subtract end (car occ)))
+                                              60.0)
+                                   :start (car occ) :end end
+                                   :place place :location location
+                                   :category category)
+                             (aref ledger idx))
+                       (unless (eq attention 'informational)
+                         (puthash idx 'timed seen))))
+                    (todo
+                     (unless (gethash idx seen)
+                       (puthash idx 'untimed seen)))
+                    (t
+                     (push title (aref allday idx))
+                     (push (list :kind 'allday :title title :marker marker
+                                 :effort 0.0 :start nil :end nil
+                                 :place place :location location
+                                 :category category)
+                           (aref ledger idx))))))))
+           ;; A journey somebody wrote down and then clocked.  Its
+           ;; hours are on the entry rather than in a stamp, and until
+           ;; they were read a written journey without a time range
+           ;; fell out of the day in silence: the derivation went on
+           ;; thinking you were still at home, and drew the next leg
+           ;; from there.  Clocking the trip is the ordinary way to
+           ;; record one, so it is the ordinary way to declare one.
+           ;;
+           ;; Skipped on a day that already placed this entry by its
+           ;; stamp -- that is the same journey, said twice.
+           (when booked-travel
+             (dolist (iv (org-foresight--entry-clock-intervals
+                          from0 to now))
+               (let ((idx (org-foresight--day-of (car iv) from0)))
+                 (when (and (>= idx 0) (< idx days)
+                            (not (eq (gethash idx seen) 'timed)))
+                   (push (cons (car iv) (cdr iv)) (aref busy idx))
+                   (push (list :kind 'travel
+                               ;; Org draws the row itself, as it does
+                               ;; for any written journey.
+                               :written t
+                               :title title :marker marker
+                               :attention attention
+                               :effort (/ (float-time
+                                           (time-subtract (cdr iv)
+                                                          (car iv)))
+                                          60.0)
+                               :start (car iv) :end (cdr iv)
+                               :place place :location location
+                               :category category)
+                         (aref ledger idx))
+                   (puthash idx 'timed seen)))))
+           ;; A SCHEDULED date that has gone places the entry on no
+           ;; day at all, so until it is folded the work is in none of
+           ;; the figures here -- see
+           ;; `org-foresight--entry-schedule-gone-p\=', which is the
+           ;; rule and the reason.  Last, because it answers for an
+           ;; entry nothing else could place: anything already seen on
+           ;; any day of the window is placed, and a second claim would
+           ;; be the same work counted twice.
+           (when (and todo
+                      (zerop (hash-table-count seen))
+                      (>= today-idx 0)
+                      (< today-idx days)
+                      (org-foresight--entry-schedule-gone-p))
+             (setq carried (org-foresight--ts-start
+                            (org-foresight--entry-scheduled)))
+             (puthash today-idx 'untimed seen))
+           ;; Charge untimed effort only where nothing timed was found.
+           ;; What capacity spends is what is *left*: the corrected
+           ;; estimate less the hours already in it.  All three figures
+           ;; are kept, because a row that shows only the last of them
+           ;; can say neither what was estimated nor what it cost.
+           (maphash (lambda (idx kind)
+                      (when (eq kind 'untimed)
+                        (let* ((adj (* effort (org-foresight-bias-factor
+                                               category effort)))
+                               (left (max 0.0 (- adj clocked))))
+                          (aset committed idx (+ (aref committed idx) left))
+                          (push (list :kind 'promised :title title
+                                      :marker marker :effort effort
+                                      :effort-adj adj
+                                      :clocked clocked
+                                      :remaining left
+                                      :arrived (eq idx arrived)
+                                      ;; The day it was written for,
+                                      ;; where that is not this one.
+                                      ;; A row the reader cannot tell
+                                      ;; from today\='s own work is a
+                                      ;; row that quietly rewrites
+                                      ;; when the work was promised.
+                                      :carried carried
+                                      :start nil :end nil
                                       :place place :location location
                                       :category category)
-                                (aref ledger idx))
-                          (puthash idx 'timed seen)))))
-                  ;; A SCHEDULED date that has gone places the entry on no
-                  ;; day at all, so until it is folded the work is in none of
-                  ;; the figures here -- see
-                  ;; `org-foresight--entry-schedule-gone-p\=', which is the
-                  ;; rule and the reason.  Last, because it answers for an
-                  ;; entry nothing else could place: anything already seen on
-                  ;; any day of the window is placed, and a second claim would
-                  ;; be the same work counted twice.
-                  (when (and todo
-                             (zerop (hash-table-count seen))
-                             (>= today-idx 0)
-                             (< today-idx days)
-                             (org-foresight--entry-schedule-gone-p))
-                    (setq carried (org-foresight--ts-start
-                                   (org-foresight--entry-scheduled)))
-                    (puthash today-idx 'untimed seen))
-                  ;; Charge untimed effort only where nothing timed was found.
-                  ;; What capacity spends is what is *left*: the corrected
-                  ;; estimate less the hours already in it.  All three figures
-                  ;; are kept, because a row that shows only the last of them
-                  ;; can say neither what was estimated nor what it cost.
-                  (maphash (lambda (idx kind)
-                             (when (eq kind 'untimed)
-                               (let* ((adj (* effort (org-foresight-bias-factor
-                                                      category effort)))
-                                      (left (max 0.0 (- adj clocked))))
-                                 (aset committed idx (+ (aref committed idx) left))
-                                 (push (list :kind 'promised :title title
-                                             :marker marker :effort effort
-                                             :effort-adj adj
-                                             :clocked clocked
-                                             :remaining left
-                                             :arrived (eq idx arrived)
-                                             ;; The day it was written for,
-                                             ;; where that is not this one.
-                                             ;; A row the reader cannot tell
-                                             ;; from today\='s own work is a
-                                             ;; row that quietly rewrites
-                                             ;; when the work was promised.
-                                             :carried carried
-                                             :start nil :end nil
-                                             :place place :location location
-                                             :category category)
-                                       (aref ledger idx)))))
-                           seen))))
-            nil nil)))))
+                                (aref ledger idx)))))
+                    seen)))))
     (dotimes (i days)
       ;; Journeys are derived last, from the placed entries of the day, and
       ;; then booked like anything else -- so free time, capacity and
@@ -2906,26 +2922,21 @@ else should not become the reserve every ordinary day is planned around."
   (let* ((days (or days org-foresight-surge-window))
          (per-day (make-hash-table :test 'equal))
          (now (current-time)))
-    (dolist (file (org-agenda-files))
-      (when (file-exists-p file)
-        (with-current-buffer (find-file-noselect file)
-          (org-with-wide-buffer
-           (org-map-entries
-            (lambda ()
-              (when (org-entry-get (point) org-foresight-surge-property t)
-                (when-let* ((arrival (org-foresight--entry-arrival))
-                            (idx (org-foresight--day-of arrival
-                                                        (org-foresight--day-start
-                                                         (1- days))))
-                            ((<= 0 idx))
-                            ((< idx days))
-                            ((org-foresight--entry-surge-p arrival)))
-                  (let ((key (format-time-string "%Y-%m-%d" arrival)))
-                    (puthash key
-                             (+ (gethash key per-day 0.0)
-                                (org-foresight--entry-clocked-minutes now))
-                             per-day)))))
-            nil nil)))))
+    (org-foresight--each-agenda-entry
+     (lambda ()
+       (when (org-entry-get (point) org-foresight-surge-property t)
+         (when-let* ((arrival (org-foresight--entry-arrival))
+                     (idx (org-foresight--day-of arrival
+                                                 (org-foresight--day-start
+                                                  (1- days))))
+                     ((<= 0 idx))
+                     ((< idx days))
+                     ((org-foresight--entry-surge-p arrival)))
+           (let ((key (format-time-string "%Y-%m-%d" arrival)))
+             (puthash key
+                      (+ (gethash key per-day 0.0)
+                         (org-foresight--entry-clocked-minutes now))
+                      per-day))))))
     (let (samples)
       (maphash (lambda (_ mins) (push mins samples)) per-day)
       (if (null samples)
@@ -3661,30 +3672,25 @@ that went badly wrong should not reshape the plan for every task like it."
   (let* ((days (or days org-foresight-bias-window))
          (from (org-foresight--day-start (1- days)))
          samples)
-    (dolist (file (org-agenda-files))
-      (when (file-exists-p file)
-        (with-current-buffer (find-file-noselect file)
-          (org-with-wide-buffer
-           (org-map-entries
-            (lambda ()
-              (when (and (org-entry-is-done-p)
-                         (not (member (org-get-todo-state)
-                                      org-foresight-bias-abandoned-keywords)))
-                ;; `org-entry-get\' would happily return the next heading\'s
-                ;; text for a CLOSED that is not there; the planning API
-                ;; knows the difference between a timestamp and a property.
-                (let ((closed (org-entry-get (point) "CLOSED" nil t))
-                      (effort (org-entry-get (point) "EFFORT")))
-                  (when (and closed effort)
-                    (let ((when (org-time-string-to-time closed)))
-                      (when (time-less-p from when)
-                        (let ((est (org-foresight--duration-minutes effort 0))
-                              (act (org-foresight--entry-clocked-minutes)))
-                          (when (and (> est 0) (> act 0))
-                            (push (list est act
-                                        (org-entry-get (point) "CATEGORY" t))
-                                  samples)))))))))
-            nil nil)))))
+    (org-foresight--each-agenda-entry
+     (lambda ()
+       (when (and (org-entry-is-done-p)
+                  (not (member (org-get-todo-state)
+                               org-foresight-bias-abandoned-keywords)))
+         ;; `org-entry-get\' would happily return the next heading\'s
+         ;; text for a CLOSED that is not there; the planning API
+         ;; knows the difference between a timestamp and a property.
+         (let ((closed (org-entry-get (point) "CLOSED" nil t))
+               (effort (org-entry-get (point) "EFFORT")))
+           (when (and closed effort)
+             (let ((when (org-time-string-to-time closed)))
+               (when (time-less-p from when)
+                 (let ((est (org-foresight--duration-minutes effort 0))
+                       (act (org-foresight--entry-clocked-minutes)))
+                   (when (and (> est 0) (> act 0))
+                     (push (list est act
+                                 (org-entry-get (point) "CATEGORY" t))
+                           samples))))))))))
     (if (null samples)
         (user-error "No finished, estimated, clocked work in the last %d days"
                     days)

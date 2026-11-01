@@ -2825,6 +2825,25 @@ CLOCK: [2026-08-30 Sun 09:00]--[2026-08-30 Sun 10:00] =>  1:00
       (should (assoc "work.people" rows))
       (should-not (assoc "comms" rows)))))
 
+(ert-deftest org-foresight-test-surveys-skip-a-listed-file-that-is-missing ()
+  "An agenda file that has been moved or deleted is read as no file at all.
+Visiting it would leave an empty buffer behind under its name, and every
+survey walks the same list, so none of them may be the one that does."
+  (org-foresight-test--with-org "\
+* DONE one
+:LOGBOOK:
+CLOCK: [2026-08-30 Sun 09:00]--[2026-08-30 Sun 10:00] =>  1:00
+:END:
+"
+    (let* ((missing (expand-file-name "org-foresight-test-missing.org"
+                                      temporary-file-directory))
+           (org-agenda-files (append org-agenda-files (list missing)))
+           (now (encode-time 0 0 12 30 8 2026)))
+      (should-not (file-exists-p missing))
+      (should (= 60 (plist-get (org-foresight-clock-scan 30 now now) :total)))
+      (org-foresight-scan 1 now now)
+      (should-not (get-file-buffer missing)))))
+
 (ert-deftest org-foresight-test-clock-scan-collects-the-unattributed ()
   "With a property most entries do not carry, the rows nobody claimed are
 where the interesting time is, so they need a bucket of their own rather than
