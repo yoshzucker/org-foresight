@@ -1137,7 +1137,7 @@ box, which Emacs draws once around the whole run rather than per cell."
     ;; and the reserve still occupies its columns, or the bar would not sum
     (should (= (org-foresight-test--bar-cells bar) org-foresight-bar-width))
     ;; the key names it with the same glyph the bar drew
-    (let ((key (org-foresight-report--bar-key cap)))
+    (let ((key (org-foresight-report--work-key cap nil)))
       (should (string-match-p "  reserve" (substring-no-properties key))))))
 
 (ert-deftest org-foresight-test-bar-marks-the-overflow ()

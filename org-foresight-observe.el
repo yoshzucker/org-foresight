@@ -242,10 +242,6 @@ time order rather than in whatever order they arrived."
             (aset v bin (1+ (aref v bin)))))
         (setq prev app)))))
 
-(defun org-foresight-observe--app-seconds (apps)
-  "Total seconds in APPS, an alist of (NAME . SECONDS)."
-  (apply #'+ 0.0 (mapcar #'cdr apps)))
-
 (defun org-foresight-observe-today ()
   "Return today's parsed ActivityWatch data as a plist, or nil on failure.
 Keys: :active :afk SECONDS ; :active-apps :emacs-projects ALIST (NAME . SEC)

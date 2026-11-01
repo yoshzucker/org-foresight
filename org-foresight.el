@@ -50,9 +50,12 @@
 ;;   org-foresight-report.el   rendering into agenda buffers
 ;;   org-foresight-agenda.el   derived rows inside Org's own agenda
 ;;   org-foresight-plan.el     signals and placement (the only writer)
+;;   org-foresight-profile.el  what a redraw costs, in a report safe to send
+;;   org-foresight-demo.el     generated data to develop against (not loaded)
 ;;
 ;; This file is the aggregator: requiring `org-foresight' gets the whole
-;; package, and the user-facing commands are gathered here.
+;; package except the demo, which is required on its own.  Each command lives
+;; in the file whose part of the package it belongs to.
 
 ;;; Code:
 
@@ -62,8 +65,6 @@
 (require 'org-foresight-agenda)
 (require 'org-foresight-plan)
 (require 'org-foresight-profile)
-
-;;;; Entry points
 
 (provide 'org-foresight)
 

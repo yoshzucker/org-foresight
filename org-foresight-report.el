@@ -240,13 +240,6 @@ cell its face, so one row carries both activity density and clocked status."
 
 ;;;; Tables
 
-(defun org-foresight-report--cat-abbrev (cat)
-  "Return a 4-column display code for category CAT."
-  (cond ((equal cat "comms") "comm")
-        ((equal cat "distraction") "dist")
-        ((equal cat "other") "misc")
-        (t (truncate-string-to-width cat 4 0 ?\s))))
-
 (defun org-foresight-report--spark-scaled (counts)
   "Return a 48-char sparkline of COUNTS, scaled to its own busiest bin.
 
@@ -1189,10 +1182,6 @@ being what it is -- a list of what the colours mean."
             (setq line (concat indent piece)))))
       (push line out)
       (string-join (nreverse out) "\n"))))
-
-(defun org-foresight-report--bar-key (cap)
-  "Return the legend naming each of the work bar's segments in CAP."
-  (org-foresight-report--key cap org-foresight-report--bar-segments))
 
 (defun org-foresight-report--legend (plist measured forecast ruled)
   "Return one legend for PLIST: its MEASURED terms, then its FORECAST ones.
