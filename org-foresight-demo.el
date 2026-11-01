@@ -59,8 +59,7 @@ Machine-local and disposable: everything in it is rewritten by
 
 (defun org-foresight-demo--time (offset &optional hh mm)
   "Return the time OFFSET days from today, at HH:MM (default midnight)."
-  (let ((d (decode-time (time-add (org-foresight--day-start 0)
-                                  (days-to-time offset)))))
+  (let ((d (decode-time (org-foresight--add-days (org-foresight--day-start 0) offset))))
     (encode-time 0 (or mm 0) (or hh 0) (nth 3 d) (nth 4 d) (nth 5 d))))
 
 (defun org-foresight-demo--date (offset)

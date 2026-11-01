@@ -338,6 +338,38 @@ SCHEDULED: <2026-08-10 Mon>
           (should (equal (org-foresight-test--hhmm (list busy))
                          '("11:00-12:00"))))))))
 
+(defmacro org-foresight-test--in-zone (zone &rest body)
+  "Run BODY with local time read in ZONE, and put the zone back after."
+  (declare (indent 1))
+  `(let ((was (getenv "TZ")))
+     (unwind-protect
+         (progn (setenv "TZ" ,zone) ,@body)
+       (setenv "TZ" was))))
+
+(ert-deftest org-foresight-test-a-day-is-a-calendar-day-where-the-clocks-change ()
+  "The day the clocks go back is 25 hours long, and all of it is that day.
+Counted in 86400-second steps from its midnight, its last hour was the next
+day's, the next midnight came an hour early, and a daily repeater walked
+forward from before it arrived an hour off the time it was written for."
+  (org-foresight-test--in-zone "America/New_York"
+    (let ((day (encode-time 0 0 0 1 11 2026))
+          (late (encode-time 0 30 23 1 11 2026)))
+      (should (= 0 (org-foresight--day-of late day)))
+      (should (equal "2026-11-02 00:00"
+                     (format-time-string "%Y-%m-%d %H:%M"
+                                         (org-foresight--add-days day 1))))
+      (org-foresight-test--with-org "\
+* late on the long day
+<2026-11-01 Sun 23:00>--<2026-11-01 Sun 23:30>
+* every morning
+<2026-10-01 Thu 09:00 +1d>
+"
+        (let ((scan (org-foresight-scan 3 day day)))
+          (should (equal (org-foresight-test--busy-on scan 0)
+                         '("09:00-10:00" "23:00-23:30")))
+          (should (equal (org-foresight-test--busy-on scan 2)
+                         '("09:00-10:00"))))))))
+
 (ert-deftest org-foresight-test-scan-skips-done ()
   "Finished work makes no claim on the future -- including done-type DELEG."
   (org-foresight-test--with-org

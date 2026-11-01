@@ -346,7 +346,7 @@ different reading of the same walk, so asking for all of them costs no more
 than asking for one."
   (let* ((now (current-time))
          (today (org-foresight--day-start 0))
-         (horizon (time-add today (days-to-time org-foresight-horizon-days)))
+         (horizon (org-foresight--add-days today org-foresight-horizon-days))
          (uids (make-hash-table :test 'equal))
          ;; The week, not the day: the borrowing signal asks about seven of
          ;; them and everything else asks about today, and one survey answers
@@ -747,7 +747,7 @@ slow machine that was four seconds every time the signals fell out of their
 few-second cache, and a fifth of a second every other time -- which is what a
 redraw that feels unpredictable turns out to be made of."
   (let* ((today (org-foresight--day-start 0))
-         (last (time-add today (days-to-time (1- org-foresight--borrow-days))))
+         (last (org-foresight--add-days today (1- org-foresight--borrow-days)))
          (total 0.0)
          (days 0)
          ;; Forward, and the survey has to reach that far.  A caller may hand
@@ -756,7 +756,7 @@ redraw that feels unpredictable turns out to be made of."
                    scan
                  (org-foresight-scan org-foresight--borrow-days today))))
     (dotimes (i org-foresight--borrow-days)
-      (let* ((day (time-add today (days-to-time i)))
+      (let* ((day (org-foresight--add-days today i))
              (cap (ignore-errors (org-foresight-capacity day scan))))
         (when-let ((borrowed (and cap (plist-get cap :borrowed-min))))
           (when (> borrowed 0)

@@ -387,7 +387,7 @@ Keys:
 (defun org-foresight-observe--day-range (offset)
   "Return (START . END) ISO8601 strings covering the day OFFSET days back."
   (let* ((start (org-foresight--day-start offset))
-         (end (time-add start (days-to-time 1))))
+         (end (org-foresight--add-days start 1)))
     (cons (format-time-string "%Y-%m-%dT%H:%M:%S%:z" start)
           (format-time-string "%Y-%m-%dT%H:%M:%S%:z" end))))
 

@@ -259,6 +259,15 @@ them rather than with the options of either."
   (let ((d (decode-time (current-time))))
     (encode-time 0 0 0 (- (nth 3 d) (or day-offset 0)) (nth 4 d) (nth 5 d))))
 
+(defun org-foresight--add-days (time n)
+  "Return TIME moved N calendar days, at the same time of day.
+A calendar day is not always 86400 seconds: where the clocks change, one day
+of the year is an hour short and another an hour long, and stepping from a
+midnight by seconds lands an hour off midnight on the far side of either."
+  (let ((d (decode-time time)))
+    (encode-time (nth 0 d) (nth 1 d) (nth 2 d) (+ (nth 3 d) n)
+                 (nth 4 d) (nth 5 d))))
+
 (defun org-foresight--entry-title ()
   "Return the heading at point as a title to show, without its timestamps.
 
@@ -440,8 +449,8 @@ The org hierarchy depth is irrelevant: CATEGORY is inherited, so a GTD
 project marked with `:CATEGORY:' at any level collects all descendant clocks."
   (let* ((day0 (if day (org-foresight--midnight day)
                  (org-foresight--day-start 0)))
-         (day1 (time-add day0 (days-to-time 1)))
-         (from (time-subtract day0 (days-to-time (1- days))))
+         (day1 (org-foresight--add-days day0 1))
+         (from (org-foresight--add-days day0 (- 1 days)))
          (now (or now (current-time)))
          (table (make-hash-table :test 'equal))
          (day-table (make-hash-table :test 'equal))
@@ -472,8 +481,7 @@ project marked with `:CATEGORY:' at any level collects all descendant clocks."
                     (dur (/ (float-time (time-subtract ce cs)) 60.0))
                     (cat (or (org-entry-get (point) org-foresight-clock-property t)
                              "?"))
-                    (idx (min (1- days)
-                              (floor (/ (float-time (time-subtract cs from)) 86400)))))
+                    (idx (min (1- days) (org-foresight--day-of cs from))))
                (unless (or e-str (org-foresight--clock-running-here-p))
                  (push (list :start s
                              :title (save-excursion
@@ -576,7 +584,7 @@ work is finished, and inventing one would be invention."
                      (today (org-foresight--day-start 0))
                      (occ (car (org-foresight--ts-occurrences
                                 el today
-                                (time-add today (days-to-time 3660))))))
+                                (org-foresight--add-days today 3660)))))
                 (car occ)))))
         written)))
 
@@ -1019,15 +1027,15 @@ so callers must not read a non-nil end as \"this has a duration\"; use
   "Return TIME moved forward by N UNITs (a repeater unit symbol)."
   (pcase unit
     ('hour (time-add time (* n 3600)))
-    ('day (time-add time (days-to-time n)))
-    ('week (time-add time (days-to-time (* 7 n))))
+    ('day (org-foresight--add-days time n))
+    ('week (org-foresight--add-days time (* 7 n)))
     ('month (let ((d (decode-time time)))
               (encode-time (nth 0 d) (nth 1 d) (nth 2 d) (nth 3 d)
                            (+ (nth 4 d) n) (nth 5 d))))
     ('year (let ((d (decode-time time)))
              (encode-time (nth 0 d) (nth 1 d) (nth 2 d) (nth 3 d)
                           (nth 4 d) (+ (nth 5 d) n))))
-    (_ (time-add time (days-to-time n)))))
+    (_ (org-foresight--add-days time n))))
 
 (defun org-foresight--ts-repeats-p (el)
   "Non-nil when EL is a timestamp that stands for more than one occasion.
@@ -1060,16 +1068,24 @@ predicting occupancy from it would be invention rather than measurement."
     (if (not (org-foresight--ts-repeats-p el))
         (when (and (time-less-p start to) (not (time-less-p end from)))
           (push (cons start end) out))
-      ;; Jump straight to the first occurrence at or after FROM where the unit
+      ;; Jump close to the first occurrence at or after FROM where the unit
       ;; has a fixed length; a daily repeater set years ago would otherwise be
-      ;; stepped through one day at a time.
+      ;; stepped through one day at a time.  Days and weeks are counted on the
+      ;; calendar, and the jump stops one step short, so an occurrence that
+      ;; began before FROM and runs into it is still walked over.
       (let ((cur start)
-            (secs (pcase runit ('hour 3600) ('day 86400) ('week 604800) (_ nil)))
+            (days (pcase runit ('day 1) ('week 7) (_ nil)))
             (guard 0))
-        (when (and secs (time-less-p cur from))
-          (let ((k (floor (/ (float-time (time-subtract from cur))
-                             (* rval secs)))))
-            (setq cur (time-add cur (* k rval secs)))))
+        (when (time-less-p cur from)
+          (cond
+           ((eq runit 'hour)
+            (let ((k (floor (/ (float-time (time-subtract from cur))
+                               (* rval 3600)))))
+              (setq cur (time-add cur (* k rval 3600)))))
+           (days
+            (let ((k (max 0 (1- (floor (org-foresight--day-of from cur)
+                                       (* rval days))))))
+              (setq cur (org-foresight--add-days cur (* k rval days)))))))
         (while (and (time-less-p cur to) (< guard 1000))
           (let ((cend (time-add cur span)))
             (when (not (time-less-p cend from))
@@ -1792,9 +1808,10 @@ imported location is unhelpful can be corrected without editing the text."
                          org-foresight-places)))))))
 
 (defun org-foresight--day-of (time from)
-  "Return the whole-day offset of TIME from midnight of FROM."
-  (floor (/ (float-time (time-subtract time (org-foresight--midnight from)))
-            86400)))
+  "Return the whole-day offset of TIME from midnight of FROM.
+Counted in calendar days, not in 86400-second steps, which drift by an hour
+across a change of the clocks -- see `org-foresight--add-days'."
+  (- (time-to-days time) (time-to-days from)))
 
 (defun org-foresight--midnight (time)
   "Return local midnight at the start of TIME's day."
@@ -2121,7 +2138,7 @@ a done-type keyword such as DELEG drops out too."
   (let* ((from (or from (org-foresight--day-start 0)))
          (now (or now (current-time)))
          (from0 (org-foresight--midnight from))
-         (to (time-add from0 (days-to-time days)))
+         (to (org-foresight--add-days from0 days))
          ;; Where today falls in this survey, which is where work whose date
          ;; has gone is folded to.  Outside it -- a survey of a week ahead --
          ;; nothing is folded: there is no today in it to fold onto.
@@ -2151,7 +2168,7 @@ a done-type keyword such as DELEG drops out too."
       ;; The checks come after the journeys and from them, because where they
       ;; belong is the inner end of each: you look at the day once you have
       ;; arrived, and again before you set off back.
-      (let* ((day-time (time-add from0 (days-to-time i)))
+      (let* ((day-time (org-foresight--add-days from0 i))
              (entries (sort (copy-sequence (aref ledger i))
                             #'org-foresight--start<))
              (legs (org-foresight--travel-blocks day-time entries)))
@@ -2459,7 +2476,7 @@ heading, so there is nobody to want a different word for it.")
          (sleep-t (org-foresight--hhmm-on day sleep)))
     ;; A bedtime at or before waking means the small hours of the next day.
     (unless (time-less-p wake-t sleep-t)
-      (setq sleep-t (time-add sleep-t (days-to-time 1))))
+      (setq sleep-t (org-foresight--add-days sleep-t 1)))
     (list :awake (cons wake-t sleep-t)
           :place (if (stringp place) (intern place) place)
           ;; Normalized, so everything downstream may assume the intervals are
@@ -2898,7 +2915,7 @@ date nobody will keep."
          (horizon (or horizon org-foresight-horizon-days))
          (found nil))
     (cl-loop for i from 1 to horizon
-             for day = (time-add from (days-to-time i))
+             for day = (org-foresight--add-days from i)
              when (eq place (org-foresight-day-place day))
              return (setq found day))
     found))
@@ -3024,8 +3041,7 @@ both."
       ;; now answers a whole redraw -- so where it starts is its business
       ;; rather than something to be assumed from here.
       (dolist (e (org-foresight-scan-day
-                  scan :ledger (time-add (org-foresight--day-start 0)
-                                         (days-to-time i))))
+                  scan :ledger (org-foresight--add-days (org-foresight--day-start 0) i)))
         (when-let* ((m (plist-get e :marker))
                     (u (gethash (cons (marker-buffer m) (marker-position m))
                                 where))
@@ -3107,8 +3123,7 @@ offering the work as its own way out would be circular."
     (dotimes (i (1+ last))
       ;; By date, for the reason `org-foresight--landing-dated' reads by date.
       (dolist (e (org-foresight-scan-day
-                  scan :ledger (time-add (org-foresight--day-start 0)
-                                         (days-to-time i))))
+                  scan :ledger (org-foresight--add-days (org-foresight--day-start 0) i)))
         (when (eq (plist-get e :kind) 'promised)
           (when-let* ((m (plist-get e :marker))
                       (key (cons (marker-buffer m) (marker-position m)))
@@ -3216,7 +3231,7 @@ read."
     (when units
       (let* ((dated (org-foresight--landing-dated units scan days))
              (caps (make-vector days nil))
-             (horizon (time-add today (days-to-time (1- days))))
+             (horizon (org-foresight--add-days today (1- days)))
              (demand 0.0) (unestimated 0) (count 0)
              (rest units)
              out)
@@ -3227,7 +3242,7 @@ read."
         ;; weekend contributed nothing at all, and the largest way out of a
         ;; deadline that will not fit was reported as no way out.
         (dotimes (i days)
-          (let ((day (time-add today (days-to-time i))))
+          (let ((day (org-foresight--add-days today i)))
             (aset caps i (org-foresight-capacity day scan now))))
         (while rest
           (let* ((day (plist-get (car rest) :due-day))
@@ -3275,7 +3290,7 @@ read."
                                 (when (<= demand (plist-get wk (if (eq verdict 'over)
                                                                    :hard :soft)))
                                   (setq found
-                                        (time-add today (days-to-time k))))))
+                                        (org-foresight--add-days today k)))))
                             found))
                         :drop
                         (when (eq verdict 'over)

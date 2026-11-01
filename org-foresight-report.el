@@ -1441,7 +1441,7 @@ benchmark and always shows in a keystroke."
          today-cap rows)
     (catch 'enough
       (dotimes (i days)
-        (let ((day (time-add today (days-to-time i))))
+        (let ((day (org-foresight--add-days today i)))
           (when (org-foresight-work-intervals day)
             (let ((cap (org-foresight-capacity day scan now)))
               (when (zerop i) (setq today-cap cap))
