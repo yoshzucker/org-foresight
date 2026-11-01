@@ -249,7 +249,27 @@ agenda render -- which asks twice, once for the summary line and once for the
 board -- only pays for the walk once.")
 
 (defvar org-foresight--signals-cache nil
-  "Plist (:time T :files F :signals S) memoizing `org-foresight-signals'.")
+  "Plist memoizing the signals walk: :time and :files it was taken at, then
+what `org-foresight--signals-compute' returned -- :signals, :here, :headings
+and :places.")
+
+(defun org-foresight--signals-cached (key &optional force scan)
+  "Return KEY of the signals walk, walking the files again if need be.
+The walk is reused for `org-foresight-signals-cache-ttl' seconds unless
+FORCE, and only while `org-agenda-files' is the list it was taken over.  SCAN
+is handed to `org-foresight--signals-compute' when a walk is taken."
+  (let ((files (org-agenda-files)))
+    (unless (and (not force)
+                 org-foresight--signals-cache
+                 (equal files (plist-get org-foresight--signals-cache :files))
+                 (< (float-time
+                     (time-subtract (current-time)
+                                    (plist-get org-foresight--signals-cache :time)))
+                    org-foresight-signals-cache-ttl))
+      (setq org-foresight--signals-cache
+            (append (list :time (current-time) :files files)
+                    (org-foresight--signals-compute scan))))
+    (plist-get org-foresight--signals-cache key)))
 
 (defun org-foresight-signals (&optional force scan)
   "Return an alist (LABEL . FINDINGS) of work that exists but is not planned.
@@ -261,19 +281,7 @@ The cache is keyed on the agenda file list as well as the clock.  Time alone
 would be wrong: switching which files are in play -- demo data in or out, a
 narrowed set for one command -- changes the answer completely, and a stale
 board describing the other corpus is worse than a slow one."
-  (let ((files (org-agenda-files)))
-    (if (and (not force)
-             org-foresight--signals-cache
-             (equal files (plist-get org-foresight--signals-cache :files))
-             (< (float-time
-                 (time-subtract (current-time)
-                                (plist-get org-foresight--signals-cache :time)))
-                org-foresight-signals-cache-ttl))
-        (plist-get org-foresight--signals-cache :signals)
-      (let ((result (org-foresight--signals-compute scan)))
-        (setq org-foresight--signals-cache
-              (append (list :time (current-time) :files files) result))
-        (plist-get result :signals)))))
+  (org-foresight--signals-cached :signals force scan))
 
 (defun org-foresight-here (&optional force)
   "Return the work that only where you are today can do, nearest need first.
@@ -281,16 +289,7 @@ board describing the other corpus is worse than a slow one."
 Read off the same walk as `org-foresight-signals\=' and cached with it: they
 are two questions about one pass over the files, and asking both should cost
 what asking one costs."
-  (let ((files (org-agenda-files)))
-    (unless (and (not force)
-                 org-foresight--signals-cache
-                 (equal files (plist-get org-foresight--signals-cache :files))
-                 (< (float-time
-                     (time-subtract (current-time)
-                                    (plist-get org-foresight--signals-cache :time)))
-                    org-foresight-signals-cache-ttl))
-      (org-foresight-signals force))
-    (plist-get org-foresight--signals-cache :here)))
+  (org-foresight--signals-cached :here force))
 
 (defun org-foresight-outline-records (&optional force)
   "Return a record per TODO heading in `org-agenda-files\=', in document order.
@@ -308,16 +307,7 @@ quarter of the redraw and it learned nothing the first had not seen.
 Kept apart from the survey in `org-foresight-scan\=' all the same.  That one
 answers what the days hold and is taken over a window; this one answers what
 shape the work is in and has no window at all."
-  (let ((files (org-agenda-files)))
-    (unless (and (not force)
-                 org-foresight--signals-cache
-                 (equal files (plist-get org-foresight--signals-cache :files))
-                 (< (float-time
-                     (time-subtract (current-time)
-                                    (plist-get org-foresight--signals-cache :time)))
-                    org-foresight-signals-cache-ttl))
-      (org-foresight-signals force))
-    (plist-get org-foresight--signals-cache :headings)))
+  (org-foresight--signals-cached :headings force))
 
 (defvar org-foresight-signal-functions nil
   "Functions contributing signals beyond the ones this file finds.
