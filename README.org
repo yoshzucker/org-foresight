@@ -2010,7 +2010,7 @@ down?/ A list nobody looks at is how work quietly stops being decided about.
  office · next office day is Wed 08-19
   ⚠ stamp the form                     due Tue 08-18
     check the warehouse stock
-    talk about the review              (高橋)
+    高橋: talk about the review
 #+end_example
 
 Most work goes anywhere. What lands here is the little that does not — a
