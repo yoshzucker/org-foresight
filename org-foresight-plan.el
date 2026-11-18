@@ -490,8 +490,7 @@ than asking for one."
                    ;; them impossible below -- one mistake, read twice.
                    ((and place (memq place places))
                     (push (list :title title :marker (point-marker)
-                                :place place :deadline dead
-                                :people (org-foresight--entry-people))
+                                :place place :deadline dead)
                           here))
                    ;; The mirror image: work put on today that today cannot
                    ;; do.  A home day with an office errand on it is a plan
@@ -1148,8 +1147,7 @@ the day to be told so -- by tomorrow the answer is Wednesday again."
                  ;; somewhere the list holds work for both, and "next home
                  ;; day" says nothing at all about an office errand.
                  (again (org-foresight-next-day-at (plist-get r :place) day))
-                 (urgent (and dead (or (null again) (time-less-p dead again))))
-                 (people (plist-get r :people)))
+                 (urgent (and dead (or (null again) (time-less-p dead again)))))
             (org-foresight-report--actionable
              (format "  %s %s  %s"
                      (if urgent
@@ -1170,9 +1168,7 @@ the day to be told so -- by tomorrow the answer is Wednesday again."
                                 (format "@%s" (plist-get r :place)))
                               (when dead
                                 (format "due %s"
-                                        (format-time-string "%a %m-%d" dead)))
-                              (when people
-                                (format "(%s)" (string-join people ", ")))))
+                                        (format-time-string "%a %m-%d" dead)))))
                        " ")
                       'face 'shadow))
              (plist-get r :marker))))

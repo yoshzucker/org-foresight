@@ -51,9 +51,8 @@ those would claim a word that other things read and write too.
 | =FORESIGHT_PLAN_PREP= / =_PLAN_MEETING_UID= | a meeting, and its preparation | that preparation was made, and what for |
 
 Not prefixed, and never will be: =EFFORT= and =LOCATION=, which are Org's and
-the calendar's; =CATEGORY=, which Org gives every entry and the agenda shows in
-a column of its own; and =PEOPLE=, which is a fact about the work rather than
-about this package — whatever writes it, this reads it.
+the calendar's; and =CATEGORY=, which Org gives every entry and the agenda
+shows in a column of its own.
 
 The entry-level names are settings (=org-foresight-travel-property= and its
 kin), so a layer above may point them elsewhere. The day's own are constants:
@@ -1474,29 +1473,6 @@ morning: the one arrangement that hides the cost entirely.
 And work that needs a place stops being merely late: it is not late until the
 next day at that place has gone, which is what =Here= on the board is able to
 say.
-
-*** People, and what actually binds you
-
-=:PEOPLE:= names who a piece of work involves, as a multi-valued property
-(=:PEOPLE: 高橋 田中=, and =:PEOPLE+:= to add). The relation comes from the
-entry's own state: =WAIT= and =DELEG= are /with/ them, anything else /needs/
-them.
-
-It deliberately does not bind a place. Most work involving somebody can be
-done by message, and what makes a conversation need a room is a judgement
-about that conversation — that it would go wrong in writing — which nothing
-here can infer. When it does need a room, say so the way anything else does:
-
-#+begin_example
-* NEXT ask about the spec          * NEXT talk about the review
-:PROPERTIES:                       :PROPERTIES:
-:PEOPLE: 高橋                      :PEOPLE: 高橋
-:END:                              :FORESIGHT_PLACE:  office
-                                   :END:
-#+end_example
-
-The first is a message and goes anywhere. Only the second appears under
-=Here=.
 
 The hours are *declared*, never inferred. Measuring when work actually stopped
 and calling that the working day would teach the system to plan around the

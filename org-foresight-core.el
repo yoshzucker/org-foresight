@@ -1756,29 +1756,6 @@ have to listen to\" can be said about a single meeting."
      ((member category org-foresight-background-categories) 'background)
      (t 'blocking))))
 
-(defcustom org-foresight-people-property "PEOPLE"
-  "Property naming the people a piece of work involves.
-
-Read as a multi-valued property, so `:PEOPLE: 高橋 田中\=' is two people and
-`:PEOPLE+:\=' appends to the list.
-
-It says who, and nothing else.  In particular it does not say where: most
-work involving somebody can be done by message, and what makes a
-conversation need a room is a judgement about that conversation -- that it
-would go wrong in writing -- which nothing here can infer.  When it does need
-a room, say so the way anything else says so, with `:PLACE:\='.
-
-What the relation is comes from the entry\='s own state: work in a state
-listed in `org-foresight-followup-keywords\=' is with them, and anything else
-needs them."
-  :type 'string
-  :group 'org-foresight)
-
-(defun org-foresight--entry-people ()
-  "Return the people the entry at point involves, as a list of strings."
-  (when org-foresight-people-property
-    (org-entry-get-multivalued-property (point) org-foresight-people-property)))
-
 (defcustom org-foresight-place-property "FORESIGHT_PLACE"
   "Property naming where an entry puts the body, and where a day is worked from.
 

@@ -376,11 +376,11 @@ example of every situation the signals look for."
      ":PROPERTIES:\n:EFFORT:   0:15\n:FORESIGHT_PLACE: office\n:CATEGORY: admin\n:END:\n"
 
      "**** NEXT Talk to Robin about the review\n"
-     ":PROPERTIES:\n:EFFORT:   0:30\n:FORESIGHT_PLACE: office\n:PEOPLE: Robin\n"
+     ":PROPERTIES:\n:EFFORT:   0:30\n:FORESIGHT_PLACE: office\n"
      ":CATEGORY: team\n:END:\n"
 
      "**** NEXT Ask Robin how the migration went\n"
-     ":PROPERTIES:\n:EFFORT:   0:10\n:PEOPLE: Robin\n:CATEGORY: team\n:END:\n"
+     ":PROPERTIES:\n:EFFORT:   0:10\n:CATEGORY: team\n:END:\n"
 
      ;; Started but unfinished, several at once: the switching cost is what
      ;; makes a day that looks reasonable run long.

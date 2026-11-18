@@ -11099,10 +11099,6 @@ is the only reason the list is worth reading at the door."
 :PROPERTIES:
 :FORESIGHT_PLACE: office
 :END:
-* NEXT ask about the spec
-:PROPERTIES:
-:PEOPLE: 高橋
-:END:
 * NEXT measure on site
 :PROPERTIES:
 :FORESIGHT_PLACE: client
@@ -11111,8 +11107,6 @@ is the only reason the list is worth reading at the door."
 "
     (let ((titles (mapcar (lambda (r) (plist-get r :title)) (org-foresight-here))))
       (should (member "stamp the form" titles))
-      ;; a person is not a place: this one is a message, and messages travel
-      (should-not (member "ask about the spec" titles))
       ;; somewhere else is not here
       (should-not (member "measure on site" titles))
       ;; and work that needs nowhere in particular is not the door's business
@@ -11146,20 +11140,6 @@ settle; one that falls after it can wait for the next."
       ;; only one office day a week, so tomorrow's deadline cannot wait
       (should (or (null next) (string-match-p "⚠" rendered)))
       (should (string-match-p "next office day\\|not office again" rendered)))))
-
-(ert-deftest org-foresight-test-here-names-who-it-needs ()
-  "Who the conversation is with is part of deciding whether to have it now."
-  (org-foresight-test--with-places
-      "* NEXT talk about the review
-:PROPERTIES:
-:FORESIGHT_PLACE: office
-:PEOPLE: 高橋 田中
-:END:
-"
-    (should (equal '("高橋" "田中")
-                   (plist-get (car (org-foresight-here)) :people)))
-    (should (string-match-p "高橋, 田中"
-                            (substring-no-properties (org-foresight-report-here))))))
 
 (ert-deftest org-foresight-test-work-that-today-cannot-do-is-a-signal ()
   "Work planned for today that today's place cannot do will not happen.
